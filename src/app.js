@@ -11,7 +11,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
 
   const tesseractConfig = {
-    tessedit_pageseg_mode: 6, // Single uniform block of text (better for receipts)
+    tessedit_pageseg_mode: 3, // Fully automatic page segmentation (better general OCR)
     tessedit_ocr_engine_mode: 1, // LSTM OCR engine only
     tessedit_char_whitelist:
       "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€ ",
@@ -41,43 +41,16 @@ export default function App() {
     }
   };
 
-  // Mild grayscale conversion, no thresholding or upscaling
-  const preprocessCanvas = (canvas) => {
-    const ctx = canvas.getContext("2d");
-    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    for (let i = 0; i < imgData.data.length; i += 4) {
-      const avg = (imgData.data[i] + imgData.data[i + 1] + imgData.data[i + 2]) / 3;
-      imgData.data[i] = avg;
-      imgData.data[i + 1] = avg;
-      imgData.data[i + 2] = avg;
-    }
-    ctx.putImageData(imgData, 0, 0);
-    return canvas;
-  };
-
   const processImage = async (file) => {
     const reader = new FileReader();
     reader.onload = async () => {
-      const img = new Image();
-      img.src = reader.result;
-      img.onload = async () => {
-        const canvas = document.createElement("canvas");
-        canvas.width = img.width;
-        canvas.height = img.height;
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(img, 0, 0);
-        preprocessCanvas(canvas);
-        const dataUrl = canvas.toDataURL("image/png");
-
-        const result = await Tesseract.recognize(dataUrl, "eng+slv", {
-          logger: (m) => console.log(m),
-          ...tesseractConfig,
-        });
-        const fixedText = fixOCRText(result.data.text);
-        setText(fixedText);
-        const parsedData = parseReceipt(fixedText);
-        setParsed(parsedData);
-      };
+      const result = await Tesseract.recognize(reader.result, "eng+slv", {
+        logger: (m) => console.log(m),
+        ...tesseractConfig,
+      });
+      const cleanedText = cleanOCRText(result.data.text);
+      setText(cleanedText);
+      setParsed(parseReceipt(cleanedText));
     };
     reader.readAsDataURL(file);
   };
@@ -99,39 +72,46 @@ export default function App() {
 
         await page.render({ canvasContext: context, viewport }).promise;
 
-        preprocessCanvas(canvas);
-
         const dataUrl = canvas.toDataURL("image/png");
         const result = await Tesseract.recognize(dataUrl, "eng+slv", {
           logger: (m) => console.log(`Page ${i}:`, m),
           ...tesseractConfig,
         });
 
-        fullText += `\n\n--- Page ${i} ---\n` + fixOCRText(result.data.text);
+        fullText += `\n\n--- Page ${i} ---\n` + cleanOCRText(result.data.text);
       }
 
       setText(fullText);
-      const parsedData = parseReceipt(fullText);
-      setParsed(parsedData);
+      setParsed(parseReceipt(fullText));
     };
 
     reader.readAsArrayBuffer(file);
   };
 
-  // Fix typical comma/period confusion for decimals but keep it light
-  function fixOCRText(text) {
-    let fixed = text;
+  // Clean typical OCR errors in text - robust fix for comma/period mistakes and similar
+  function cleanOCRText(text) {
+    let cleaned = text;
 
-    // Remove spaces inside numbers, e.g. "12 345,67" → "12345,67"
-    fixed = fixed.replace(/(\d)\s+(\d)/g, "$1$2");
+    // Remove spaces inside numbers (e.g., "1 234,56" → "1234,56")
+    cleaned = cleaned.replace(/(\d)\s+(\d)/g, "$1$2");
 
-    // Fix commas used as thousand separators to dots or remove if needed
-    // Example: "1,234.56" => "1234.56", "1.234,56" => "1234.56"
-    fixed = fixed.replace(/(\d)[.,](\d{3})[.,](\d{2})/g, (m, p1, p2, p3) => {
-      return `${p1}${p2}.${p3}`; // unify decimal point as dot
-    });
+    // Fix common OCR misreads: letter 'O'/'o' mistaken for zero and vice versa
+    cleaned = cleaned.replace(/(?<=\D)[oO](?=\d)/g, "0");
+    cleaned = cleaned.replace(/(?<=\d)[oO](?=\D)/g, "0");
 
-    return fixed;
+    // Unify decimal separators: if a number has both '.' and ',', assume last separator is decimal
+    cleaned = cleaned.replace(
+      /(\d{1,3})([.,])(\d{3})([.,])(\d{2})/g,
+      (_, g1, sep1, g3, sep2, g5) => {
+        // Remove thousand separator, unify decimal separator to '.'
+        return `${g1}${g3}.${g5}`;
+      }
+    );
+
+    // Fix lone commas used as decimal separator by replacing with dot
+    cleaned = cleaned.replace(/(\d+),(\d{2})(\D|$)/g, "$1.$2$3");
+
+    return cleaned;
   }
 
   function parseReceipt(text) {
@@ -144,14 +124,17 @@ export default function App() {
 
     console.log("Lines:", lines);
 
+    // Find total line with common keywords (English + Slovenian)
     const totalLine = lines.find((l) =>
       /total|skupaj|znesek|skupna vrednost|skupaj z ddv/i.test(l)
     );
     console.log("Total line found:", totalLine);
 
-    const totalMatch = totalLine?.match(/(\d{1,3}(?:[ ,.]?\d{3})*[.,]\d{2})/);
-    const total = totalMatch ? totalMatch[1].replace(/\s/g, "") : null;
+    // Match numbers with optional thousands separator (space, dot, comma) and decimal separator as dot
+    const totalMatch = totalLine?.match(/(\d{1,3}(?:[ ,.]\d{3})*\.\d{2})/);
+    const total = totalMatch ? totalMatch[1].replace(/[ ,]/g, "") : null;
 
+    // Date regex supports dd.mm.yyyy, dd/mm/yyyy, yyyy-mm-dd, etc.
     const dateRegex =
       /(\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{4}[./-]\d{1,2}[./-]\d{1,2})/;
     const dateLine = lines.find((l) => dateRegex.test(l));
@@ -162,11 +145,11 @@ export default function App() {
 
     const items = [];
     for (const line of lines) {
-      const itemMatch = line.match(/(.+?)\s+(\d{1,3}(?:[ ,.]?\d{3})*[.,]\d{2})$/);
+      const itemMatch = line.match(/(.+?)\s+(\d{1,3}(?:[ ,.]\d{3})*\.\d{2})$/);
       if (itemMatch) {
         items.push({
           name: itemMatch[1].trim(),
-          price: itemMatch[2].replace(/\s/g, ""),
+          price: itemMatch[2].replace(/[ ,]/g, ""),
         });
       }
     }
