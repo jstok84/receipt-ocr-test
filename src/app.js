@@ -9,6 +9,12 @@ export default function App() {
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
 
+  const tesseractConfig = {
+    tessedit_pageseg_mode: 6, // Single uniform block of text
+    tessedit_ocr_engine_mode: 1, // LSTM OCR engine only
+    tessedit_char_whitelist: "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€", // Whitelist common chars
+  };
+
   const handleFileUpload = async (event) => {
     const file = event.target.files[0];
     if (!file) return;
@@ -36,6 +42,7 @@ export default function App() {
     reader.onload = async () => {
       const result = await Tesseract.recognize(reader.result, "eng+slv", {
         logger: (m) => console.log(m),
+        ...tesseractConfig,
       });
       setText(result.data.text);
     };
@@ -62,6 +69,7 @@ export default function App() {
         const dataUrl = canvas.toDataURL("image/png");
         const result = await Tesseract.recognize(dataUrl, "eng+slv", {
           logger: (m) => console.log(`Page ${i}:`, m),
+          ...tesseractConfig,
         });
         fullText += `\n\n--- Page ${i} ---\n${result.data.text}`;
       }
