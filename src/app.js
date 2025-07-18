@@ -31,7 +31,7 @@ export default function App() {
 
   return (
     <div style={{ padding: "2rem", fontFamily: "sans-serif" }}>
-      <h1>🧾 Receipt OCR Test</h1>
+      <h1>🧾 Receipt OCR Test +1</h1>
       <input type="file" accept="image/*" onChange={handleImageUpload} />
       <p>{loading ? "Processing OCR..." : text}</p>
     </div>
