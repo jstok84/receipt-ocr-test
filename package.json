@@ -9,7 +9,7 @@
     "tesseract.js": "^4.0.2"
   },
   "scripts": {
-    "start": "parcel public/index.html --open",
-    "build": "parcel build public/index.html --dist-dir docs"
+    "start": "parcel src/index.html --open",
+    "build": "parcel build src/index.html --dist-dir docs"
   }
 }
