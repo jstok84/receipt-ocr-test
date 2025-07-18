@@ -115,6 +115,7 @@ export default function App() {
       "grand total",
       "end sum",
       "total price",
+      "za plačilo",
     ];
 
     // Find total line by keywords (case insensitive)
@@ -124,9 +125,13 @@ export default function App() {
 
     console.log("Total line found:", totalLine);
 
-    // Match number with decimal separator (comma or dot)
-    const totalMatch = totalLine?.match(/(\d+[.,]\d{2})/);
-    const total = totalMatch ? totalMatch[1] : null;
+    // Match number with optional thousands separators, optional decimals, optional currency (EUR, USD, $, €)
+    const totalMatch = totalLine?.match(
+      /(\d{1,3}(?:[ ,.]?\d{3})*(?:[.,]\d{2})?)\s*(EUR|USD|\$|€)?/i
+    );
+
+    let total = totalMatch ? totalMatch[1].replace(/\s/g, "") : null;
+    if (totalMatch && totalMatch[2]) total += " " + totalMatch[2].toUpperCase();
 
     // Date regex supporting dd.mm.yyyy, dd/mm/yyyy, yyyy-mm-dd, dd-mm-yyyy
     const dateRegex =
@@ -137,12 +142,17 @@ export default function App() {
     const dateMatch = dateLine?.match(dateRegex);
     const date = dateMatch ? dateMatch[1] : null;
 
-    // Extract items - lines ending with a price (number with decimal)
+    // Extract items - lines ending with a price with optional currency
     const items = [];
     for (const line of lines) {
-      const itemMatch = line.match(/(.+?)\s+(\d+[.,]\d{2})$/);
+      const itemMatch = line.match(
+        /(.+?)\s+(\d{1,3}(?:[ ,.]?\d{3})*(?:[.,]\d{2})?)\s*(EUR|USD|\$|€)?$/i
+      );
       if (itemMatch) {
-        items.push({ name: itemMatch[1].trim(), price: itemMatch[2] });
+        let price = itemMatch[2].replace(/\s/g, "");
+        if (itemMatch[3]) price += " " + itemMatch[3].toUpperCase();
+
+        items.push({ name: itemMatch[1].trim(), price });
       }
     }
 
