@@ -7,12 +7,14 @@ GlobalWorkerOptions.workerSrc = pdfWorker;
 
 export default function App() {
   const [text, setText] = useState("");
+  const [parsed, setParsed] = useState(null);
   const [loading, setLoading] = useState(false);
 
   const tesseractConfig = {
     tessedit_pageseg_mode: 6, // Single uniform block of text
     tessedit_ocr_engine_mode: 1, // LSTM OCR engine only
-    tessedit_char_whitelist: "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€", // Whitelist common chars
+    tessedit_char_whitelist:
+      "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€",
   };
 
   const handleFileUpload = async (event) => {
@@ -22,6 +24,7 @@ export default function App() {
     const isPDF = file.type === "application/pdf";
     setLoading(true);
     setText("Processing file...");
+    setParsed(null);
 
     try {
       if (isPDF) {
@@ -32,6 +35,7 @@ export default function App() {
     } catch (error) {
       console.error("OCR error:", error);
       setText("Error during OCR!");
+      setParsed(null);
     } finally {
       setLoading(false);
     }
@@ -45,6 +49,7 @@ export default function App() {
         ...tesseractConfig,
       });
       setText(result.data.text);
+      setParsed(parseReceipt(result.data.text));
     };
     reader.readAsDataURL(file);
   };
@@ -75,16 +80,73 @@ export default function App() {
       }
 
       setText(fullText);
+      setParsed(parseReceipt(fullText));
     };
 
     reader.readAsArrayBuffer(file);
   };
+
+  // Basic receipt parsing
+  function parseReceipt(text) {
+    const lines = text
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    // Find total line (English + Slovenian keywords)
+    const totalLine = lines.find((l) =>
+      /total|skupaj|znesek|skupna vrednost/i.test(l)
+    );
+    const totalMatch = totalLine?.match(/(\d+[.,]\d{2})/);
+    const total = totalMatch ? totalMatch[1] : null;
+
+    // Find date line (simple date regex dd.mm.yyyy or dd/mm/yyyy)
+    const dateRegex = /(\d{1,2}[./]\d{1,2}[./]\d{2,4})/;
+    const dateLine = lines.find((l) => dateRegex.test(l));
+    const dateMatch = dateLine?.match(dateRegex);
+    const date = dateMatch ? dateMatch[1] : null;
+
+    // Extract items - lines ending with a price
+    const items = [];
+    for (const line of lines) {
+      const itemMatch = line.match(/(.+?)\s+(\d+[.,]\d{2})$/);
+      if (itemMatch) {
+        items.push({ name: itemMatch[1].trim(), price: itemMatch[2] });
+      }
+    }
+
+    return { date, total, items };
+  }
 
   return (
     <div style={{ padding: "2rem", fontFamily: "sans-serif" }}>
       <h1>🧾 Receipt OCR (Image + PDF)</h1>
       <input type="file" accept="image/*,.pdf" onChange={handleFileUpload} />
       <p>{loading ? "Processing OCR..." : text}</p>
+
+      {parsed && (
+        <div style={{ marginTop: "2rem" }}>
+          <h2>Parsed Data</h2>
+          <p>
+            <strong>Date:</strong> {parsed.date || "Not found"}
+          </p>
+          <p>
+            <strong>Total:</strong> {parsed.total || "Not found"}
+          </p>
+          <h3>Items:</h3>
+          {parsed.items.length ? (
+            <ul>
+              {parsed.items.map((item, i) => (
+                <li key={i}>
+                  {item.name} — {item.price}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>No items detected</p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
