@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import Tesseract from "tesseract.js";
-import pdfWorker from "./pdf-worker.js"; // local worker wrapper
 import { GlobalWorkerOptions, getDocument } from "pdfjs-dist";
+import pdfWorker from "pdfjs-dist/build/pdf.worker.js";
 
 GlobalWorkerOptions.workerSrc = pdfWorker;
 
@@ -34,7 +34,7 @@ export default function App() {
   const processImage = async (file) => {
     const reader = new FileReader();
     reader.onload = async () => {
-      const result = await Tesseract.recognize(reader.result, "eng", {
+      const result = await Tesseract.recognize(reader.result, "eng+slv", {
         logger: (m) => console.log(m),
       });
       setText(result.data.text);
@@ -60,7 +60,7 @@ export default function App() {
         await page.render({ canvasContext: context, viewport }).promise;
 
         const dataUrl = canvas.toDataURL("image/png");
-        const result = await Tesseract.recognize(dataUrl, "eng", {
+        const result = await Tesseract.recognize(dataUrl, "eng+slv", {
           logger: (m) => console.log(`Page ${i}:`, m),
         });
         fullText += `\n\n--- Page ${i} ---\n${result.data.text}`;
