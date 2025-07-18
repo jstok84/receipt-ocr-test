@@ -17,6 +17,25 @@ export default function App() {
       "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€",
   };
 
+  // Preprocess canvas: grayscale + simple threshold
+  const preprocessCanvas = (canvas) => {
+    const ctx = canvas.getContext("2d");
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imageData.data;
+
+    for (let i = 0; i < data.length; i += 4) {
+      // grayscale
+      const avg = (data[i] + data[i + 1] + data[i + 2]) / 3;
+      // threshold
+      const threshold = 128;
+      const val = avg > threshold ? 255 : 0;
+      data[i] = data[i + 1] = data[i + 2] = val;
+    }
+
+    ctx.putImageData(imageData, 0, 0);
+    return canvas;
+  };
+
   const handleFileUpload = async (event) => {
     const file = event.target.files[0];
     if (!file) return;
@@ -44,13 +63,29 @@ export default function App() {
   const processImage = async (file) => {
     const reader = new FileReader();
     reader.onload = async () => {
-      const result = await Tesseract.recognize(reader.result, "eng+slv", {
-        logger: (m) => console.log(m),
-        ...tesseractConfig,
-      });
-      setText(result.data.text);
-      const parsedData = parseReceipt(result.data.text);
-      setParsed(parsedData);
+      // Create canvas from image to preprocess it
+      const img = new Image();
+      img.onload = async () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0);
+
+        preprocessCanvas(canvas);
+
+        const dataUrl = canvas.toDataURL("image/png");
+
+        const result = await Tesseract.recognize(dataUrl, "eng+slv", {
+          logger: (m) => console.log(m),
+          ...tesseractConfig,
+        });
+
+        setText(result.data.text);
+        const parsedData = parseReceipt(result.data.text);
+        setParsed(parsedData);
+      };
+      img.src = reader.result;
     };
     reader.readAsDataURL(file);
   };
@@ -71,6 +106,8 @@ export default function App() {
         canvas.height = viewport.height;
 
         await page.render({ canvasContext: context, viewport }).promise;
+
+        preprocessCanvas(canvas);
 
         const dataUrl = canvas.toDataURL("image/png");
         const result = await Tesseract.recognize(dataUrl, "eng+slv", {
