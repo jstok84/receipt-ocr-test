@@ -88,7 +88,7 @@ export default function App() {
     reader.readAsArrayBuffer(file);
   };
 
-  // Basic receipt parsing with debug logs
+  // Basic receipt parsing with expanded keywords and improved regex
   function parseReceipt(text) {
     console.log("Parsing OCR text:", text);
 
@@ -99,24 +99,45 @@ export default function App() {
 
     console.log("Lines:", lines);
 
-    // Find total line (English + Slovenian keywords)
+    // Expanded total keywords in English and Slovenian
+    const totalKeywords = [
+      "total",
+      "skupaj",
+      "znesek",
+      "skupna vrednost",
+      "skupaj z ddv",
+      "znesek za plačilo",
+      "končni znesek",
+      "skupaj znesek",
+      "amount",
+      "total amount",
+      "sum",
+      "grand total",
+      "end sum",
+      "total price",
+    ];
+
+    // Find total line by keywords (case insensitive)
     const totalLine = lines.find((l) =>
-      /total|skupaj|znesek|skupna vrednost|skupaj z ddv/i.test(l)
+      totalKeywords.some((kw) => l.toLowerCase().includes(kw))
     );
+
     console.log("Total line found:", totalLine);
 
+    // Match number with decimal separator (comma or dot)
     const totalMatch = totalLine?.match(/(\d+[.,]\d{2})/);
     const total = totalMatch ? totalMatch[1] : null;
 
-    // Find date line (simple date regex dd.mm.yyyy or dd/mm/yyyy)
-    const dateRegex = /(\d{1,2}[./]\d{1,2}[./]\d{2,4})/;
+    // Date regex supporting dd.mm.yyyy, dd/mm/yyyy, yyyy-mm-dd, dd-mm-yyyy
+    const dateRegex =
+      /(\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{4}[./-]\d{1,2}[./-]\d{1,2})/;
     const dateLine = lines.find((l) => dateRegex.test(l));
     console.log("Date line found:", dateLine);
 
     const dateMatch = dateLine?.match(dateRegex);
     const date = dateMatch ? dateMatch[1] : null;
 
-    // Extract items - lines ending with a price
+    // Extract items - lines ending with a price (number with decimal)
     const items = [];
     for (const line of lines) {
       const itemMatch = line.match(/(.+?)\s+(\d+[.,]\d{2})$/);
