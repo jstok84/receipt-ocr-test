@@ -49,7 +49,8 @@ export default function App() {
         ...tesseractConfig,
       });
       setText(result.data.text);
-      setParsed(parseReceipt(result.data.text));
+      const parsedData = parseReceipt(result.data.text);
+      setParsed(parsedData);
     };
     reader.readAsDataURL(file);
   };
@@ -80,29 +81,38 @@ export default function App() {
       }
 
       setText(fullText);
-      setParsed(parseReceipt(fullText));
+      const parsedData = parseReceipt(fullText);
+      setParsed(parsedData);
     };
 
     reader.readAsArrayBuffer(file);
   };
 
-  // Basic receipt parsing
+  // Basic receipt parsing with debug logs
   function parseReceipt(text) {
+    console.log("Parsing OCR text:", text);
+
     const lines = text
       .split("\n")
       .map((l) => l.trim())
       .filter(Boolean);
 
+    console.log("Lines:", lines);
+
     // Find total line (English + Slovenian keywords)
     const totalLine = lines.find((l) =>
-      /total|skupaj|znesek|skupna vrednost/i.test(l)
+      /total|skupaj|znesek|skupna vrednost|skupaj z ddv/i.test(l)
     );
+    console.log("Total line found:", totalLine);
+
     const totalMatch = totalLine?.match(/(\d+[.,]\d{2})/);
     const total = totalMatch ? totalMatch[1] : null;
 
     // Find date line (simple date regex dd.mm.yyyy or dd/mm/yyyy)
     const dateRegex = /(\d{1,2}[./]\d{1,2}[./]\d{2,4})/;
     const dateLine = lines.find((l) => dateRegex.test(l));
+    console.log("Date line found:", dateLine);
+
     const dateMatch = dateLine?.match(dateRegex);
     const date = dateMatch ? dateMatch[1] : null;
 
@@ -115,6 +125,8 @@ export default function App() {
       }
     }
 
+    console.log("Parsed items:", items);
+
     return { date, total, items };
   }
 
@@ -122,7 +134,13 @@ export default function App() {
     <div style={{ padding: "2rem", fontFamily: "sans-serif" }}>
       <h1>🧾 Receipt OCR (Image + PDF)</h1>
       <input type="file" accept="image/*,.pdf" onChange={handleFileUpload} />
-      <p>{loading ? "Processing OCR..." : text}</p>
+      <p>{loading ? "Processing OCR..." : null}</p>
+
+      <textarea
+        style={{ width: "100%", height: "200px", marginTop: "1rem" }}
+        value={text}
+        readOnly
+      />
 
       {parsed && (
         <div style={{ marginTop: "2rem" }}>
