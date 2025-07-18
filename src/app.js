@@ -10,6 +10,8 @@ export default function App() {
   const [parsed, setParsed] = useState(null);
   const [loading, setLoading] = useState(false);
   const [useCamera, setUseCamera] = useState(false);
+  const [cameraAvailable, setCameraAvailable] = useState(false);
+  const [capturedImage, setCapturedImage] = useState(null);
   const videoRef = useRef(null);
 
   const tesseractConfig = {
@@ -18,6 +20,38 @@ export default function App() {
     tessedit_char_whitelist:
       "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€",
   };
+
+  useEffect(() => {
+    navigator.mediaDevices
+      .enumerateDevices()
+      .then((devices) => {
+        const hasCamera = devices.some((d) => d.kind === "videoinput");
+        setCameraAvailable(hasCamera);
+      });
+  }, []);
+
+  useEffect(() => {
+    if (useCamera && cameraAvailable) {
+      navigator.mediaDevices
+        .getUserMedia({ video: { facingMode: { ideal: "environment" } } })
+        .then((stream) => {
+          if (videoRef.current) {
+            videoRef.current.srcObject = stream;
+          }
+        })
+        .catch((err) => {
+          console.warn("Fallback to default camera", err);
+          return navigator.mediaDevices.getUserMedia({ video: true });
+        })
+        .then((fallbackStream) => {
+          if (videoRef.current && fallbackStream) {
+            videoRef.current.srcObject = fallbackStream;
+          }
+        });
+    } else if (videoRef.current?.srcObject) {
+      videoRef.current.srcObject.getTracks().forEach((track) => track.stop());
+    }
+  }, [useCamera, cameraAvailable]);
 
   const handleFileUpload = async (event) => {
     const file = event.target.files[0];
@@ -62,7 +96,7 @@ export default function App() {
       let fullText = "";
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
-        const viewport = page.getViewport({ scale: 2 });
+        const viewport = page.getViewport({ scale: 3 });
         const canvas = document.createElement("canvas");
         const context = canvas.getContext("2d");
         canvas.width = viewport.width;
@@ -80,6 +114,36 @@ export default function App() {
       setParsed(parsedData);
     };
     reader.readAsArrayBuffer(file);
+  };
+
+  const captureAndProcess = async () => {
+    if (!videoRef.current) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = videoRef.current.videoWidth;
+    canvas.height = videoRef.current.videoHeight;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(videoRef.current, 0, 0);
+    const dataUrl = canvas.toDataURL("image/png");
+    setCapturedImage(dataUrl);
+
+    setText("Processing captured image...");
+    setLoading(true);
+    setParsed(null);
+
+    try {
+      const result = await Tesseract.recognize(dataUrl, "eng+slv", {
+        logger: (m) => console.log(m),
+        ...tesseractConfig,
+      });
+      setText(result.data.text);
+      const parsedData = parseReceipt(result.data.text);
+      setParsed(parsedData);
+    } catch (error) {
+      console.error("OCR error:", error);
+      setText("Error during OCR!");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const parseReceipt = (text) => {
@@ -138,32 +202,6 @@ export default function App() {
     return { date, total, items };
   };
 
-  useEffect(() => {
-    if (useCamera) {
-      navigator.mediaDevices
-        .getUserMedia({
-          video: { facingMode: { exact: "environment" } },
-        })
-        .then((stream) => {
-          if (videoRef.current) {
-            videoRef.current.srcObject = stream;
-          }
-        })
-        .catch((err) => {
-          console.warn("Rear camera failed, fallback to default", err);
-          navigator.mediaDevices
-            .getUserMedia({ video: true })
-            .then((stream) => {
-              if (videoRef.current) {
-                videoRef.current.srcObject = stream;
-              }
-            });
-        });
-    } else if (videoRef.current?.srcObject) {
-      videoRef.current.srcObject.getTracks().forEach((track) => track.stop());
-    }
-  }, [useCamera]);
-
   return (
     <div style={styles.container}>
       <h1 style={styles.header}>📷 OCR Receipt Scanner</h1>
@@ -175,18 +213,40 @@ export default function App() {
           onChange={handleFileUpload}
           style={styles.input}
         />
-        <button onClick={() => setUseCamera(!useCamera)} style={styles.button}>
-          {useCamera ? "Stop Camera" : "Use Camera"}
-        </button>
+
+        {cameraAvailable && (
+          <button
+            onClick={() => setUseCamera(!useCamera)}
+            style={styles.button}
+          >
+            {useCamera ? "Stop Camera" : "Use Camera"}
+          </button>
+        )}
       </div>
 
       {useCamera && (
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          style={styles.videoPreview}
-        />
+        <>
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            style={styles.videoPreview}
+          />
+          <button onClick={captureAndProcess} style={styles.captureButton}>
+            📸 Capture & Process
+          </button>
+        </>
+      )}
+
+      {capturedImage && (
+        <div style={{ marginTop: "1rem" }}>
+          <h4>Captured Image</h4>
+          <img
+            src={capturedImage}
+            alt="Captured preview"
+            style={{ width: "100%", borderRadius: "8px" }}
+          />
+        </div>
       )}
 
       <p>{loading ? "Processing OCR..." : null}</p>
@@ -201,8 +261,12 @@ export default function App() {
       {parsed && (
         <div style={styles.parsedSection}>
           <h2>Parsed Data</h2>
-          <p><strong>Date:</strong> {parsed.date || "Not found"}</p>
-          <p><strong>Total:</strong> {parsed.total || "Not found"}</p>
+          <p>
+            <strong>Date:</strong> {parsed.date || "Not found"}
+          </p>
+          <p>
+            <strong>Total:</strong> {parsed.total || "Not found"}
+          </p>
           <h3>Items:</h3>
           {parsed.items.length ? (
             <ul>
@@ -249,6 +313,16 @@ const styles = {
     color: "white",
     border: "none",
     borderRadius: "6px",
+    cursor: "pointer",
+  },
+  captureButton: {
+    padding: "0.75rem",
+    fontSize: "1rem",
+    backgroundColor: "#28a745",
+    color: "white",
+    border: "none",
+    borderRadius: "6px",
+    marginTop: "0.5rem",
     cursor: "pointer",
   },
   videoPreview: {
