@@ -1,9 +1,9 @@
 import React, { useState } from "react";
 import Tesseract from "tesseract.js";
-import * as pdfjsLib from "pdfjs-dist/build/pdf";
-import pdfWorker from "pdfjs-dist/build/pdf.worker.entry";
+import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
+import pdfWorker from "./pdf-worker.js"; // ✅ local worker import
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
+GlobalWorkerOptions.workerSrc = pdfWorker;
 
 export default function App() {
   const [text, setText] = useState("");
@@ -14,7 +14,6 @@ export default function App() {
     if (!file) return;
 
     const isPDF = file.type === "application/pdf";
-
     setLoading(true);
     setText("Processing file...");
 
@@ -46,7 +45,7 @@ export default function App() {
   const processPDF = async (file) => {
     const reader = new FileReader();
     reader.onload = async () => {
-      const pdf = await pdfjsLib.getDocument({ data: reader.result }).promise;
+      const pdf = await getDocument({ data: reader.result }).promise;
       let fullText = "";
 
       for (let i = 1; i <= pdf.numPages; i++) {
