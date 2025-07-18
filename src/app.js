@@ -63,7 +63,7 @@ export default function App() {
 
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
-        const viewport = page.getViewport({ scale: 2 });
+        const viewport = page.getViewport({ scale: 3 });
         const canvas = document.createElement("canvas");
         const context = canvas.getContext("2d");
 
