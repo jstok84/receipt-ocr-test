@@ -24,14 +24,27 @@ export default function App() {
   useEffect(() => {
     if (useCamera) {
       navigator.mediaDevices
-        .getUserMedia({ video: true })
+        .getUserMedia({
+          video: {
+            facingMode: { exact: "environment" }, // request back camera
+          },
+        })
         .then((stream) => {
           if (videoRef.current) {
             videoRef.current.srcObject = stream;
           }
         })
         .catch((err) => {
-          console.error("Camera access denied:", err);
+          console.warn("Could not access rear camera, falling back to default:", err);
+          // fallback to default (e.g. front camera) if rear is not available
+          navigator.mediaDevices
+            .getUserMedia({ video: true })
+            .then((stream) => {
+              if (videoRef.current) {
+                videoRef.current.srcObject = stream;
+              }
+            })
+            .catch((e) => console.error("Camera access failed completely:", e));
         });
     } else {
       if (videoRef.current?.srcObject) {
@@ -39,6 +52,7 @@ export default function App() {
       }
     }
   }, [useCamera]);
+
 
   const captureFromCamera = () => {
     const video = videoRef.current;
