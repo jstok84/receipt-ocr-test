@@ -21,7 +21,7 @@ jobs:
         run: npm install
 
       - name: Build app with Parcel v2
-        run: npx parcel build public/index.html --dist-dir docs
+        run: npx parcel build src/index.html --dist-dir docs
 
       - name: Add .nojekyll file to docs
         run: echo > docs/.nojekyll
