@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import Tesseract from "tesseract.js";
 import { GlobalWorkerOptions, getDocument } from "pdfjs-dist";
 import pdfWorker from "pdfjs-dist/build/pdf.worker.js";
@@ -10,9 +10,7 @@ export default function App() {
   const [parsed, setParsed] = useState(null);
   const [loading, setLoading] = useState(false);
   const [useCamera, setUseCamera] = useState(false);
-
   const videoRef = useRef(null);
-  const canvasRef = useRef(null);
 
   const tesseractConfig = {
     tessedit_pageseg_mode: 6,
@@ -21,64 +19,15 @@ export default function App() {
       "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€",
   };
 
-  useEffect(() => {
-    if (useCamera) {
-      navigator.mediaDevices
-        .getUserMedia({
-          video: {
-            facingMode: { exact: "environment" }, // request back camera
-          },
-        })
-        .then((stream) => {
-          if (videoRef.current) {
-            videoRef.current.srcObject = stream;
-          }
-        })
-        .catch((err) => {
-          console.warn("Could not access rear camera, falling back to default:", err);
-          // fallback to default (e.g. front camera) if rear is not available
-          navigator.mediaDevices
-            .getUserMedia({ video: true })
-            .then((stream) => {
-              if (videoRef.current) {
-                videoRef.current.srcObject = stream;
-              }
-            })
-            .catch((e) => console.error("Camera access failed completely:", e));
-        });
-    } else {
-      if (videoRef.current?.srcObject) {
-        videoRef.current.srcObject.getTracks().forEach((track) => track.stop());
-      }
-    }
-  }, [useCamera]);
-
-
-  const captureFromCamera = () => {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!video || !canvas) return;
-
-    const context = canvas.getContext("2d");
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-
-    context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const dataURL = canvas.toDataURL("image/png");
-    processImageDataURL(dataURL);
-  };
-
   const handleFileUpload = async (event) => {
     const file = event.target.files[0];
     if (!file) return;
-
-    const isPDF = file.type === "application/pdf";
     setLoading(true);
     setText("Processing file...");
     setParsed(null);
 
     try {
-      if (isPDF) {
+      if (file.type === "application/pdf") {
         await processPDF(file);
       } else {
         await processImage(file);
@@ -92,26 +41,17 @@ export default function App() {
     }
   };
 
-  const processImageDataURL = async (dataURL) => {
-    setLoading(true);
-    setText("Processing image...");
-    setParsed(null);
-
-    const result = await Tesseract.recognize(dataURL, "eng+slv", {
-      logger: (m) => console.log(m),
-      ...tesseractConfig,
-    });
-
-    const rawText = result.data.text;
-    setText(rawText);
-    const parsedData = parseReceipt(rawText);
-    setParsed(parsedData);
-    setLoading(false);
-  };
-
   const processImage = async (file) => {
     const reader = new FileReader();
-    reader.onload = () => processImageDataURL(reader.result);
+    reader.onload = async () => {
+      const result = await Tesseract.recognize(reader.result, "eng+slv", {
+        logger: (m) => console.log(m),
+        ...tesseractConfig,
+      });
+      setText(result.data.text);
+      const parsedData = parseReceipt(result.data.text);
+      setParsed(parsedData);
+    };
     reader.readAsDataURL(file);
   };
 
@@ -120,18 +60,14 @@ export default function App() {
     reader.onload = async () => {
       const pdf = await getDocument({ data: reader.result }).promise;
       let fullText = "";
-
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
-        const viewport = page.getViewport({ scale: 3 }); // better OCR resolution
+        const viewport = page.getViewport({ scale: 2 });
         const canvas = document.createElement("canvas");
         const context = canvas.getContext("2d");
-
         canvas.width = viewport.width;
         canvas.height = viewport.height;
-
         await page.render({ canvasContext: context, viewport }).promise;
-
         const dataUrl = canvas.toDataURL("image/png");
         const result = await Tesseract.recognize(dataUrl, "eng+slv", {
           logger: (m) => console.log(`Page ${i}:`, m),
@@ -139,17 +75,14 @@ export default function App() {
         });
         fullText += `\n\n--- Page ${i} ---\n${result.data.text}`;
       }
-
       setText(fullText);
       const parsedData = parseReceipt(fullText);
       setParsed(parsedData);
-      setLoading(false);
     };
-
     reader.readAsArrayBuffer(file);
   };
 
-  function parseReceipt(text) {
+  const parseReceipt = (text) => {
     const lines = text
       .split("\n")
       .map((l) => l.trim())
@@ -180,6 +113,7 @@ export default function App() {
     const totalMatch = totalLine?.match(
       /(\d{1,3}(?:[ ,.]?\d{3})*(?:[.,]\d{2})?)\s*(EUR|USD|\$|€)?/i
     );
+
     let total = totalMatch ? totalMatch[1].replace(/\s/g, "") : null;
     if (totalMatch && totalMatch[2]) total += " " + totalMatch[2].toUpperCase();
 
@@ -202,55 +136,73 @@ export default function App() {
     }
 
     return { date, total, items };
-  }
+  };
+
+  useEffect(() => {
+    if (useCamera) {
+      navigator.mediaDevices
+        .getUserMedia({
+          video: { facingMode: { exact: "environment" } },
+        })
+        .then((stream) => {
+          if (videoRef.current) {
+            videoRef.current.srcObject = stream;
+          }
+        })
+        .catch((err) => {
+          console.warn("Rear camera failed, fallback to default", err);
+          navigator.mediaDevices
+            .getUserMedia({ video: true })
+            .then((stream) => {
+              if (videoRef.current) {
+                videoRef.current.srcObject = stream;
+              }
+            });
+        });
+    } else if (videoRef.current?.srcObject) {
+      videoRef.current.srcObject.getTracks().forEach((track) => track.stop());
+    }
+  }, [useCamera]);
 
   return (
-    <div style={{ padding: "2rem", fontFamily: "sans-serif" }}>
-      <h1>🧾 Receipt OCR (Image, PDF & Camera)</h1>
+    <div style={styles.container}>
+      <h1 style={styles.header}>📷 OCR Receipt Scanner</h1>
 
-      <div style={{ marginBottom: "1rem" }}>
-        <label>
-          <input
-            type="checkbox"
-            checked={useCamera}
-            onChange={() => setUseCamera(!useCamera)}
-          />{" "}
-          Use Camera
-        </label>
+      <div style={styles.controls}>
+        <input
+          type="file"
+          accept="image/*,.pdf"
+          onChange={handleFileUpload}
+          style={styles.input}
+        />
+        <button onClick={() => setUseCamera(!useCamera)} style={styles.button}>
+          {useCamera ? "Stop Camera" : "Use Camera"}
+        </button>
       </div>
 
-      {useCamera ? (
-        <>
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            style={{ width: "100%", maxHeight: "300px", border: "1px solid #ccc" }}
-          />
-          <button onClick={captureFromCamera} disabled={loading} style={{ marginTop: "1rem" }}>
-            {loading ? "Processing..." : "Capture & Process"}
-          </button>
-          <canvas ref={canvasRef} style={{ display: "none" }} />
-        </>
-      ) : (
-        <input type="file" accept="image/*,.pdf" onChange={handleFileUpload} />
+      {useCamera && (
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          style={styles.videoPreview}
+        />
       )}
 
+      <p>{loading ? "Processing OCR..." : null}</p>
+
       <textarea
-        style={{ width: "100%", height: "200px", marginTop: "1rem" }}
+        style={styles.textarea}
         value={text}
         readOnly
+        placeholder="OCR result will appear here..."
       />
 
       {parsed && (
-        <div style={{ marginTop: "2rem" }}>
+        <div style={styles.parsedSection}>
           <h2>Parsed Data</h2>
-          <p>
-            <strong>Date:</strong> {parsed.date || "Not found"}
-          </p>
-          <p>
-            <strong>Total:</strong> {parsed.total || "Not found"}
-          </p>
+          <p><strong>Date:</strong> {parsed.date || "Not found"}</p>
+          <p><strong>Total:</strong> {parsed.total || "Not found"}</p>
           <h3>Items:</h3>
           {parsed.items.length ? (
             <ul>
@@ -268,3 +220,51 @@ export default function App() {
     </div>
   );
 }
+
+const styles = {
+  container: {
+    padding: "1rem",
+    fontFamily: "sans-serif",
+    maxWidth: 600,
+    margin: "auto",
+  },
+  header: {
+    fontSize: "1.5rem",
+    textAlign: "center",
+    marginBottom: "1rem",
+  },
+  controls: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "0.5rem",
+    marginBottom: "1rem",
+  },
+  input: {
+    fontSize: "1rem",
+  },
+  button: {
+    padding: "0.75rem",
+    fontSize: "1rem",
+    backgroundColor: "#007bff",
+    color: "white",
+    border: "none",
+    borderRadius: "6px",
+    cursor: "pointer",
+  },
+  videoPreview: {
+    width: "100%",
+    maxHeight: "300px",
+    borderRadius: "8px",
+    objectFit: "cover",
+    marginTop: "1rem",
+  },
+  textarea: {
+    width: "100%",
+    height: "180px",
+    marginTop: "1rem",
+    fontSize: "1rem",
+  },
+  parsedSection: {
+    marginTop: "2rem",
+  },
+};
