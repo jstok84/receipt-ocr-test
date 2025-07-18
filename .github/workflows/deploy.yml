@@ -1,9 +1,9 @@
-name: Deploy React App to GitHub Pages
+name: Deploy React App to GitHub Pages with Debug Logs
 
 on:
   push:
     branches:
-      - main  # or your default branch
+      - main  # change if needed
 
 jobs:
   build-and-deploy:
@@ -18,14 +18,32 @@ jobs:
         with:
           node-version: '18'
 
-      - name: Install dependencies
-        run: npm install
+      - name: Show Node & npm versions
+        run: |
+          node -v
+          npm -v
 
-      - name: Build app with Parcel
-        run: npx parcel build src/index.html --dist-dir docs --public-url /receipt-ocr-test/
+      - name: Install dependencies
+        run: |
+          npm install
+          echo "Files after npm install:"
+          ls -lah
+          ls -lah node_modules
+
+      - name: Build app with Parcel (verbose)
+        run: |
+          npx parcel build src/index.html --dist-dir docs --public-url /receipt-ocr-test/ --log-level verbose
+          echo "Files after build:"
+          ls -lah docs
+
+      - name: Show first 20 lines of index.html
+        run: head -20 docs/index.html
 
       - name: Create .nojekyll file to disable Jekyll on GitHub Pages
         run: echo > docs/.nojekyll
+
+      - name: Show docs folder before deploy
+        run: ls -Rlah docs
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
