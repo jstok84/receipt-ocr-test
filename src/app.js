@@ -11,7 +11,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
 
   const tesseractConfig = {
-    tessedit_pageseg_mode: 6, // Single uniform block of text
+    tessedit_pageseg_mode: 3, // Fully automatic page segmentation
     tessedit_ocr_engine_mode: 1, // LSTM OCR engine only
     tessedit_char_whitelist:
       "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€ ",
@@ -41,16 +41,47 @@ export default function App() {
     }
   };
 
+  // Preprocess canvas: simple threshold to enhance contrast
+  const preprocessCanvas = (canvas) => {
+    const ctx = canvas.getContext("2d");
+    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    for (let i = 0; i < imgData.data.length; i += 4) {
+      // grayscale average
+      const avg = (imgData.data[i] + imgData.data[i + 1] + imgData.data[i + 2]) / 3;
+      // threshold value, tweak 140 if needed
+      const val = avg > 140 ? 255 : 0;
+      imgData.data[i] = val;
+      imgData.data[i + 1] = val;
+      imgData.data[i + 2] = val;
+    }
+    ctx.putImageData(imgData, 0, 0);
+    return canvas;
+  };
+
   const processImage = async (file) => {
     const reader = new FileReader();
     reader.onload = async () => {
-      const result = await Tesseract.recognize(reader.result, "eng+slv", {
-        logger: (m) => console.log(m),
-        ...tesseractConfig,
-      });
-      setText(result.data.text);
-      const parsedData = parseReceipt(result.data.text);
-      setParsed(parsedData);
+      const img = new Image();
+      img.src = reader.result;
+      img.onload = async () => {
+        // create canvas and preprocess
+        const canvas = document.createElement("canvas");
+        canvas.width = img.width * 2; // upscale for better OCR
+        canvas.height = img.height * 2;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        preprocessCanvas(canvas);
+        const dataUrl = canvas.toDataURL("image/png");
+
+        const result = await Tesseract.recognize(dataUrl, "eng+slv", {
+          logger: (m) => console.log(m),
+          ...tesseractConfig,
+        });
+        const fixedText = fixOCRText(result.data.text);
+        setText(fixedText);
+        const parsedData = parseReceipt(fixedText);
+        setParsed(parsedData);
+      };
     };
     reader.readAsDataURL(file);
   };
@@ -72,12 +103,15 @@ export default function App() {
 
         await page.render({ canvasContext: context, viewport }).promise;
 
+        preprocessCanvas(canvas);
+
         const dataUrl = canvas.toDataURL("image/png");
         const result = await Tesseract.recognize(dataUrl, "eng+slv", {
           logger: (m) => console.log(`Page ${i}:`, m),
           ...tesseractConfig,
         });
-        fullText += `\n\n--- Page ${i} ---\n${result.data.text}`;
+
+        fullText += `\n\n--- Page ${i} ---\n` + fixOCRText(result.data.text);
       }
 
       setText(fullText);
@@ -88,7 +122,25 @@ export default function App() {
     reader.readAsArrayBuffer(file);
   };
 
-  // Improved receipt parsing with debug logs
+  // Post-process OCR text to fix common comma/decimal OCR issues
+  function fixOCRText(text) {
+    let fixed = text;
+
+    // Fix common OCR mistakes for decimal separators:
+    // Replace commas mistaken for periods and vice versa, but carefully:
+    // Example: Replace "12 345,67" or "12345.67" → standardized "12345.67"
+    fixed = fixed.replace(/(\d)[ ]+(\d{3}[.,]\d{2})/g, "$1$2"); // remove spaces inside numbers
+    fixed = fixed.replace(/(\d)[.,](\d{3})[.,](\d{2})/g, "$1,$2.$3"); // e.g. fix weird thousand separators
+
+    // Remove extra spaces near commas or dots in numbers
+    fixed = fixed.replace(/(\d)[ ]+([.,])[ ]+(\d)/g, "$1$2$3");
+
+    // Other fixes could be added depending on your input
+
+    return fixed;
+  }
+
+  // Receipt parsing (same as your improved version)
   function parseReceipt(text) {
     console.log("Parsing OCR text:", text);
 
