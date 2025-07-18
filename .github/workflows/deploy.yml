@@ -23,6 +23,12 @@ jobs:
       - name: Build app with Parcel v2
         run: npx parcel build public/index.html --dist-dir docs
 
+      - name: Add .nojekyll file to docs
+        run: echo > docs/.nojekyll
+
+      - name: Show output structure
+        run: ls -R docs
+
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
