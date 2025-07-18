@@ -11,10 +11,10 @@ export default function App() {
   const [loading, setLoading] = useState(false);
 
   const tesseractConfig = {
-    tessedit_pageseg_mode: 3, // Fully automatic page segmentation
+    tessedit_pageseg_mode: 6, // Single uniform block of text (best for receipts)
     tessedit_ocr_engine_mode: 1, // LSTM OCR engine only
     tessedit_char_whitelist:
-      "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€ ",
+      "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€ ", // note trailing space
   };
 
   const handleFileUpload = async (event) => {
@@ -88,7 +88,7 @@ export default function App() {
     reader.readAsArrayBuffer(file);
   };
 
-  // Clean typical OCR errors in text - fix comma/period and spacing issues
+  // Clean OCR text common errors and normalize
   function cleanOCRText(text) {
     let cleaned = text;
 
@@ -113,7 +113,7 @@ export default function App() {
     return cleaned;
   }
 
-  // Improved receipt parser - robust extraction of date, total and items
+  // Receipt parsing with detailed debug and improved regexes
   function parseReceipt(text) {
     console.log("Parsing OCR text:", text);
 
@@ -123,9 +123,9 @@ export default function App() {
       .map((l) => l.trim())
       .filter(Boolean);
 
-    console.log("Cleaned lines:", lines);
+    console.log("Lines:", lines);
 
-    // Keywords to detect total line (English + Slovenian)
+    // Keywords for detecting total line (English + Slovenian)
     const totalKeywords = [
       "total",
       "skupaj",
@@ -137,23 +137,22 @@ export default function App() {
       "skupaj znesek",
     ];
 
-    // Find line containing any total keyword (case insensitive)
-    const totalLine = lines.find((l) =>
-      totalKeywords.some((kw) => l.toLowerCase().includes(kw))
+    const totalLine = lines.find((line) =>
+      totalKeywords.some((kw) => line.toLowerCase().includes(kw))
     );
+
     console.log("Total line found:", totalLine);
 
-    // Extract the last price-like number from total line
+    // Match number with thousands separators and decimal (dot or comma)
     let total = null;
     if (totalLine) {
-      const priceMatches = [...totalLine.matchAll(/(\d{1,3}(?:[ ,.\u00A0]?\d{3})*[.,]\d{2})/g)];
-      if (priceMatches.length) {
-        total = priceMatches[priceMatches.length - 1][1].replace(/[\s\u00A0]/g, "");
-        total = total.replace(",", ".");
+      const match = totalLine.match(/(\d{1,3}(?:[ ,.]?\d{3})*[.,]\d{2})/);
+      if (match) {
+        total = match[1].replace(/\s/g, "").replace(",", ".");
       }
     }
 
-    // Date regex (supports multiple formats)
+    // Date regex to detect common date formats
     const dateRegex =
       /(\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{4}[./-]\d{1,2}[./-]\d{1,2})/;
     const dateLine = lines.find((l) => dateRegex.test(l));
@@ -162,19 +161,22 @@ export default function App() {
       const dateMatch = dateLine.match(dateRegex);
       if (dateMatch) date = dateMatch[1];
     }
+
     console.log("Date line found:", dateLine);
 
-    // Extract items: lines ending with a price, with text before it
+    // Extract items: lines with name + price at end, allowing thousands separators
     const items = [];
     for (const line of lines) {
-      const itemMatch = line.match(/^(.+?)\s+(\d{1,3}(?:[ ,.\u00A0]?\d{3})*[.,]\d{2})$/);
+      const itemMatch = line.match(
+        /^(.+?)\s+(\d{1,3}(?:[ ,.]?\d{3})*[.,]\d{2})$/
+      );
       if (itemMatch) {
-        let name = itemMatch[1].trim();
-        let price = itemMatch[2].replace(/[\s\u00A0]/g, "");
-        price = price.replace(",", ".");
+        const name = itemMatch[1].trim();
+        const price = itemMatch[2].replace(/\s/g, "").replace(",", ".");
         items.push({ name, price });
       }
     }
+
     console.log("Parsed items:", items);
 
     return { date, total, items };
