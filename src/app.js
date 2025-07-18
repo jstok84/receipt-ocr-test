@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import Tesseract from "tesseract.js";
 import { GlobalWorkerOptions, getDocument } from "pdfjs-dist";
 import pdfWorker from "pdfjs-dist/build/pdf.worker.js";
@@ -9,12 +9,49 @@ export default function App() {
   const [text, setText] = useState("");
   const [parsed, setParsed] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [useCamera, setUseCamera] = useState(false);
+
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
 
   const tesseractConfig = {
-    tessedit_pageseg_mode: 6, // Single uniform block of text
-    tessedit_ocr_engine_mode: 1, // LSTM OCR engine only
+    tessedit_pageseg_mode: 6,
+    tessedit_ocr_engine_mode: 1,
     tessedit_char_whitelist:
       "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€",
+  };
+
+  useEffect(() => {
+    if (useCamera) {
+      navigator.mediaDevices
+        .getUserMedia({ video: true })
+        .then((stream) => {
+          if (videoRef.current) {
+            videoRef.current.srcObject = stream;
+          }
+        })
+        .catch((err) => {
+          console.error("Camera access denied:", err);
+        });
+    } else {
+      if (videoRef.current?.srcObject) {
+        videoRef.current.srcObject.getTracks().forEach((track) => track.stop());
+      }
+    }
+  }, [useCamera]);
+
+  const captureFromCamera = () => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas) return;
+
+    const context = canvas.getContext("2d");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const dataURL = canvas.toDataURL("image/png");
+    processImageDataURL(dataURL);
   };
 
   const handleFileUpload = async (event) => {
@@ -41,17 +78,26 @@ export default function App() {
     }
   };
 
+  const processImageDataURL = async (dataURL) => {
+    setLoading(true);
+    setText("Processing image...");
+    setParsed(null);
+
+    const result = await Tesseract.recognize(dataURL, "eng+slv", {
+      logger: (m) => console.log(m),
+      ...tesseractConfig,
+    });
+
+    const rawText = result.data.text;
+    setText(rawText);
+    const parsedData = parseReceipt(rawText);
+    setParsed(parsedData);
+    setLoading(false);
+  };
+
   const processImage = async (file) => {
     const reader = new FileReader();
-    reader.onload = async () => {
-      const result = await Tesseract.recognize(reader.result, "eng+slv", {
-        logger: (m) => console.log(m),
-        ...tesseractConfig,
-      });
-      setText(result.data.text);
-      const parsedData = parseReceipt(result.data.text);
-      setParsed(parsedData);
-    };
+    reader.onload = () => processImageDataURL(reader.result);
     reader.readAsDataURL(file);
   };
 
@@ -63,7 +109,7 @@ export default function App() {
 
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
-        const viewport = page.getViewport({ scale: 3 });
+        const viewport = page.getViewport({ scale: 3 }); // better OCR resolution
         const canvas = document.createElement("canvas");
         const context = canvas.getContext("2d");
 
@@ -83,23 +129,18 @@ export default function App() {
       setText(fullText);
       const parsedData = parseReceipt(fullText);
       setParsed(parsedData);
+      setLoading(false);
     };
 
     reader.readAsArrayBuffer(file);
   };
 
-  // Basic receipt parsing with expanded keywords and improved regex
   function parseReceipt(text) {
-    console.log("Parsing OCR text:", text);
-
     const lines = text
       .split("\n")
       .map((l) => l.trim())
       .filter(Boolean);
 
-    console.log("Lines:", lines);
-
-    // Expanded total keywords in English and Slovenian
     const totalKeywords = [
       "total",
       "skupaj",
@@ -118,31 +159,22 @@ export default function App() {
       "za plačilo",
     ];
 
-    // Find total line by keywords (case insensitive)
     const totalLine = lines.find((l) =>
       totalKeywords.some((kw) => l.toLowerCase().includes(kw))
     );
 
-    console.log("Total line found:", totalLine);
-
-    // Match number with optional thousands separators, optional decimals, optional currency (EUR, USD, $, €)
     const totalMatch = totalLine?.match(
       /(\d{1,3}(?:[ ,.]?\d{3})*(?:[.,]\d{2})?)\s*(EUR|USD|\$|€)?/i
     );
-
     let total = totalMatch ? totalMatch[1].replace(/\s/g, "") : null;
     if (totalMatch && totalMatch[2]) total += " " + totalMatch[2].toUpperCase();
 
-    // Date regex supporting dd.mm.yyyy, dd/mm/yyyy, yyyy-mm-dd, dd-mm-yyyy
     const dateRegex =
       /(\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{4}[./-]\d{1,2}[./-]\d{1,2})/;
     const dateLine = lines.find((l) => dateRegex.test(l));
-    console.log("Date line found:", dateLine);
-
     const dateMatch = dateLine?.match(dateRegex);
     const date = dateMatch ? dateMatch[1] : null;
 
-    // Extract items - lines ending with a price with optional currency
     const items = [];
     for (const line of lines) {
       const itemMatch = line.match(
@@ -151,21 +183,44 @@ export default function App() {
       if (itemMatch) {
         let price = itemMatch[2].replace(/\s/g, "");
         if (itemMatch[3]) price += " " + itemMatch[3].toUpperCase();
-
         items.push({ name: itemMatch[1].trim(), price });
       }
     }
-
-    console.log("Parsed items:", items);
 
     return { date, total, items };
   }
 
   return (
     <div style={{ padding: "2rem", fontFamily: "sans-serif" }}>
-      <h1>🧾 Receipt OCR (Image + PDF)</h1>
-      <input type="file" accept="image/*,.pdf" onChange={handleFileUpload} />
-      <p>{loading ? "Processing OCR..." : null}</p>
+      <h1>🧾 Receipt OCR (Image, PDF & Camera)</h1>
+
+      <div style={{ marginBottom: "1rem" }}>
+        <label>
+          <input
+            type="checkbox"
+            checked={useCamera}
+            onChange={() => setUseCamera(!useCamera)}
+          />{" "}
+          Use Camera
+        </label>
+      </div>
+
+      {useCamera ? (
+        <>
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            style={{ width: "100%", maxHeight: "300px", border: "1px solid #ccc" }}
+          />
+          <button onClick={captureFromCamera} disabled={loading} style={{ marginTop: "1rem" }}>
+            {loading ? "Processing..." : "Capture & Process"}
+          </button>
+          <canvas ref={canvasRef} style={{ display: "none" }} />
+        </>
+      ) : (
+        <input type="file" accept="image/*,.pdf" onChange={handleFileUpload} />
+      )}
 
       <textarea
         style={{ width: "100%", height: "200px", marginTop: "1rem" }}
