@@ -14,7 +14,7 @@ export default function App() {
     tessedit_pageseg_mode: 6, // Single uniform block of text
     tessedit_ocr_engine_mode: 1, // LSTM OCR engine only
     tessedit_char_whitelist:
-      "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€",
+      "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€ ",
   };
 
   const handleFileUpload = async (event) => {
@@ -88,7 +88,7 @@ export default function App() {
     reader.readAsArrayBuffer(file);
   };
 
-  // Basic receipt parsing with debug logs
+  // Improved receipt parsing with debug logs
   function parseReceipt(text) {
     console.log("Parsing OCR text:", text);
 
@@ -99,29 +99,35 @@ export default function App() {
 
     console.log("Lines:", lines);
 
-    // Find total line (English + Slovenian keywords)
+    // Find total line with common keywords (English + Slovenian)
     const totalLine = lines.find((l) =>
       /total|skupaj|znesek|skupna vrednost|skupaj z ddv/i.test(l)
     );
     console.log("Total line found:", totalLine);
 
-    const totalMatch = totalLine?.match(/(\d+[.,]\d{2})/);
-    const total = totalMatch ? totalMatch[1] : null;
+    // Match numbers like 1234.56 or 1 234,56 or 1,234.56
+    const totalMatch = totalLine?.match(/(\d{1,3}(?:[ ,.]?\d{3})*[.,]\d{2})/);
+    const total = totalMatch ? totalMatch[1].replace(/\s/g, "") : null;
 
-    // Find date line (simple date regex dd.mm.yyyy or dd/mm/yyyy)
-    const dateRegex = /(\d{1,2}[./]\d{1,2}[./]\d{2,4})/;
+    // Date regex supports dd.mm.yyyy, dd/mm/yyyy, yyyy-mm-dd, etc.
+    const dateRegex =
+      /(\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{4}[./-]\d{1,2}[./-]\d{1,2})/;
     const dateLine = lines.find((l) => dateRegex.test(l));
     console.log("Date line found:", dateLine);
 
     const dateMatch = dateLine?.match(dateRegex);
     const date = dateMatch ? dateMatch[1] : null;
 
-    // Extract items - lines ending with a price
+    // Extract items - lines with some text + price at end
     const items = [];
     for (const line of lines) {
-      const itemMatch = line.match(/(.+?)\s+(\d+[.,]\d{2})$/);
+      // Prices with thousands separators allowed
+      const itemMatch = line.match(/(.+?)\s+(\d{1,3}(?:[ ,.]?\d{3})*[.,]\d{2})$/);
       if (itemMatch) {
-        items.push({ name: itemMatch[1].trim(), price: itemMatch[2] });
+        items.push({
+          name: itemMatch[1].trim(),
+          price: itemMatch[2].replace(/\s/g, ""),
+        });
       }
     }
 
