@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import Tesseract from "tesseract.js";
-import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
-import pdfWorker from "./pdf-worker.js"; // ✅ local worker import
+import pdfWorker from "./pdf-worker.js"; // local worker wrapper
+import { GlobalWorkerOptions, getDocument } from "pdfjs-dist";
 
 GlobalWorkerOptions.workerSrc = pdfWorker;
 

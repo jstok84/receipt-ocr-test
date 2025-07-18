@@ -1,3 +1,2 @@
-// src/pdf-worker.js
-import { PDFWorker } from "pdfjs-dist/build/pdf.worker.mjs";
-export default PDFWorker;
+import pdfWorker from "pdfjs-dist/build/pdf.worker.js";
+export default pdfWorker;
