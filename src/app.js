@@ -11,7 +11,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
 
   const tesseractConfig = {
-    tessedit_pageseg_mode: 3, // Fully automatic page segmentation
+    tessedit_pageseg_mode: 6, // Single uniform block of text (better for receipts)
     tessedit_ocr_engine_mode: 1, // LSTM OCR engine only
     tessedit_char_whitelist:
       "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€ ",
@@ -41,18 +41,15 @@ export default function App() {
     }
   };
 
-  // Preprocess canvas: simple threshold to enhance contrast
+  // Mild grayscale conversion, no thresholding or upscaling
   const preprocessCanvas = (canvas) => {
     const ctx = canvas.getContext("2d");
     const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     for (let i = 0; i < imgData.data.length; i += 4) {
-      // grayscale average
       const avg = (imgData.data[i] + imgData.data[i + 1] + imgData.data[i + 2]) / 3;
-      // threshold value, tweak 140 if needed
-      const val = avg > 140 ? 255 : 0;
-      imgData.data[i] = val;
-      imgData.data[i + 1] = val;
-      imgData.data[i + 2] = val;
+      imgData.data[i] = avg;
+      imgData.data[i + 1] = avg;
+      imgData.data[i + 2] = avg;
     }
     ctx.putImageData(imgData, 0, 0);
     return canvas;
@@ -64,12 +61,11 @@ export default function App() {
       const img = new Image();
       img.src = reader.result;
       img.onload = async () => {
-        // create canvas and preprocess
         const canvas = document.createElement("canvas");
-        canvas.width = img.width * 2; // upscale for better OCR
-        canvas.height = img.height * 2;
+        canvas.width = img.width;
+        canvas.height = img.height;
         const ctx = canvas.getContext("2d");
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0);
         preprocessCanvas(canvas);
         const dataUrl = canvas.toDataURL("image/png");
 
@@ -122,25 +118,22 @@ export default function App() {
     reader.readAsArrayBuffer(file);
   };
 
-  // Post-process OCR text to fix common comma/decimal OCR issues
+  // Fix typical comma/period confusion for decimals but keep it light
   function fixOCRText(text) {
     let fixed = text;
 
-    // Fix common OCR mistakes for decimal separators:
-    // Replace commas mistaken for periods and vice versa, but carefully:
-    // Example: Replace "12 345,67" or "12345.67" → standardized "12345.67"
-    fixed = fixed.replace(/(\d)[ ]+(\d{3}[.,]\d{2})/g, "$1$2"); // remove spaces inside numbers
-    fixed = fixed.replace(/(\d)[.,](\d{3})[.,](\d{2})/g, "$1,$2.$3"); // e.g. fix weird thousand separators
+    // Remove spaces inside numbers, e.g. "12 345,67" → "12345,67"
+    fixed = fixed.replace(/(\d)\s+(\d)/g, "$1$2");
 
-    // Remove extra spaces near commas or dots in numbers
-    fixed = fixed.replace(/(\d)[ ]+([.,])[ ]+(\d)/g, "$1$2$3");
-
-    // Other fixes could be added depending on your input
+    // Fix commas used as thousand separators to dots or remove if needed
+    // Example: "1,234.56" => "1234.56", "1.234,56" => "1234.56"
+    fixed = fixed.replace(/(\d)[.,](\d{3})[.,](\d{2})/g, (m, p1, p2, p3) => {
+      return `${p1}${p2}.${p3}`; // unify decimal point as dot
+    });
 
     return fixed;
   }
 
-  // Receipt parsing (same as your improved version)
   function parseReceipt(text) {
     console.log("Parsing OCR text:", text);
 
@@ -151,17 +144,14 @@ export default function App() {
 
     console.log("Lines:", lines);
 
-    // Find total line with common keywords (English + Slovenian)
     const totalLine = lines.find((l) =>
       /total|skupaj|znesek|skupna vrednost|skupaj z ddv/i.test(l)
     );
     console.log("Total line found:", totalLine);
 
-    // Match numbers like 1234.56 or 1 234,56 or 1,234.56
     const totalMatch = totalLine?.match(/(\d{1,3}(?:[ ,.]?\d{3})*[.,]\d{2})/);
     const total = totalMatch ? totalMatch[1].replace(/\s/g, "") : null;
 
-    // Date regex supports dd.mm.yyyy, dd/mm/yyyy, yyyy-mm-dd, etc.
     const dateRegex =
       /(\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{4}[./-]\d{1,2}[./-]\d{1,2})/;
     const dateLine = lines.find((l) => dateRegex.test(l));
@@ -170,10 +160,8 @@ export default function App() {
     const dateMatch = dateLine?.match(dateRegex);
     const date = dateMatch ? dateMatch[1] : null;
 
-    // Extract items - lines with some text + price at end
     const items = [];
     for (const line of lines) {
-      // Prices with thousands separators allowed
       const itemMatch = line.match(/(.+?)\s+(\d{1,3}(?:[ ,.]?\d{3})*[.,]\d{2})$/);
       if (itemMatch) {
         items.push({
