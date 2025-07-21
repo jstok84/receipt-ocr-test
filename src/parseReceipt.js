@@ -23,25 +23,26 @@ export function parseReceipt(text) {
       "total", "grand total", "amount", "skupaj", "znesek",
       "končni znesek", "za plačilo", "skupaj z ddv"
     ];
+
     const currencyRegex = /(\d{1,3}(?:[.,\s]?\d{3})*[.,]\d{1,2})\s?(€|eur|usd|\$)?/gi;
 
-    let maxAmount = 0;
-    let result = null;
+    let totalCandidates = [];
 
     for (const line of lines) {
       const lower = line.toLowerCase();
-      if (totalKeywords.some(k => lower.includes(k))) {
+      if (totalKeywords.some(k => lower.includes(k)) || lines.indexOf(line) > lines.length - 6) {
         let match;
         while ((match = currencyRegex.exec(line)) !== null) {
-          const num = parseNumber(match[1]);
-          if (num > maxAmount) {
-            maxAmount = num;
-            result = `${num.toFixed(2)} €`;
-          }
+          const value = parseNumber(match[1]);
+          totalCandidates.push({ value, text: match[0] });
         }
       }
     }
-    return result;
+
+    if (!totalCandidates.length) return null;
+
+    const max = totalCandidates.reduce((a, b) => (a.value > b.value ? a : b));
+    return `${max.value.toFixed(2)} €`;
   }
 
   function cleanItemName(name) {
