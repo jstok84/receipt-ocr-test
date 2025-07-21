@@ -2,22 +2,32 @@ export function parseReceipt(text) {
   const PARSER_VERSION = "v1.3.7";
   console.log("🧾 Receipt parser version:", PARSER_VERSION);
 
-  function normalizeAmount(value, isSlovenian) {
-    // Slovenian: "1.234,56" -> "1234.56"
-    // Non-Slovenian: "1,234.56" -> "1234.56"
+    function normalizeAmount(value, isSlovenian) {
     if (isSlovenian) {
-      // Remove thousand separators (.)
-      // Replace decimal comma with dot
-      const normalized = value.replace(/\./g, "").replace(",", ".");
-      console.log(`  normalizeAmount (SI): '${value}' -> '${normalized}'`);
-      return normalized;
+        // Slovenian decimal format: '1.234,56' => '1234.56'
+        // But sometimes decimals might come as '28.85' without comma, treat as decimal point.
+        // So:
+        // - If comma exists, remove dots and replace comma with dot
+        // - Else if no comma, assume dot is decimal point
+
+        if (value.includes(",")) {
+        // Remove thousands separator dots
+        const normalized = value.replace(/\./g, "").replace(",", ".");
+        console.log(`  normalizeAmount (SI, with comma): '${value}' -> '${normalized}'`);
+        return normalized;
+        } else {
+        // No comma, so treat dot as decimal
+        console.log(`  normalizeAmount (SI, no comma): '${value}' -> '${value}'`);
+        return value;
+        }
     } else {
-      // Remove thousand separators (,) only, keep dot as decimal
-      const normalized = value.replace(/,/g, "");
-      console.log(`  normalizeAmount (non-SI): '${value}' -> '${normalized}'`);
-      return normalized;
+        // Non-Slovenian: remove thousands separator commas, dot as decimal point
+        const normalized = value.replace(/,/g, "");
+        console.log(`  normalizeAmount (non-SI): '${value}' -> '${normalized}'`);
+        return normalized;
     }
-  }
+    }
+
 
   function extractAmountFromLine(line, isSlovenian) {
     const regex = /(\d{1,3}(?:[ .,\s]?\d{3})*(?:[.,]\d{1,2}))\s*(EUR|USD|\$|€)?/gi;
