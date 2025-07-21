@@ -1,138 +1,112 @@
 export function parseReceipt(text) {
-  // Helper: parse number string to float, handling European decimal commas
-  function parseNumber(str) {
-    // Remove spaces and thousands separators, replace comma decimal with dot
-    const normalized = str.replace(/\s/g, '').replace(/\./g, '').replace(',', '.');
-    return parseFloat(normalized);
+  function normalizeAmount(value, isSlovenian) {
+    return isSlovenian
+      ? value.replace(/\./g, "").replace(",", ".")
+      : value.replace(/,/g, "");
   }
 
-  // Extract total using keyword-based filtering
-  function extractTotal(lines) {
-    const totalKeywords = [
-      "total", "total amount", "grand total", "amount", "total price", "end sum", "sum", "za plačilo",
-      "skupaj", "znesek", "skupna vrednost", "skupaj z ddv", "znesek za plačilo", "končni znesek"
-    ];
+  function toIsoDate(dateStr) {
+    const parts = dateStr.split(/[./-]/);
+    if (parts.length !== 3) return null;
 
-    const currencyRegex = /(\d{1,3}(?:[.,\s]?\d{3})*[.,]\d{1,2})\s?(€|eur|usd|\$)?/gi;
+    let [d, m, y] = parts.map((p) => p.padStart(2, "0"));
 
-    // Candidate lines with total-related keywords
-    const candidateLines = lines.filter(line =>
-      totalKeywords.some(kw => line.toLowerCase().includes(kw))
-    );
-
-    let candidates = [];
-
-    for (const line of candidateLines) {
-      let match;
-      while ((match = currencyRegex.exec(line)) !== null) {
-        const value = parseNumber(match[1]);
-        if (!isNaN(value)) candidates.push(value);
-      }
+    if (y.length === 2) {
+      const yearNum = parseInt(y, 10);
+      y = yearNum >= 50 ? `19${y}` : `20${y}`;
     }
-
-    if (candidates.length > 0) {
-      const maxTotal = Math.max(...candidates);
-      return maxTotal.toFixed(2) + " €";
-    }
-
-    // Fallback: max value from whole text
-    let allValues = [];
-    for (const line of lines) {
-      let match;
-      while ((match = currencyRegex.exec(line)) !== null) {
-        const value = parseNumber(match[1]);
-        if (!isNaN(value)) allValues.push(value);
-      }
-    }
-    if (allValues.length > 0) {
-      const maxValue = Math.max(...allValues);
-      return maxValue.toFixed(2) + " €";
-    }
-
-    return null;
-  }
-
-  // Convert date from formats like 15.07.25 or 15/07/2025 to ISO 2025-07-15
-  function parseDate(str) {
-    const dateRegex = /(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})/;
-    const match = str.match(dateRegex);
-    if (!match) return null;
-
-    let [_, d, m, y] = match;
-    if (y.length === 2) y = '20' + y; // assume 2000s for 2-digit years
-
-    // pad day and month
-    d = d.padStart(2, '0');
-    m = m.padStart(2, '0');
 
     return `${y}-${m}-${d}`;
   }
 
-  // Clean item name by removing leading numeric codes and extra spaces
-  function cleanItemName(name) {
-    return name.replace(/^\d+\s*[-–—]?\s*/, '').trim();
+  function extractTotalAmount(lines, isSlovenian) {
+    const priorityKeywords = [
+      "skupni znesek", "skupaj za plačilo", "skupaj z ddv", "končni znesek", "za plačilo", "total", "amount due"
+    ];
+    const fallbackKeywords = ["ddv", "tax", "vat"];
+
+    let candidateLine = [...lines].reverse().find(line =>
+      priorityKeywords.some(kw => line.toLowerCase().includes(kw))
+    );
+
+    if (!candidateLine) {
+      candidateLine = [...lines].reverse().find(line =>
+        /\d+[.,]\d{2}/.test(line) &&
+        !fallbackKeywords.some(kw => line.toLowerCase().includes(kw))
+      );
+    }
+
+    if (!candidateLine) return null;
+
+    const regex = /(\d{1,3}(?:[ .,]?\d{3})*(?:[.,]\d{1,2}))\s*(EUR|USD|\$|€)?/gi;
+    let match, lastMatch = null;
+    while ((match = regex.exec(candidateLine)) !== null) {
+      lastMatch = match;
+    }
+
+    if (!lastMatch) return null;
+
+    let amount = normalizeAmount(lastMatch[1], isSlovenian);
+    if (lastMatch[2]) amount += " " + lastMatch[2].toUpperCase();
+
+    return amount;
   }
 
   const lines = text
-    .split('\n')
-    .map(l => l.trim())
+    .split("\n")
+    .map((l) => l.trim())
     .filter(Boolean);
 
-  // Extract date from any line that looks like a date
-  let date = null;
-  for (const line of lines) {
-    const parsedDate = parseDate(line);
-    if (parsedDate) {
-      date = parsedDate;
-      break;
-    }
-  }
+  const joinedText = lines.join(" ").toLowerCase();
+  const isSlovenian = [
+    "račun", "kupec", "ddv", "znesek", "ponudba", "skupaj", "za plačilo", "datum ponudbe", "osnovni kapital"
+  ].some(keyword => joinedText.includes(keyword));
 
-  // Extract total from candidate lines or fallback
-  const total = extractTotal(lines);
+  // Extract ISO date
+  const dateRegex = /(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})/;
+  const rawDate = lines.find(line => dateRegex.test(line))?.match(dateRegex)?.[1] ?? null;
+  const date = rawDate ? toIsoDate(rawDate) : null;
 
-  // Keywords that indicate non-product lines for filtering items
-  const excludeKeywords = [
-    "transaction", "terminal", "id", "number", "purchase", "type", "response",
-    "approval", "credit", "paid by", "card", "sub total", "subtotal", "tax", "vat", "sales tax",
-    "transakcija", "terminal", "številka", "nakup", "tip", "odgovor",
-    "odobritev", "kredit", "plačano z", "kartica", "vrednost brez ddv", "ddv", "skupaj"
-  ];
+  const total = extractTotalAmount(lines, isSlovenian);
 
-  // Regex to find prices
-  const priceRegex = /(\d{1,3}(?:[ ,.]?\d{3})*(?:[.,]\d{1,2}))\s?(€|eur|usd|\$)?/gi;
+  const excludeKeywords = isSlovenian
+    ? [
+        "transakcija", "terminal", "številka", "datum", "račun", "koda izdelka", "naslov",
+        "uporabniški račun", "matična", "ddv", "obveznosti", "ime operaterja"
+      ]
+    : [
+        "transaction", "terminal", "id", "number", "purchase", "date", "invoice", "operator",
+        "address", "subtotal", "tax", "vat", "card", "total"
+      ];
 
   const items = [];
 
   for (const line of lines) {
-    // Skip lines containing total keywords or date
-    if (line.toLowerCase().includes('total') || line.toLowerCase().includes('skupaj') || (date && line.includes(date))) {
-      continue;
-    }
+    const lowerLine = line.toLowerCase();
+    if (excludeKeywords.some(kw => lowerLine.includes(kw))) continue;
+    if (line === total) continue;
 
+    const priceRegex = /(\d{1,3}(?:[ .,]?\d{3})*(?:[.,]\d{1,2}))\s*(EUR|USD|\$|€)?/gi;
     let match, lastMatch = null;
     while ((match = priceRegex.exec(line)) !== null) {
       lastMatch = match;
     }
+
     if (!lastMatch) continue;
 
     const priceIndex = lastMatch.index;
     let namePart = line.slice(0, priceIndex).trim();
 
-    // Remove numeric codes like "2102120 — "
-    namePart = cleanItemName(namePart);
-
+    // ✅ Remove numeric code prefixes like `2102120 —`
+    namePart = namePart.replace(/^\d{5,}\s?[—\-–—]?\s*/g, "").trim();
     if (namePart.length < 2) continue;
 
-    const hasExcludedKeyword = excludeKeywords.some(kw =>
+    const hasExcluded = excludeKeywords.some(kw =>
       new RegExp(`\\b${kw}\\b`, "i").test(namePart)
     );
-    if (hasExcludedKeyword) continue;
+    if (hasExcluded) continue;
 
-    let priceValue = parseNumber(lastMatch[1]);
-    if (isNaN(priceValue)) continue;
-
-    let price = priceValue.toFixed(2);
+    let price = normalizeAmount(lastMatch[1], isSlovenian);
     if (lastMatch[2]) price += " " + lastMatch[2].toUpperCase();
 
     items.push({ name: namePart, price });
