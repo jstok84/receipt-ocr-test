@@ -1,4 +1,4 @@
-export function parseReceipt(text: string) {
+export function parseReceipt(text) {
   const lines = text
     .split("\n")
     .map((l) => l.trim().replace(/\s{2,}/g, ' '))
