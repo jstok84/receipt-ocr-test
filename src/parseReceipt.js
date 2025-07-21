@@ -38,7 +38,7 @@ export function parseReceipt(text) {
   ].some(keyword => joinedText.includes(keyword));
 
   const totalKeywords = isSlovenian
-    ? ["za plačilo", "skupaj", "znesek", "skupna vrednost", "skupaj z ddv", "znesek za plačilo", "končni znesek"]
+    ? ["za plačilo", "skupaj", "skupno", "znesek", "skupna vrednost", "skupaj z ddv", "znesek za plačilo", "končni znesek"]
     : ["total", "total amount", "grand total", "amount", "total price", "end sum", "sum"];
 
   const excludeKeywords = isSlovenian
