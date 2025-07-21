@@ -175,7 +175,7 @@ export function parseReceipt(text) {
   }
 
   const fallbackTotal = tryFallbackTotal(lines, isSlovenian);
-  if (fallbackTotal && (!total || fallbackTotal.value < total)) {
+  if (fallbackTotal && (!total || fallbackTotal.value > total)) {
     console.log("⚠️ Using fallback total from net + ddv.");
     total = fallbackTotal.value;
     currency = fallbackTotal.currency ?? currency;
