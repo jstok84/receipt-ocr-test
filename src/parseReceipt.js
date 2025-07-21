@@ -1,7 +1,12 @@
 export function parseReceipt(text) {
+  function normalizeAmount(value) {
+    // Handle Slovenian-style numbers: "1.500,00" → "1500.00"
+    return value.replace(/\./g, "").replace(",", ".");
+  }
+
   function extractTotalAmount(line) {
     if (!line) return null;
-    const regex = /(\d{1,3}(?:[ ,.]?\d{3})*(?:[.,]\d{1,2}))\s*(EUR|USD|\$|€)?/gi;
+    const regex = /(\d{1,3}(?:[ .,]?\d{3})*(?:[.,]\d{1,2}))\s*(EUR|USD|\$|€)?/gi;
 
     let match, lastMatch = null;
     while ((match = regex.exec(line)) !== null) {
@@ -10,7 +15,7 @@ export function parseReceipt(text) {
 
     if (!lastMatch) return null;
 
-    let amount = lastMatch[1].replace(/[\s,]/g, "").replace(",", ".");
+    let amount = normalizeAmount(lastMatch[1]);
     if (lastMatch[2]) amount += " " + lastMatch[2].toUpperCase();
 
     return amount;
@@ -22,8 +27,9 @@ export function parseReceipt(text) {
     .filter(Boolean);
 
   const totalKeywords = [
-    "total", "total amount", "grand total", "amount", "total price", "end sum", "sum", "za plačilo",
-    "skupaj", "znesek", "skupna vrednost", "skupaj z ddv", "znesek za plačilo", "končni znesek"
+    "total", "total amount", "grand total", "amount", "total price", "end sum", "sum",
+    "za plačilo", "skupaj", "znesek", "skupna vrednost", "skupaj z ddv",
+    "znesek za plačilo", "končni znesek"
   ];
 
   // Find the total line
@@ -38,21 +44,20 @@ export function parseReceipt(text) {
   const dateMatch = lines.find(line => dateRegex.test(line))?.match(dateRegex);
   const date = dateMatch?.[1] ?? null;
 
-  // Keywords that indicate non-product lines
   const excludeKeywords = [
     "transaction", "terminal", "id", "number", "purchase", "type", "response",
     "approval", "credit", "paid by", "card", "sub total", "subtotal", "tax", "vat", "sales tax",
-    "transakcija", "terminal", "številka", "nakup", "tip", "odgovor",
-    "odobritev", "kredit", "plačano z", "kartica", "vrednost brez ddv", "ddv", "skupaj"
+    "transakcija", "terminal", "številka", "nakup", "tip", "odgovor", "odobritev",
+    "kredit", "plačano z", "kartica", "vrednost brez ddv", "ddv", "skupaj",
+    "datum ponudbe", "veljavnost ponudbe", "računi", "osnovni kapital"
   ];
 
   const items = [];
 
   for (const line of lines) {
-    // ✅ Skip the line we already used for total
     if (line === totalLine) continue;
 
-    const priceRegex = /(\d{1,3}(?:[ ,.]?\d{3})*(?:[.,]\d{1,2}))\s*(EUR|USD|\$|€)?/gi;
+    const priceRegex = /(\d{1,3}(?:[ .,]?\d{3})*(?:[.,]\d{1,2}))\s*(EUR|USD|\$|€)?/gi;
 
     let match, lastMatch = null;
     while ((match = priceRegex.exec(line)) !== null) {
@@ -69,10 +74,9 @@ export function parseReceipt(text) {
     const hasExcludedKeyword = excludeKeywords.some(kw =>
       new RegExp(`\\b${kw}\\b`, "i").test(namePart)
     );
-
     if (hasExcludedKeyword) continue;
 
-    let price = lastMatch[1].replace(/[\s,]/g, "").replace(",", ".");
+    let price = normalizeAmount(lastMatch[1]);
     if (lastMatch[2]) price += " " + lastMatch[2].toUpperCase();
 
     items.push({ name: namePart, price });
