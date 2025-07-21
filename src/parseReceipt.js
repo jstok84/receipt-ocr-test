@@ -3,23 +3,22 @@ export function parseReceipt(text) {
   console.log("🧾 Receipt parser version:", PARSER_VERSION);
 
     function normalizeAmount(value, isSlovenian) {
-    if (isSlovenian) {
-        // Slovenian decimal format: '1.234,56' => '1234.56'
-        // But sometimes decimals might come as '28.85' without comma, treat as decimal point.
-        // So:
-        // - If comma exists, remove dots and replace comma with dot
-        // - Else if no comma, assume dot is decimal point
-
+      if (isSlovenian) {
         if (value.includes(",")) {
-        // Remove thousands separator dots
+        // Typical Slovenian format: dots as thousands, comma as decimal
         const normalized = value.replace(/\./g, "").replace(",", ".");
         console.log(`  normalizeAmount (SI, with comma): '${value}' -> '${normalized}'`);
         return normalized;
         } else {
-        // No comma, so treat dot as decimal
+        // No comma: treat dot as decimal separator, do NOT remove dots
         console.log(`  normalizeAmount (SI, no comma): '${value}' -> '${value}'`);
         return value;
         }
+    } else {
+        // Non-Slovenian: remove commas as thousands separator, keep dots as decimals
+        const normalized = value.replace(/,/g, "");
+        console.log(`  normalizeAmount (non-SI): '${value}' -> '${normalized}'`);
+        return normalized;
     } else {
         // Non-Slovenian: remove thousands separator commas, dot as decimal point
         const normalized = value.replace(/,/g, "");
