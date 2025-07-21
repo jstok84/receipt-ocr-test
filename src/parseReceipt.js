@@ -1,4 +1,37 @@
 export function parseReceipt(text) {
+  // Helper function to extract total amount from a line
+  function extractTotalAmount(line) {
+    if (!line) return null;
+    const regex = /(\d{1,3}(?:[ ,.]?\d{3})*(?:[.,]\d{1,2})?)\s*(EUR|USD|\$|€)?/gi;
+    let matches = [];
+    let match;
+    while ((match = regex.exec(line)) !== null) {
+      matches.push(match);
+    }
+    if (matches.length === 0) return null;
+
+    // Try to find number with decimals or currency symbol
+    for (let i = matches.length - 1; i >= 0; i--) {
+      const m = matches[i];
+      if (m[1].includes('.') || m[1].includes(',')) {
+        // number with decimals
+        let total = m[1].replace(/[\s,]/g, "").replace(",", ".");
+        if (m[2]) total += " " + m[2].toUpperCase();
+        return total;
+      }
+      if (m[2]) {
+        // number with currency symbol but no decimals
+        let total = m[1].replace(/[\s,]/g, "").replace(",", ".");
+        total += " " + m[2].toUpperCase();
+        return total;
+      }
+    }
+
+    // Fallback: return last matched number without currency
+    let last = matches[matches.length - 1];
+    return last[1].replace(/[\s,]/g, "").replace(",", ".");
+  }
+
   const lines = text
     .split("\n")
     .map((l) => l.trim())
@@ -17,7 +50,6 @@ export function parseReceipt(text) {
 
   const total = extractTotalAmount(totalLine);
 
-  // Date regex
   const dateRegex =
     /(\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{4}[./-]\d{1,2}[./-]\d{1,2})/;
   const dateLine = lines.find((l) => dateRegex.test(l));
@@ -39,7 +71,6 @@ export function parseReceipt(text) {
     });
   }
 
-  // Extract items
   const items = lines
     .filter(line => !isExcluded(line))
     .map(line => {
