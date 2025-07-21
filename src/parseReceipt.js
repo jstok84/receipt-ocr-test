@@ -94,6 +94,6 @@ export function parseReceipt(text) {
     total,
     tax,
     items,
-    ...metadata,
+    ...metadata
   };
 }
