@@ -1,4 +1,7 @@
 export function parseReceipt(text) {
+  const PARSER_VERSION = "v1.3.2"; // Update this on each change
+  console.log("🧾 Receipt parser version:", PARSER_VERSION);
+
   function normalizeAmount(value, isSlovenian) {
     return isSlovenian
       ? value.replace(/\./g, "").replace(",", ".")
@@ -18,8 +21,8 @@ export function parseReceipt(text) {
 
   function extractAllTotalCandidates(lines, isSlovenian) {
     const totalKeywords = isSlovenian
-      ? ["za plačilo", "skupaj", "znesek", "končni znesek", "skupno", "skupaj z ddv"]
-      : ["total", "amount", "grand total", "to pay", "total due", "end sum"];
+      ? ["za plačilo", "skupaj", "znesek", "končni znesek", "skupna vrednost", "skupaj z ddv"]
+      : ["total", "total amount", "amount due", "grand total", "amount", "to pay"];
 
     return lines
       .filter(line =>
@@ -30,7 +33,7 @@ export function parseReceipt(text) {
         value: extractAmountFromLine(line, isSlovenian) ?? 0
       }))
       .filter(entry => entry.value > 0)
-      .sort((a, b) => b.value - a.value); // sort by amount descending
+      .sort((a, b) => b.value - a.value);
   }
 
   function extractDate(lines) {
@@ -41,17 +44,13 @@ export function parseReceipt(text) {
     const raw = match[1];
     const parts = raw.split(/[./-]/).map(Number);
 
-    if (parts[0] > 31) return raw; // already ISO or invalid
+    if (parts[0] > 31) return raw; // already ISO
 
     let day, month, year;
-    if (parts[2] < 100) parts[2] += 2000; // normalize 2-digit year
-    if (parts[0] > 12) {
-      [day, month, year] = parts;
-    } else if (parts[1] > 12) {
-      [month, day, year] = parts;
-    } else {
-      [day, month, year] = parts; // fallback
-    }
+    if (parts[2] < 100) parts[2] += 2000;
+
+    if (parts[0] > 12) [day, month, year] = parts;
+    else [day, month, year] = parts;
 
     return `${year.toString().padStart(4, "0")}-${month
       .toString()
@@ -72,13 +71,13 @@ export function parseReceipt(text) {
     ? ["transakcija", "številka", "ddv", "datum", "račun", "osnovni kapital"]
     : ["transaction", "terminal", "subtotal", "tax", "vat", "invoice", "date"];
 
+  // ✅ Pick highest value among all total-like lines
   const totalCandidates = extractAllTotalCandidates(lines, isSlovenian);
   const total = totalCandidates.length > 0
     ? totalCandidates[0].value.toFixed(2) + " €"
     : null;
 
   const date = extractDate(lines);
-
   const items = [];
 
   for (const line of lines) {
@@ -91,7 +90,7 @@ export function parseReceipt(text) {
     const price = normalizeAmount(rawAmount, isSlovenian);
 
     let namePart = line.slice(0, priceMatch.index).trim();
-    namePart = namePart.replace(/^\d{5,}\s?[—\-–]?\s*/g, "").trim(); // remove leading codes like "2102120 —"
+    namePart = namePart.replace(/^\d{5,}\s?[—\-–]?\s*/g, "").trim(); // remove product code
 
     if (namePart.length < 2) continue;
 
