@@ -2,25 +2,35 @@ export function parseReceipt(text) {
   const PARSER_VERSION = "v1.3.7";
   console.log("🧾 Receipt parser version:", PARSER_VERSION);
 
-    function normalizeAmount(value, isSlovenian) {
-      if (isSlovenian) {
+  function normalizeAmount(value, isSlovenian) {
+    if (isSlovenian) {
         if (value.includes(",")) {
-        // Typical Slovenian format: dots as thousands, comma as decimal
+        // Normal case: '1.234,56' => '1234.56'
         const normalized = value.replace(/\./g, "").replace(",", ".");
         console.log(`  normalizeAmount (SI, with comma): '${value}' -> '${normalized}'`);
         return normalized;
         } else {
-        // No comma: treat dot as decimal separator, do NOT remove dots
-        console.log(`  normalizeAmount (SI, no comma): '${value}' -> '${value}'`);
-        return value;
+        // No comma: ambiguous case
+        // Count dots
+        const dotCount = (value.match(/\./g) || []).length;
+
+        if (dotCount === 0) {
+            // No decimal or thousands separators? Return as is
+            console.log(`  normalizeAmount (SI, no comma, no dot): '${value}' -> '${value}'`);
+            return value;
+        } else if (dotCount === 1) {
+            // Single dot, treat as decimal separator
+            console.log(`  normalizeAmount (SI, no comma, single dot): '${value}' -> '${value}'`);
+            return value;
+        } else {
+            // Multiple dots: treat all dots as thousands separators, remove them
+            const normalized = value.replace(/\./g, "");
+            console.log(`  normalizeAmount (SI, no comma, multiple dots): '${value}' -> '${normalized}'`);
+            return normalized;
+        }
         }
     } else {
-        // Non-Slovenian: remove commas as thousands separator, keep dots as decimals
-        const normalized = value.replace(/,/g, "");
-        console.log(`  normalizeAmount (non-SI): '${value}' -> '${normalized}'`);
-        return normalized;
-    } else {
-        // Non-Slovenian: remove thousands separator commas, dot as decimal point
+        // Non-Slovenian: remove commas as thousands separators
         const normalized = value.replace(/,/g, "");
         console.log(`  normalizeAmount (non-SI): '${value}' -> '${normalized}'`);
         return normalized;
