@@ -13,25 +13,20 @@ export function parseReceipt(text) {
     return firstHalf === secondHalf ? firstHalf : line;
   });
 
-  // Language-aware total keywords
   const totalKeywords = [
-    // English
     "total", "total amount", "grand total", "amount", "total price",
-    // Slovenian
     "skupaj", "znesek", "znesek za plačilo", "skupna vrednost", "končni znesek", "skupaj z ddv"
   ];
 
-  const taxKeywords = [
-    "tax", "sales tax", "vat", "ddv"
-  ];
+  const taxKeywords = ["tax", "sales tax", "vat", "ddv"];
 
-  // Find the total line
-  const totalLine = deduplicatedLines.find((l) =>
-    totalKeywords.some((kw) => l.toLowerCase().includes(kw))
-  );
+  // Match all potential total lines and grab the LAST one
+  const totalLine = [...deduplicatedLines]
+    .reverse()
+    .find(l => totalKeywords.some(kw => l.toLowerCase().includes(kw)));
 
   const totalMatch = totalLine?.match(
-    /(\d{1,3}(?:[ .]?\d{3})*(?:[.,]\d{2}))\s*(€|eur|usd|\$)?/i
+    /(\d{1,3}(?:[ .]?\d{3})*(?:[.,]\d{2}))(?!.*\d)(?=.*(eur|€|\$|usd)?)/i
   );
 
   let total = totalMatch
@@ -39,32 +34,33 @@ export function parseReceipt(text) {
     : null;
   if (totalMatch?.[2]) total += " " + totalMatch[2].toUpperCase();
 
-  // Extract VAT or Tax if present
+  // Tax
   let tax = null;
   const taxLine = deduplicatedLines.find((l) =>
     taxKeywords.some((kw) => l.toLowerCase().includes(kw))
   );
-  const taxMatch = taxLine?.match(
-    /(\d{1,3}(?:[ .]?\d{3})*(?:[.,]\d{2}))/i
-  );
+  const taxMatch = taxLine?.match(/(\d{1,3}(?:[ .]?\d{3})*(?:[.,]\d{2}))/i);
   if (taxMatch) {
     tax = taxMatch[1].replace(/[ .]/g, "").replace(",", ".");
   }
 
-  // Date support: DD.MM.YYYY, YYYY-MM-DD, etc.
+  // Date
   const dateRegex = /(\d{2}[./-]\d{2}[./-]\d{4}|\d{4}[./-]\d{2}[./-]\d{2})/;
   const dateMatch = deduplicatedLines.find(l => dateRegex.test(l))?.match(dateRegex);
   const date = dateMatch?.[1] ?? null;
 
-  // Items: match product + price
-  const itemRegex = /^(.+?)\s+(\d{1,3}(?:[ .]?\d{3})*(?:[.,]\d{2}))\s*(€|eur|\$|usd)?$/i;
+  // More flexible item extraction
+  const itemRegex = /^(.+?)\s+(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2}))(?:\s+(eur|€|\$|usd))?/i;
   const items = deduplicatedLines
     .map(line => {
       const match = line.match(itemRegex);
       if (!match) return null;
-      const name = match[1].trim();
+
+      // Clean name of any trailing symbols or metadata
+      const name = match[1].replace(/(Type:.*|PURCHASE|Entry Mode:.*|Number:.*|".*)$/, "").trim();
       let price = match[2].replace(/[ .]/g, "").replace(",", ".");
       if (match[3]) price += " " + match[3].toUpperCase();
+
       return { name, price };
     })
     .filter(Boolean);
