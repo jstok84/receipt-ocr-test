@@ -1,5 +1,5 @@
 export function parseReceipt(text) {
-  const PARSER_VERSION = "v1.3.2"; // Update this on each change
+  const PARSER_VERSION = "v1.3.3";
   console.log("🧾 Receipt parser version:", PARSER_VERSION);
 
   function normalizeAmount(value, isSlovenian) {
@@ -36,6 +36,36 @@ export function parseReceipt(text) {
       .sort((a, b) => b.value - a.value);
   }
 
+  function tryFallbackTotal(lines, isSlovenian) {
+    let net = null, vat = null;
+
+    for (const line of lines) {
+      const lower = line.toLowerCase();
+
+      if (isSlovenian) {
+        if (lower.includes("brez ddv")) {
+          net = extractAmountFromLine(line, isSlovenian) ?? net;
+        }
+        if (lower.includes("ddv") && lower.includes("%")) {
+          vat = extractAmountFromLine(line, isSlovenian) ?? vat;
+        }
+      } else {
+        if (lower.includes("net")) net = extractAmountFromLine(line, isSlovenian) ?? net;
+        if (lower.includes("vat") || lower.includes("tax")) {
+          vat = extractAmountFromLine(line, isSlovenian) ?? vat;
+        }
+      }
+    }
+
+    if (net != null && vat != null) {
+      const total = (net + vat).toFixed(2);
+      console.log(`💡 Fallback total calculated from net + VAT: ${net} + ${vat} = ${total}`);
+      return parseFloat(total);
+    }
+
+    return null;
+  }
+
   function extractDate(lines) {
     const dateRegex = /(\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{4}[./-]\d{1,2}[./-]\d{1,2})/;
     const match = lines.find(line => dateRegex.test(line))?.match(dateRegex);
@@ -44,13 +74,12 @@ export function parseReceipt(text) {
     const raw = match[1];
     const parts = raw.split(/[./-]/).map(Number);
 
-    if (parts[0] > 31) return raw; // already ISO
+    if (parts[0] > 31) return raw;
 
     let day, month, year;
     if (parts[2] < 100) parts[2] += 2000;
 
-    if (parts[0] > 12) [day, month, year] = parts;
-    else [day, month, year] = parts;
+    [day, month, year] = parts[0] > 12 ? parts : [parts[1], parts[0], parts[2]];
 
     return `${year.toString().padStart(4, "0")}-${month
       .toString()
@@ -71,11 +100,14 @@ export function parseReceipt(text) {
     ? ["transakcija", "številka", "ddv", "datum", "račun", "osnovni kapital"]
     : ["transaction", "terminal", "subtotal", "tax", "vat", "invoice", "date"];
 
-  // ✅ Pick highest value among all total-like lines
   const totalCandidates = extractAllTotalCandidates(lines, isSlovenian);
-  const total = totalCandidates.length > 0
-    ? totalCandidates[0].value.toFixed(2) + " €"
-    : null;
+  let total = totalCandidates.length > 0 ? totalCandidates[0].value : null;
+
+  const fallbackTotal = tryFallbackTotal(lines, isSlovenian);
+  if (fallbackTotal && (!total || fallbackTotal > total)) {
+    console.log("⚠️  Overriding total with fallback total.");
+    total = fallbackTotal;
+  }
 
   const date = extractDate(lines);
   const items = [];
@@ -90,7 +122,7 @@ export function parseReceipt(text) {
     const price = normalizeAmount(rawAmount, isSlovenian);
 
     let namePart = line.slice(0, priceMatch.index).trim();
-    namePart = namePart.replace(/^\d{5,}\s?[—\-–]?\s*/g, "").trim(); // remove product code
+    namePart = namePart.replace(/^\d{5,}\s?[—\-–]?\s*/g, "").trim();
 
     if (namePart.length < 2) continue;
 
@@ -102,5 +134,10 @@ export function parseReceipt(text) {
     items.push({ name: namePart, price: `${parseFloat(price).toFixed(2)} €` });
   }
 
-  return { date, total, items };
+  return {
+    version: PARSER_VERSION,
+    date,
+    total: total ? `${total.toFixed(2)} €` : null,
+    items
+  };
 }
