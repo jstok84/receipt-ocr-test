@@ -1,5 +1,5 @@
 export function parseReceipt(text) {
-  const PARSER_VERSION = "v1.3.3";
+  const PARSER_VERSION = "v1.3.4";
   console.log("🧾 Receipt parser version:", PARSER_VERSION);
 
   function normalizeAmount(value, isSlovenian) {
@@ -15,8 +15,9 @@ export function parseReceipt(text) {
       lastMatch = match;
     }
     if (!lastMatch) return null;
-    let amount = parseFloat(normalizeAmount(lastMatch[1], isSlovenian));
-    return isNaN(amount) ? null : amount;
+    const value = parseFloat(normalizeAmount(lastMatch[1], isSlovenian));
+    const currency = lastMatch[2]?.toUpperCase?.() || null;
+    return isNaN(value) ? null : { value, currency };
   }
 
   function extractAllTotalCandidates(lines, isSlovenian) {
@@ -28,39 +29,62 @@ export function parseReceipt(text) {
       .filter(line =>
         totalKeywords.some(kw => line.toLowerCase().includes(kw))
       )
-      .map(line => ({
-        line,
-        value: extractAmountFromLine(line, isSlovenian) ?? 0
-      }))
+      .map(line => {
+        const parsed = extractAmountFromLine(line, isSlovenian);
+        return {
+          line,
+          value: parsed?.value ?? 0,
+          currency: parsed?.currency ?? null,
+        };
+      })
       .filter(entry => entry.value > 0)
       .sort((a, b) => b.value - a.value);
   }
 
   function tryFallbackTotal(lines, isSlovenian) {
     let net = null, vat = null;
+    let currency = null;
 
     for (const line of lines) {
       const lower = line.toLowerCase();
 
       if (isSlovenian) {
         if (lower.includes("brez ddv")) {
-          net = extractAmountFromLine(line, isSlovenian) ?? net;
+          const parsed = extractAmountFromLine(line, isSlovenian);
+          if (parsed) {
+            net = parsed.value;
+            currency = parsed.currency ?? currency;
+          }
         }
         if (lower.includes("ddv") && lower.includes("%")) {
-          vat = extractAmountFromLine(line, isSlovenian) ?? vat;
+          const parsed = extractAmountFromLine(line, isSlovenian);
+          if (parsed) {
+            vat = parsed.value;
+            currency = parsed.currency ?? currency;
+          }
         }
       } else {
-        if (lower.includes("net")) net = extractAmountFromLine(line, isSlovenian) ?? net;
+        if (lower.includes("net")) {
+          const parsed = extractAmountFromLine(line, isSlovenian);
+          if (parsed) {
+            net = parsed.value;
+            currency = parsed.currency ?? currency;
+          }
+        }
         if (lower.includes("vat") || lower.includes("tax")) {
-          vat = extractAmountFromLine(line, isSlovenian) ?? vat;
+          const parsed = extractAmountFromLine(line, isSlovenian);
+          if (parsed) {
+            vat = parsed.value;
+            currency = parsed.currency ?? currency;
+          }
         }
       }
     }
 
     if (net != null && vat != null) {
-      const total = (net + vat).toFixed(2);
-      console.log(`💡 Fallback total calculated from net + VAT: ${net} + ${vat} = ${total}`);
-      return parseFloat(total);
+      const total = parseFloat((net + vat).toFixed(2));
+      console.log(`💡 Fallback total from net + VAT: ${net} + ${vat} = ${total}`);
+      return { value: total, currency };
     }
 
     return null;
@@ -101,12 +125,19 @@ export function parseReceipt(text) {
     : ["transaction", "terminal", "subtotal", "tax", "vat", "invoice", "date"];
 
   const totalCandidates = extractAllTotalCandidates(lines, isSlovenian);
-  let total = totalCandidates.length > 0 ? totalCandidates[0].value : null;
+  let total = null;
+  let currency = "€"; // default
+
+  if (totalCandidates.length > 0) {
+    total = totalCandidates[0].value;
+    currency = totalCandidates[0].currency ?? currency;
+  }
 
   const fallbackTotal = tryFallbackTotal(lines, isSlovenian);
-  if (fallbackTotal && (!total || fallbackTotal > total)) {
+  if (fallbackTotal && (!total || fallbackTotal.value > total)) {
     console.log("⚠️  Overriding total with fallback total.");
-    total = fallbackTotal;
+    total = fallbackTotal.value;
+    currency = fallbackTotal.currency ?? currency;
   }
 
   const date = extractDate(lines);
@@ -131,13 +162,13 @@ export function parseReceipt(text) {
     );
     if (hasExcludedKeyword) continue;
 
-    items.push({ name: namePart, price: `${parseFloat(price).toFixed(2)} €` });
+    items.push({ name: namePart, price: `${parseFloat(price).toFixed(2)} ${currency}` });
   }
 
   return {
     version: PARSER_VERSION,
     date,
-    total: total ? `${total.toFixed(2)} €` : null,
+    total: total ? `${total.toFixed(2)} ${currency}` : null,
     items
   };
 }
