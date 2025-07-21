@@ -40,7 +40,7 @@ export function parseReceipt(text) {
   if (totalMatch?.[2]) total += " " + totalMatch[2].toUpperCase();
 
   // Extract VAT or Tax if present
-  let tax: string | null = null;
+  let tax = null;
   const taxLine = deduplicatedLines.find((l) =>
     taxKeywords.some((kw) => l.toLowerCase().includes(kw))
   );
@@ -70,7 +70,7 @@ export function parseReceipt(text) {
     .filter(Boolean);
 
   // Metadata
-  const metadata: Record<string, string> = {};
+  const metadata = {};
   for (const line of deduplicatedLines) {
     if (/Transaction ID[:\-]?\s*/i.test(line)) {
       metadata.transactionId = line.split(/Transaction ID[:\-]?\s*/i)[1]?.trim();
