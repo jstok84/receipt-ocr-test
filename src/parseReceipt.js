@@ -4,7 +4,6 @@ export function parseReceipt(text) {
     .map((l) => l.trim())
     .filter(Boolean);
 
-  // Slovenian + English total keywords
   const totalKeywords = [
     "total", "skupaj", "znesek", "skupna vrednost", "skupaj z ddv",
     "znesek za plačilo", "končni znesek", "skupaj znesek", "amount",
@@ -16,14 +15,7 @@ export function parseReceipt(text) {
     totalKeywords.some((kw) => l.toLowerCase().includes(kw))
   );
 
-  const totalMatch = totalLine?.match(
-    /(\d{1,3}(?:[ ,.]?\d{3})*(?:[.,]\d{1,2})?)\s*(EUR|USD|\$|€)?/i
-  );
-  let total = null;
-  if (totalMatch) {
-    total = totalMatch[1].replace(/[\s,]/g, "").replace(",", ".");
-    if (totalMatch[2]) total += " " + totalMatch[2].toUpperCase();
-  }
+  const total = extractTotalAmount(totalLine);
 
   // Date regex
   const dateRegex =
@@ -32,16 +24,13 @@ export function parseReceipt(text) {
   const dateMatch = dateLine?.match(dateRegex);
   const date = dateMatch ? dateMatch[1] : null;
 
-  // Exclude lines starting with these keywords (whole words only)
   const excludeKeywords = [
     "transaction", "terminal", "id", "number", "purchase", "type", "response",
     "approval", "credit", "paid by", "card", "sub total", "subtotal", "tax", "total",
-    // Slovenian
     "transakcija", "terminal", "številka", "nakup", "tip", "odgovor",
     "odobritev", "kredit", "plačano z", "kartica", "vrednost brez ddv", "ddv", "skupaj"
   ];
 
-  // Helper: check if line should be excluded by keyword as a separate word
   function isExcluded(line) {
     const lower = line.toLowerCase();
     return excludeKeywords.some(kw => {
@@ -50,11 +39,10 @@ export function parseReceipt(text) {
     });
   }
 
-  // Parse items: find last price-like pattern on the line (allows multiple prices per line)
+  // Extract items
   const items = lines
     .filter(line => !isExcluded(line))
     .map(line => {
-      // Find all price matches (e.g. $12.50 or 12,50 etc)
       const priceRegex = /(\d{1,3}(?:[ ,.]?\d{3})*(?:[.,]\d{1,2}))\s*(EUR|USD|\$|€)?/gi;
       let match, lastMatch = null;
       while ((match = priceRegex.exec(line)) !== null) {
@@ -62,11 +50,10 @@ export function parseReceipt(text) {
       }
       if (!lastMatch) return null;
 
-      // Extract product name as everything before last price match
       const priceIndex = lastMatch.index;
-      const name = line.substring(0, priceIndex).trim();
+      let name = line.substring(0, priceIndex).trim();
 
-      if (name.length < 2) return null; // filter out very short names
+      if (name.length < 2) return null;
 
       let price = lastMatch[1].replace(/[\s,]/g, "").replace(",", ".");
       if (lastMatch[2]) price += " " + lastMatch[2].toUpperCase();
