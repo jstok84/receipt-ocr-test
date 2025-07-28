@@ -127,26 +127,24 @@ export function parseReceipt(text) {
   }
 
   function extractDate(lines) {
-    // Only strict date patterns: dd.mm.yyyy or yyyy-mm-dd etc.
-    const dateRegex = /\b(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})\b/;
-    const foundLine = lines.find(line => dateRegex.test(line));
-    if (!foundLine) return null;
-    const match = foundLine.match(dateRegex);
-    if (!match) return null;
+    // Match date format dd.mm.yyyy, dd/mm/yyyy, yyyy-mm-dd, etc.
+    // Day: 1-31, Month: 1-12, Year: 4 digits or 2 digits assumed 2000+
+    const dateRegex = /\b(0?[1-9]|[12][0-9]|3[01])[./-](0?[1-9]|1[0-2])[./-](\d{2}|\d{4})\b/;
 
-    let day = parseInt(match[1], 10);
-    let month = parseInt(match[2], 10);
-    let year = parseInt(match[3], 10);
-    if (year < 100) year += 2000;
+    for (const line of lines) {
+      const match = line.match(dateRegex);
+      if (match) {
+        let day = parseInt(match[1], 10);
+        let month = parseInt(match[2], 10);
+        let year = parseInt(match[3], 10);
+        if (year < 100) year += 2000;
 
-    // Fix possible day/month swap if day > 12
-    if (day > 12) {
-      [day, month] = [month, day];
+        return `${year.toString().padStart(4, "0")}-${month
+          .toString()
+          .padStart(2, "0")}-${day.toString().padStart(2, "0")}`;
+      }
     }
-
-    return `${year.toString().padStart(4, "0")}-${month
-      .toString()
-      .padStart(2, "0")}-${day.toString().padStart(2, "0")}`;
+    return null;
   }
 
   const lines = text
@@ -196,6 +194,8 @@ export function parseReceipt(text) {
     /^plačano/i,
     /^c\s+\d{1,2},\d{1,2}\s*%\s+[\d\s.,]+—?\s*[\d\s.,]+/i, // VAT lines
     /^[a-zA-Z]\s*\d{1,2}[,.]\d{1,2}%\s+\d+[,.]\d+\s+\d+[,.]\d+/i,  // strict VAT line filter
+    /^dov:/i,     // skip VAT lines starting with 'Dov:'
+    /^bl:/i,      // skip metadata lines starting with 'BL:'
     /^eor[: ]/i,
     /^zol[: ]/i,
     /^spar plus/i,
