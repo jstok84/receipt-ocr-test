@@ -197,6 +197,7 @@ export function parseReceipt(text) {
   const nonItemPatterns = [
     /^plačano/i,
     /^c\s+\d{1,2},\d{2}\s*%\s+[\d\s.,]+—?\s*[\d\s.,]+/i, // VAT lines like "C 22,00 % 208,12 45,78"
+    /^[a-zA-Z]\s*\d{1,2}[,.]\d{1,2}%\s+\d+[,.]\d+\s+\d+[,.]\d+/i,  // ✅ NEW strict VAT line filter
     /^eor[: ]/i,
     /^zol[: ]/i,
     /^spar plus/i,
