@@ -251,6 +251,15 @@ export function parseReceipt(text) {
     const priceStr = normalizeAmount(rawAmount, isSlovenian);
     const priceFloat = parseFloat(priceStr);
 
+    // New check: if last amount is followed by a unit like 'L', 'ml', 'kg', 'g', etc. => skip line (volume/quantity, not price)
+    const units = ["l", "ml", "kg", "g", "pcs", "x"];
+    const afterLastAmountIndex = lastAmountMatch.index + rawAmount.length;
+    const afterToken = line.slice(afterLastAmountIndex).trim().toLowerCase().split(/\s+/)[0] || "";
+    if (units.includes(afterToken)) {
+      console.log(`Skipping line because last number looks like volume/quantity unit '${afterToken}':`, line);
+      continue;
+    }
+
     if (isNaN(priceFloat) || priceFloat <= 0) {
       console.log("Skipping line due to invalid or zero price:", priceStr);
       continue;
