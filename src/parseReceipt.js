@@ -208,7 +208,9 @@ export function parseReceipt(text) {
     /številka naročila/i,
     /datum naročila/i,
     /datum računa/i,
-    /skupaj eur/i
+    /skupaj eur/i,
+    /^obračunsko obdobje/i,     // ✅ exclude billing periods
+    /^vsi zneski so v/i         // ✅ exclude footers
   ];
 
   for (const line of lines) {
@@ -242,7 +244,7 @@ export function parseReceipt(text) {
     const price = normalizeAmount(rawAmount, isSlovenian);
 
     let namePart = lastAmountMatch ? line.slice(0, lastAmountMatch.index).trim() : line.trim();
-    namePart = namePart.replace(/^\d+\s?[—\-–]?\s*/, "").trim();
+    namePart = namePart.replace(/^(\d+|\.\d+)?\s?[—\-–]?\s*/, "").trim();
 
     const hasExcludedKeyword = excludeKeywords.some(kw =>
       new RegExp(`\\b${kw}\\b`, "i").test(namePart)
