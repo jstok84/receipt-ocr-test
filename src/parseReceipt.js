@@ -209,6 +209,12 @@ export function parseReceipt(text) {
     /datum naročila/i,
     /datum računa/i,
     /skupaj eur/i,
+    /^kartica/i,                // ✅ payment method
+    /^date[: ]?/i,              // ✅ metadata line
+    /^znesek\s*—?\s*\d+[,.]/i,  // ✅ total line
+    /^a\s+\d{1,2}[,.]\d+\s+\d+[,.]/i, // ✅ VAT line e.g., A 9,5% ...
+    /^[a-z]?\s*\d{1,2}[,.]\d+\s+\d+[,.]/i, // ✅ general tax lines
+    /^,?\d{1,3}[,.]\d{2}\s*—?\s*\d{1,3}[,.]\d{2}/, // ✅ malformed summary lines
     /^obračunsko obdobje/i,     // ✅ exclude billing periods
     /^vsi zneski so v/i         // ✅ exclude footers
   ];
