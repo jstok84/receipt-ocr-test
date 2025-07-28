@@ -174,11 +174,20 @@ export function parseReceipt(text) {
 
   if (fallbackTotal) {
     const delta = total ? Math.abs(fallbackTotal.value - total) : 0;
-    const isFallbackMoreTrustworthy = (!total || delta <= 0.05 || fallbackTotal.value < total);
+
+    // Fallback is preferred if:
+    // - there was no total found,
+    // - the values are very close,
+    // - OR the fallback value seems correct and includes tax (i.e., is higher)
+    const isFallbackMoreTrustworthy =
+      !total || delta <= 0.05 || fallbackTotal.value > total;
 
     if (isFallbackMoreTrustworthy) {
+      console.log(`✅ Using fallback total: ${fallbackTotal.value} > main: ${total}`);
       total = fallbackTotal.value;
       currency = fallbackTotal.currency ?? currency;
+    } else {
+      console.log(`⚠️ Ignoring fallback: ${fallbackTotal.value} vs main: ${total}`);
     }
   }
 
