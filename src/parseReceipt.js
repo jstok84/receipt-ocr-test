@@ -184,9 +184,35 @@ export function parseReceipt(text) {
   const date = extractDate(lines);
   console.log("Extracted date:", date);
 
-  const items = [];
+    const items = [];
+
+  // Patterns to exclude lines that are clearly not items
+  const nonItemPatterns = [
+    /^plačano/i,
+    /^c\s+\d+,\d+\s+\d+,\d+/i, // VAT lines like "C 22,00 % 208,12 45,78"
+    /^eor[: ]/i,
+    /^zol[: ]/i,
+    /^spar plus/i,
+    /mat\.št/i,
+    /osn\.kapital/i,
+    /splošni pogoji/i,
+    /vaše današnje ugodnosti/i,
+    /točke zvestobe/i,
+    /številka naročila/i,
+    /datum naročila/i,
+    /datum računa/i,
+    /skupaj eur/i
+  ];
 
   for (const line of lines) {
+    const isServiceCostLine = /stroški storitve/i.test(line);
+
+    // Skip if line matches known non-item patterns and isn't a service cost
+    if (!isServiceCostLine && nonItemPatterns.some(pattern => pattern.test(line))) {
+      console.log("Skipping known non-item line:", line);
+      continue;
+    }
+
     // Skip total candidate lines and excluded keywords
     if (/veljavnost ponudbe/i.test(line)) {
       console.log("Skipping line due to 'veljavnost ponudbe':", line);
@@ -201,49 +227,43 @@ export function parseReceipt(text) {
       continue;
     }
 
-    // Find all numbers in line
     const allAmounts = [...line.matchAll(/(\d{1,3}(?:[ .,]?\d{3})*(?:[.,]\d{1,2}))/g)];
     if (!allAmounts.length) {
-      console.log("No amounts found in line:", line);
-      continue;
+      if (!isServiceCostLine) {
+        console.log("No amounts found in line:", line);
+        continue;
+      }
     }
 
-    // Choose the last number as the price candidate (most likely the actual price)
     const lastAmountMatch = allAmounts[allAmounts.length - 1];
     const rawAmount = lastAmountMatch[1];
     const price = normalizeAmount(rawAmount, isSlovenian);
 
     // Extract name before the price number
     let namePart = line.slice(0, lastAmountMatch.index).trim();
-
-    // Remove leading numbering or codes like '001', '002' etc.
     namePart = namePart.replace(/^\d+\s?[—\-–]?\s*/, "").trim();
-
-    if (namePart.length < 2) {
-      console.log("Skipping line due to short namePart:", namePart);
-      continue;
-    }
 
     const hasExcludedKeyword = excludeKeywords.some(kw =>
       new RegExp(`\\b${kw}\\b`, "i").test(namePart)
     );
 
-    if (hasExcludedKeyword) {
-      console.log(`Skipping line due to excluded keyword (${namePart}):`, line);
+    if (!isServiceCostLine && (namePart.length < 2 || hasExcludedKeyword)) {
+      console.log(`Skipping line due to excluded keyword or short name (${namePart}):`, line);
       continue;
     }
 
-    // Parse price float to validate
     const priceFloat = parseFloat(price);
     if (isNaN(priceFloat)) {
       console.log("Skipping line due to NaN price:", price);
       continue;
     }
 
-    console.log(`Parsed item: name='${namePart}', price='${priceFloat.toFixed(2)} ${currency}'`);
+    const itemName = namePart.length > 0 ? namePart : "Stroški storitve";
+    console.log(`Parsed item: name='${itemName}', price='${priceFloat.toFixed(2)} ${currency}'`);
 
-    items.push({ name: namePart, price: `${priceFloat.toFixed(2)} ${currency}` });
+    items.push({ name: itemName, price: `${priceFloat.toFixed(2)} ${currency}` });
   }
+
 
   return {
     version: PARSER_VERSION,
