@@ -9,20 +9,26 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [useCamera, setUseCamera] = useState(false);
   const [cameraAvailable, setCameraAvailable] = useState(false);
-  const [debugPreprocessing, setDebugPreprocessing] = useState(false);  // NEW
+
+  const [capturedImage, setCapturedImage] = useState(null); // preview camera capture
+  const [uploadedPreview, setUploadedPreview] = useState(null); // preview uploaded image
+  const [pdfPreviews, setPdfPreviews] = useState([]); // preview PDF pages as images
+
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
 
+  // Check for camera availability on mount
   useEffect(() => {
-    // Check if camera is available
     navigator.mediaDevices?.enumerateDevices().then((devices) => {
       const hasVideoInput = devices.some((d) => d.kind === "videoinput");
       setCameraAvailable(hasVideoInput);
     });
   }, []);
 
+  // Handle camera stream
   useEffect(() => {
     if (!useCamera) return;
+
     const constraints = {
       video: { facingMode: { ideal: "environment" }, focusMode: "continuous" },
     };
@@ -44,6 +50,7 @@ export default function App() {
     };
   }, [useCamera]);
 
+  // Capture image from camera and OCR
   const handleCapture = async () => {
     if (!videoRef.current || !canvasRef.current) return;
 
@@ -54,33 +61,58 @@ export default function App() {
     const ctx = canvas.getContext("2d");
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
+    const dataUrl = canvas.toDataURL("image/jpeg");
+    console.log("Captured image dataUrl:", dataUrl);
+    setCapturedImage(dataUrl);
+
     setLoading(true);
     setText("Processing captured image...");
     setParsed(null);
+    setUploadedPreview(null);
+    setPdfPreviews([]);
 
-    const dataUrl = canvas.toDataURL("image/jpeg");
-    const result = await processImage(dataUrl, debugPreprocessing);  // Pass debug flag
+    const result = await processImage(dataUrl);
+    console.log("OCR result from captured image:", result);
     setText(result);
     setParsed(parseReceipt(result));
     setLoading(false);
   };
 
+  // Handle file uploads (images and PDFs)
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
+    console.log("File uploaded:", file.name, file.type);
+
     setLoading(true);
     setText("Processing file...");
     setParsed(null);
+    setCapturedImage(null);
+    setPdfPreviews([]);
+    setUploadedPreview(null);
 
-    const ext = file.type;
-    const result =
-      ext === "application/pdf"
-        ? await processPDF(file, debugPreprocessing)  // Pass debug flag
-        : await processImage(file, debugPreprocessing); // Pass debug flag
+    if (file.type.startsWith("image/")) {
+      // Show preview for images
+      const imgUrl = URL.createObjectURL(file);
+      setUploadedPreview(imgUrl);
+      console.log("Image preview URL:", imgUrl);
 
-    setText(result);
-    setParsed(parseReceipt(result));
+      const result = await processImage(file);
+      console.log("OCR result from uploaded image:", result);
+      setText(result);
+      setParsed(parseReceipt(result));
+    } else if (file.type === "application/pdf") {
+      // Process PDF pages & previews
+      const { text: pdfText, previews } = await processPDF(file);
+      console.log("OCR result from PDF:", pdfText);
+      setText(pdfText);
+      setParsed(parseReceipt(pdfText));
+      setPdfPreviews(previews); // array of page image URLs to preview
+    } else {
+      setText("Unsupported file type");
+    }
+
     setLoading(false);
   };
 
@@ -100,17 +132,9 @@ export default function App() {
             {useCamera ? "Stop Camera" : "Use Camera"}
           </button>
         )}
-        {/* New debug toggle checkbox */}
-        <label style={{ marginLeft: 15, fontSize: 14 }}>
-          <input
-            type="checkbox"
-            checked={debugPreprocessing}
-            onChange={(e) => setDebugPreprocessing(e.target.checked)}
-          />{" "}
-          Debug Preprocessing
-        </label>
       </div>
 
+      {/* Camera preview and capture */}
       {useCamera && (
         <>
           <video ref={videoRef} autoPlay playsInline style={styles.videoPreview} />
@@ -118,7 +142,41 @@ export default function App() {
           <button onClick={handleCapture} style={styles.button}>
             Capture & OCR
           </button>
+
+          {capturedImage && (
+            <img
+              src={capturedImage}
+              alt="Captured preview"
+              style={{ width: "200px", marginTop: 10, border: "1px solid #ccc" }}
+            />
+          )}
         </>
+      )}
+
+      {/* Uploaded image preview */}
+      {uploadedPreview && (
+        <img
+          src={uploadedPreview}
+          alt="Uploaded file preview"
+          style={{ width: "200px", marginTop: 10, border: "1px solid #ccc" }}
+        />
+      )}
+
+      {/* PDF page previews */}
+      {pdfPreviews.length > 0 && (
+        <div style={{ marginTop: 20 }}>
+          <h3>PDF Page Previews</h3>
+          <div style={{ display: "flex", gap: 10, overflowX: "auto" }}>
+            {pdfPreviews.map((src, idx) => (
+              <img
+                key={idx}
+                src={src}
+                alt={`PDF page ${idx + 1}`}
+                style={{ height: "150px", border: "1px solid #ccc" }}
+              />
+            ))}
+          </div>
+        </div>
       )}
 
       {loading && <p>🔄 Processing OCR...</p>}

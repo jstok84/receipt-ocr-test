@@ -7,11 +7,12 @@ GlobalWorkerOptions.workerSrc = pdfWorker;
 const tesseractConfig = {
   tessedit_pageseg_mode: 6,
   tessedit_ocr_engine_mode: 1,
-  tessedit_char_whitelist: "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€",
+  tessedit_char_whitelist:
+    "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€",
 };
 
-// ⬇️ Modified: now accepts debug flag to optionally display canvas
-function preprocessWithOpenCV(imageSrc, debug = false) {
+// Preprocess image with OpenCV.js
+function preprocessWithOpenCV(imageSrc) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = "Anonymous";
@@ -33,32 +34,12 @@ function preprocessWithOpenCV(imageSrc, debug = false) {
       let thresh = new cv.Mat();
       cv.threshold(blur, thresh, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
 
-      // Optional: invert if background is light
+      // Invert if background is light
       const mean = cv.mean(thresh)[0];
       if (mean > 127) cv.bitwise_not(thresh, thresh);
 
       cv.imshow(canvas, thresh);
 
-      if (debug) {
-        // Style and append the canvas for visual debugging
-        canvas.style.border = "3px solid #4CAF50";
-        canvas.style.marginTop = "10px";
-        canvas.style.maxWidth = "100%";
-        // Append the canvas to a dedicated debug container or body
-        let debugContainer = document.getElementById("debug-preprocess-container");
-        if (!debugContainer) {
-          debugContainer = document.createElement("div");
-          debugContainer.id = "debug-preprocess-container";
-          debugContainer.style.marginTop = "20px";
-          debugContainer.style.padding = "10px";
-          debugContainer.style.border = "2px dashed #4CAF50";
-          debugContainer.style.backgroundColor = "#f9fff9";
-          document.body.appendChild(debugContainer);
-        }
-        debugContainer.appendChild(canvas.cloneNode(true));
-      }
-
-      // Cleanup mats
       src.delete();
       gray.delete();
       blur.delete();
@@ -71,24 +52,31 @@ function preprocessWithOpenCV(imageSrc, debug = false) {
   });
 }
 
-export async function processImage(imageSrc, debug = false) {
-  const preprocessedDataURL = await preprocessWithOpenCV(imageSrc, debug);
+// OCR for images
+export async function processImage(imageSrc) {
+  console.log("Starting image preprocessing");
+  const preprocessedDataURL = await preprocessWithOpenCV(imageSrc);
+  console.log("Image preprocessed, starting OCR");
 
   const result = await Tesseract.recognize(preprocessedDataURL, "eng+slv", {
-    logger: (m) => console.log("Image OCR:", m),
+    logger: (m) => console.log("Tesseract OCR:", m),
     ...tesseractConfig,
   });
 
+  console.log("OCR complete");
   return result.data.text;
 }
 
-export async function processPDF(file, debug = false) {
+// OCR for PDFs + page image previews
+export async function processPDF(file) {
   const reader = new FileReader();
 
   return new Promise((resolve) => {
     reader.onload = async () => {
+      console.log("PDF loaded, parsing...");
       const pdf = await getDocument({ data: reader.result }).promise;
       let fullText = "";
+      let previews = [];
 
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
@@ -101,18 +89,22 @@ export async function processPDF(file, debug = false) {
         await page.render({ canvasContext: context, viewport }).promise;
 
         const image = canvas.toDataURL("image/png");
+        previews.push(image);
+        console.log(`Rendered page ${i} to image`);
 
-        const preprocessed = await preprocessWithOpenCV(image, debug);
+        const preprocessed = await preprocessWithOpenCV(image);
+        console.log(`Page ${i} preprocessed`);
 
         const result = await Tesseract.recognize(preprocessed, "eng+slv", {
-          logger: (m) => console.log(`PDF Page ${i}:`, m),
+          logger: (m) => console.log(`Tesseract PDF Page ${i}:`, m),
           ...tesseractConfig,
         });
 
         fullText += `\n\n--- Page ${i} ---\n${result.data.text}`;
+        console.log(`OCR complete for page ${i}`);
       }
 
-      resolve(fullText);
+      resolve({ text: fullText, previews });
     };
 
     reader.readAsArrayBuffer(file);
