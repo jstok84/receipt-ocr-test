@@ -34,7 +34,6 @@ function preprocessWithOpenCV(imageSrc) {
       let thresh = new cv.Mat();
       cv.threshold(blur, thresh, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
 
-      // Invert if background is light
       const mean = cv.mean(thresh)[0];
       if (mean > 127) cv.bitwise_not(thresh, thresh);
 
@@ -48,18 +47,24 @@ function preprocessWithOpenCV(imageSrc) {
       resolve(canvas.toDataURL("image/png"));
     };
     img.onerror = reject;
-    img.src = typeof imageSrc === "string" ? imageSrc : URL.createObjectURL(imageSrc);
+    img.src =
+      typeof imageSrc === "string"
+        ? imageSrc
+        : URL.createObjectURL(imageSrc);
   });
 }
 
 // OCR for images
-export async function processImage(imageSrc) {
+export async function processImage(imageSrc, onProgress = () => {}) {
   console.log("Starting image preprocessing");
   const preprocessedDataURL = await preprocessWithOpenCV(imageSrc);
   console.log("Image preprocessed, starting OCR");
 
   const result = await Tesseract.recognize(preprocessedDataURL, "eng+slv", {
-    logger: (m) => console.log("Tesseract OCR:", m),
+    logger: (m) => {
+      console.log("Tesseract OCR:", m);
+      onProgress(m);
+    },
     ...tesseractConfig,
   });
 
@@ -67,41 +72,63 @@ export async function processImage(imageSrc) {
   return result.data.text;
 }
 
-// OCR for PDFs + page image previews
-export async function processPDF(file) {
+// PDF text extraction fallback (when possible)
+async function extractTextFromPDFPage(page) {
+  const textContent = await page.getTextContent();
+  const strings = textContent.items.map((item) => item.str).filter(Boolean);
+  return strings.join("\n").trim();
+}
+
+// OCR for PDFs + previews
+export async function processPDF(file, onProgress = () => {}) {
   const reader = new FileReader();
 
   return new Promise((resolve) => {
     reader.onload = async () => {
       console.log("PDF loaded, parsing...");
       const pdf = await getDocument({ data: reader.result }).promise;
+
       let fullText = "";
       let previews = [];
 
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
-        const viewport = page.getViewport({ scale: 3 });
-        const canvas = document.createElement("canvas");
-        const context = canvas.getContext("2d");
+        console.log(`Processing page ${i}...`);
 
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        await page.render({ canvasContext: context, viewport }).promise;
+        // Try direct text extraction
+        const extractedText = await extractTextFromPDFPage(page);
 
-        const image = canvas.toDataURL("image/png");
-        previews.push(image);
-        console.log(Rendered page ${i} to image);
+        if (extractedText && extractedText.length > 20) {
+          console.log(`Page ${i}: Text extracted without OCR`);
+          fullText += `\n\n--- Page ${i} (Extracted Text) ---\n${extractedText}`;
+        } else {
+          // Fallback to OCR
+          const viewport = page.getViewport({ scale: 3 });
+          const canvas = document.createElement("canvas");
+          const context = canvas.getContext("2d");
 
-        const preprocessed = await preprocessWithOpenCV(image);
-        console.log(Page ${i} preprocessed);
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          await page.render({ canvasContext: context, viewport }).promise;
 
-        const result = await Tesseract.recognize(preprocessed, "eng+slv", {
-          logger: (m) => console.log(Tesseract PDF Page ${i}:, m),
-          ...tesseractConfig,
-        });
+          const image = canvas.toDataURL("image/png");
+          previews.push(image);
+          console.log(`Rendered page ${i} to image`);
 
-        fullText += \n\n--- Page ${i} ---\n${result.data.text};
-        console.log(OCR complete for page ${i});
+          const preprocessed = await preprocessWithOpenCV(image);
+          console.log(`Page ${i} preprocessed`);
+
+          const result = await Tesseract.recognize(preprocessed, "eng+slv", {
+            logger: (m) => {
+              console.log(`Tesseract PDF Page ${i}:`, m);
+              onProgress(m);
+            },
+            ...tesseractConfig,
+          });
+
+          fullText += `\n\n--- Page ${i} (OCR) ---\n${result.data.text}`;
+          console.log(`OCR complete for page ${i}`);
+        }
       }
 
       resolve({ text: fullText, previews });

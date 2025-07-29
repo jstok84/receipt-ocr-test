@@ -7,6 +7,7 @@ export default function App() {
   const [text, setText] = useState("");
   const [parsed, setParsed] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState(0); // progress state
   const [useCamera, setUseCamera] = useState(false);
   const [cameraAvailable, setCameraAvailable] = useState(false);
 
@@ -62,17 +63,16 @@ export default function App() {
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
     const dataUrl = canvas.toDataURL("image/jpeg");
-    console.log("Captured image dataUrl:", dataUrl);
     setCapturedImage(dataUrl);
 
     setLoading(true);
+    setProgress(0);
     setText("Processing captured image...");
     setParsed(null);
     setUploadedPreview(null);
     setPdfPreviews([]);
 
-    const result = await processImage(dataUrl);
-    console.log("OCR result from captured image:", result);
+    const result = await processImage(dataUrl, (p) => setProgress(p));
     setText(result);
     setParsed(parseReceipt(result));
     setLoading(false);
@@ -83,9 +83,8 @@ export default function App() {
     const file = e.target.files[0];
     if (!file) return;
 
-    console.log("File uploaded:", file.name, file.type);
-
     setLoading(true);
+    setProgress(0);
     setText("Processing file...");
     setParsed(null);
     setCapturedImage(null);
@@ -96,19 +95,16 @@ export default function App() {
       // Show preview for images
       const imgUrl = URL.createObjectURL(file);
       setUploadedPreview(imgUrl);
-      console.log("Image preview URL:", imgUrl);
 
-      const result = await processImage(file);
-      console.log("OCR result from uploaded image:", result);
+      const result = await processImage(file, (p) => setProgress(p));
       setText(result);
       setParsed(parseReceipt(result));
     } else if (file.type === "application/pdf") {
       // Process PDF pages & previews
-      const { text: pdfText, previews } = await processPDF(file);
-      console.log("OCR result from PDF:", pdfText);
+      const { text: pdfText, previews } = await processPDF(file, (p) => setProgress(p));
       setText(pdfText);
       setParsed(parseReceipt(pdfText));
-      setPdfPreviews(previews); // array of page image URLs to preview
+      setPdfPreviews(previews);
     } else {
       setText("Unsupported file type");
     }
@@ -179,7 +175,12 @@ export default function App() {
         </div>
       )}
 
-      {loading && <p>🔄 Processing OCR...</p>}
+      {loading && (
+        <>
+          <p>🔄 Processing OCR... {Math.round(progress * 100)}%</p>
+          <progress value={progress} max={1} style={{ width: "100%" }} />
+        </>
+      )}
 
       <textarea
         value={text}
