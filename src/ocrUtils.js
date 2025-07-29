@@ -10,8 +10,8 @@ const tesseractConfig = {
   tessedit_char_whitelist: "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€",
 };
 
-// ⬇️ New: preprocess image using OpenCV.js before OCR
-function preprocessWithOpenCV(imageSrc) {
+// ⬇️ Modified: now accepts debug flag to optionally display canvas
+function preprocessWithOpenCV(imageSrc, debug = false) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = "Anonymous";
@@ -39,7 +39,26 @@ function preprocessWithOpenCV(imageSrc) {
 
       cv.imshow(canvas, thresh);
 
-      // Cleanup
+      if (debug) {
+        // Style and append the canvas for visual debugging
+        canvas.style.border = "3px solid #4CAF50";
+        canvas.style.marginTop = "10px";
+        canvas.style.maxWidth = "100%";
+        // Append the canvas to a dedicated debug container or body
+        let debugContainer = document.getElementById("debug-preprocess-container");
+        if (!debugContainer) {
+          debugContainer = document.createElement("div");
+          debugContainer.id = "debug-preprocess-container";
+          debugContainer.style.marginTop = "20px";
+          debugContainer.style.padding = "10px";
+          debugContainer.style.border = "2px dashed #4CAF50";
+          debugContainer.style.backgroundColor = "#f9fff9";
+          document.body.appendChild(debugContainer);
+        }
+        debugContainer.appendChild(canvas.cloneNode(true));
+      }
+
+      // Cleanup mats
       src.delete();
       gray.delete();
       blur.delete();
@@ -52,8 +71,8 @@ function preprocessWithOpenCV(imageSrc) {
   });
 }
 
-export async function processImage(imageSrc) {
-  const preprocessedDataURL = await preprocessWithOpenCV(imageSrc);
+export async function processImage(imageSrc, debug = false) {
+  const preprocessedDataURL = await preprocessWithOpenCV(imageSrc, debug);
 
   const result = await Tesseract.recognize(preprocessedDataURL, "eng+slv", {
     logger: (m) => console.log("Image OCR:", m),
@@ -63,7 +82,7 @@ export async function processImage(imageSrc) {
   return result.data.text;
 }
 
-export async function processPDF(file) {
+export async function processPDF(file, debug = false) {
   const reader = new FileReader();
 
   return new Promise((resolve) => {
@@ -83,7 +102,7 @@ export async function processPDF(file) {
 
         const image = canvas.toDataURL("image/png");
 
-        const preprocessed = await preprocessWithOpenCV(image);
+        const preprocessed = await preprocessWithOpenCV(image, debug);
 
         const result = await Tesseract.recognize(preprocessed, "eng+slv", {
           logger: (m) => console.log(`PDF Page ${i}:`, m),
