@@ -67,7 +67,7 @@ export async function processImage(imageSrc) {
   return result.data.text;
 }
 
-// OCR or direct extraction for PDFs
+// OCR for PDFs + page image previews
 export async function processPDF(file) {
   const reader = new FileReader();
 
@@ -80,42 +80,28 @@ export async function processPDF(file) {
 
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
-        console.log(`Processing page ${i} of ${pdf.numPages}`);
+        const viewport = page.getViewport({ scale: 3 });
+        const canvas = document.createElement("canvas");
+        const context = canvas.getContext("2d");
 
-        // Try direct text extraction
-        const textContent = await page.getTextContent();
-        const textItems = textContent.items.map((item) => item.str).filter(Boolean);
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        await page.render({ canvasContext: context, viewport }).promise;
 
-        if (textItems.length > 0) {
-          // ✅ Use extracted text directly
-          const pageText = textItems.join(" ");
-          fullText += `\n\n--- Page ${i} (Text) ---\n${pageText}`;
-          console.log(`Page ${i} has embedded text, skipping OCR`);
-        } else {
-          // 🖼️ Render to canvas and OCR
-          const viewport = page.getViewport({ scale: 3 });
-          const canvas = document.createElement("canvas");
-          const context = canvas.getContext("2d");
+        const image = canvas.toDataURL("image/png");
+        previews.push(image);
+        console.log(Rendered page ${i} to image);
 
-          canvas.width = viewport.width;
-          canvas.height = viewport.height;
-          await page.render({ canvasContext: context, viewport }).promise;
+        const preprocessed = await preprocessWithOpenCV(image);
+        console.log(Page ${i} preprocessed);
 
-          const image = canvas.toDataURL("image/png");
-          previews.push(image);
-          console.log(`Rendered page ${i} to image`);
+        const result = await Tesseract.recognize(preprocessed, "eng+slv", {
+          logger: (m) => console.log(Tesseract PDF Page ${i}:, m),
+          ...tesseractConfig,
+        });
 
-          const preprocessed = await preprocessWithOpenCV(image);
-          console.log(`Page ${i} preprocessed`);
-
-          const result = await Tesseract.recognize(preprocessed, "eng+slv", {
-            logger: (m) => console.log(`Tesseract PDF Page ${i}:`, m),
-            ...tesseractConfig,
-          });
-
-          fullText += `\n\n--- Page ${i} (OCR) ---\n${result.data.text}`;
-          console.log(`OCR complete for page ${i}`);
-        }
+        fullText += \n\n--- Page ${i} ---\n${result.data.text};
+        console.log(OCR complete for page ${i});
       }
 
       resolve({ text: fullText, previews });
