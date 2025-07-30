@@ -1,29 +1,46 @@
 export function parseReceipt(text) {
-  const PARSER_VERSION = "v1.5.0";
+  const PARSER_VERSION = "v1.5.1"; // bumped version for this fix
   console.log("🧾 Receipt parser version:", PARSER_VERSION);
 
-  // 🧠 OCR fix: merge broken lines containing only letters, spaces, dashes
-  function mergeBrokenLines(text) {
+  // Enhanced OCR fix: merge broken lines containing only letters or letters + next line numbers/amounts
+  function mergeBrokenLinesEnhanced(text) {
     const lines = text.split("\n");
     const merged = [];
     for (let i = 0; i < lines.length; i++) {
       const current = lines[i].trim();
       const next = lines[i + 1]?.trim();
+
+      // Merge if both lines contain only letters, spaces, dashes, or Slovenian letters
       if (
         current &&
         next &&
-        /^[a-zA-Z\s\-]+$/.test(current) &&
-        /^[a-zA-Z\s\-]+$/.test(next)
+        /^[a-zA-Z\s\-šžčćđŠŽČĆĐ]+$/.test(current) &&
+        /^[a-zA-Z\s\-šžčćđŠŽČĆĐ]+$/.test(next)
       ) {
         merged.push(current + " " + next);
         i++; // skip next line
-      } else {
-        merged.push(current);
+        continue;
       }
+
+      // Merge if current line letters+spaces and next line starts with a number or euro sign (amount)
+      if (
+        current &&
+        next &&
+        /^[a-zA-Z\s\-šžčćđŠŽČĆĐ]+$/.test(current) &&
+        (/^[€\d]/.test(next) || /^\d/.test(next))
+      ) {
+        merged.push(current + " " + next);
+        i++; // skip next line
+        continue;
+      }
+
+      // Otherwise, just add current line
+      merged.push(current);
     }
     return merged.join("\n");
   }
-  text = mergeBrokenLines(text);
+
+  text = mergeBrokenLinesEnhanced(text);
 
   function normalizeAmount(value, isSlovenian) {
     if (isSlovenian) {
@@ -66,22 +83,32 @@ export function parseReceipt(text) {
           "skupaj z ddv",
         ]
       : ["paid", "total", "amount due", "grand total", "amount", "to pay"];
-    const candidates = lines
-      .filter((line) =>
-        totalKeywords.some((kw) => line.toLowerCase().includes(kw))
-      )
-      .filter(
-        (line) =>
-          !/^c\s+\d{1,2},\d{1,2}\s*%\s+[\d\s.,]+—?\s*[\d\s.,]+/i.test(
-            line.toLowerCase()
-          )
-      )
-      .map((line) => {
-        const parsed = extractAmountFromLine(line, isSlovenian);
-        return { line, value: parsed?.value ?? 0, currency: parsed?.currency ?? null };
-      })
-      .filter((entry) => entry.value > 0)
-      .sort((a, b) => b.value - a.value);
+    const candidates = [];
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!totalKeywords.some((kw) => line.toLowerCase().includes(kw))) continue;
+
+      let parsed = extractAmountFromLine(line, isSlovenian);
+      if (!parsed) {
+        // Try next line as amount if current line has no amount
+        const nextLine = lines[i + 1];
+        if (nextLine) {
+          parsed = extractAmountFromLine(nextLine, isSlovenian);
+          if (parsed) {
+            candidates.push({
+              line: line + " " + nextLine,
+              value: parsed.value,
+              currency: parsed.currency,
+            });
+            continue;
+          }
+        }
+      }
+      if (parsed && parsed.value > 0) {
+        candidates.push({ line, value: parsed.value, currency: parsed.currency });
+      }
+    }
+    candidates.sort((a, b) => b.value - a.value);
     return candidates;
   }
 
@@ -204,7 +231,6 @@ export function parseReceipt(text) {
 
   // Extract items
   const items = [];
-  // Patterns that usually exclude lines from being items
   const nonItemPatterns = [
     /^plačano/i,
     /^c\s+\d{1,2},\d{1,2}\s*%\s+[\d\s.,]+—?\s*[\d\s.,]+/i,
