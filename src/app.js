@@ -7,18 +7,19 @@ export default function App() {
   const [text, setText] = useState("");
   const [parsed, setParsed] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [progress, setProgress] = useState(0); // progress state
+  const [progress, setProgress] = useState(0);
   const [useCamera, setUseCamera] = useState(false);
   const [cameraAvailable, setCameraAvailable] = useState(false);
 
-  const [capturedImage, setCapturedImage] = useState(null); // preview camera capture
-  const [uploadedPreview, setUploadedPreview] = useState(null); // preview uploaded image
-  const [pdfPreviews, setPdfPreviews] = useState([]); // preview PDF pages as images
+  const [capturedImage, setCapturedImage] = useState(null);
+  const [uploadedPreview, setUploadedPreview] = useState(null);
+  const [pdfPreviews, setPdfPreviews] = useState([]);
+
+  const [useFlatMode, setUseFlatMode] = useState(false); // 🆕 NEW toggle state
 
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
 
-  // Check for camera availability on mount
   useEffect(() => {
     navigator.mediaDevices?.enumerateDevices().then((devices) => {
       const hasVideoInput = devices.some((d) => d.kind === "videoinput");
@@ -26,7 +27,6 @@ export default function App() {
     });
   }, []);
 
-  // Handle camera stream
   useEffect(() => {
     if (!useCamera) return;
 
@@ -51,7 +51,12 @@ export default function App() {
     };
   }, [useCamera]);
 
-  // Capture image from camera and OCR
+  // 🔁 Shared function for applying parseReceipt with mode
+  const runParsing = (rawText) => {
+    const preparedText = useFlatMode ? rawText.replace(/\n/g, " ") : rawText;
+    setParsed(parseReceipt(preparedText));
+  };
+
   const handleCapture = async () => {
     if (!videoRef.current || !canvasRef.current) return;
 
@@ -74,11 +79,10 @@ export default function App() {
 
     const result = await processImage(dataUrl, (p) => setProgress(p));
     setText(result);
-    setParsed(parseReceipt(result));
+    runParsing(result); // 🔁 uses flat mode toggle
     setLoading(false);
   };
 
-  // Handle file uploads (images and PDFs)
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -92,18 +96,16 @@ export default function App() {
     setUploadedPreview(null);
 
     if (file.type.startsWith("image/")) {
-      // Show preview for images
       const imgUrl = URL.createObjectURL(file);
       setUploadedPreview(imgUrl);
 
       const result = await processImage(file, (p) => setProgress(p));
       setText(result);
-      setParsed(parseReceipt(result));
+      runParsing(result);
     } else if (file.type === "application/pdf") {
-      // Process PDF pages & previews
       const { text: pdfText, previews } = await processPDF(file, (p) => setProgress(p));
       setText(pdfText);
-      setParsed(parseReceipt(pdfText));
+      runParsing(pdfText);
       setPdfPreviews(previews);
     } else {
       setText("Unsupported file type");
@@ -128,9 +130,17 @@ export default function App() {
             {useCamera ? "Stop Camera" : "Use Camera"}
           </button>
         )}
+        {/* 🆕 Toggle Mode Button */}
+        <button onClick={() => setUseFlatMode(!useFlatMode)} style={styles.button}>
+          {useFlatMode ? "Switch to Line Mode" : "Switch to Flat Mode"}
+        </button>
       </div>
 
-      {/* Camera preview and capture */}
+      <p style={{ marginTop: 5, fontStyle: "italic", color: "#444" }}>
+        Mode: <strong>{useFlatMode ? "Flat (no line breaks)" : "Line-based OCR"}</strong>
+      </p>
+
+      {/* Camera preview, uploaded preview, PDF previews — unchanged */}
       {useCamera && (
         <>
           <video ref={videoRef} autoPlay playsInline style={styles.videoPreview} />
@@ -138,7 +148,6 @@ export default function App() {
           <button onClick={handleCapture} style={styles.button}>
             Capture & OCR
           </button>
-
           {capturedImage && (
             <img
               src={capturedImage}
@@ -149,7 +158,6 @@ export default function App() {
         </>
       )}
 
-      {/* Uploaded image preview */}
       {uploadedPreview && (
         <img
           src={uploadedPreview}
@@ -158,7 +166,6 @@ export default function App() {
         />
       )}
 
-      {/* PDF page previews */}
       {pdfPreviews.length > 0 && (
         <div style={{ marginTop: 20 }}>
           <h3>PDF Page Previews</h3>
