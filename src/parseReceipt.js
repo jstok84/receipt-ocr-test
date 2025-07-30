@@ -1,32 +1,34 @@
 export function parseReceipt(text) {
-  const PARSER_VERSION = "v1.3.9"; // updated version
+  const PARSER_VERSION = "v1.4.0";
   console.log("🧾 Receipt parser version:", PARSER_VERSION);
 
-  // --- NEW: Merge broken lines that belong together ---
-  // Lines ending without punctuation and next line starting lowercase or number often belong together.
-  function mergeLines(lines) {
+  // 🧠 OCR fix: merge broken lines
+  function mergeBrokenLines(text) {
+    const lines = text.split("\n");
     const merged = [];
     for (let i = 0; i < lines.length; i++) {
-      let currentLine = lines[i];
-      while (
-        i + 1 < lines.length &&
-        // Current line does NOT end with punctuation or currency symbol:
-        !/[.!?€$]$/.test(currentLine.trim()) &&
-        // Next line starts with lowercase or number (often continuation):
-        /^[a-z0-9]/.test(lines[i + 1].trim())
+      const current = lines[i].trim();
+      const next = lines[i + 1]?.trim();
+      if (
+        current &&
+        next &&
+        /^[a-zA-Z\s\-]+$/.test(current) &&
+        /^[a-zA-Z\s\-]+$/.test(next)
       ) {
-        currentLine += " " + lines[i + 1].trim();
-        i++;
+        merged.push(current + " " + next);
+        i++; // skip next
+      } else {
+        merged.push(current);
       }
-      merged.push(currentLine);
     }
-    return merged;
+    return merged.join("\n");
   }
+
+  text = mergeBrokenLines(text);
 
   function normalizeAmount(value, isSlovenian) {
     if (isSlovenian) {
       if (value.includes(",")) {
-        // "1.234,56" -> "1234.56"
         return value.replace(/\./g, "").replace(",", ".");
       } else {
         const dotCount = (value.match(/\./g) || []).length;
@@ -64,20 +66,13 @@ export function parseReceipt(text) {
           "skupna vrednost",
           "skupaj z ddv",
         ]
-      : [
-          "paid",
-          "total",
-          "amount due",
-          "grand total",
-          "amount",
-          "to pay",
-        ];
+      : ["paid", "total", "amount due", "grand total", "amount", "to pay"];
 
     const candidates = lines
       .filter(line =>
         totalKeywords.some(kw => line.toLowerCase().includes(kw))
       )
-      .filter(line => !/^c\s+\d{1,2},\d{1,2}\s*%\s+[\d\s.,]+—?\s*[\d\s.,]+/i.test(line.toLowerCase())) // exclude VAT summary line
+      .filter(line => !/^c\s+\d{1,2},\d{1,2}\s*%\s+[\d\s.,]+—?\s*[\d\s.,]+/i.test(line.toLowerCase()))
       .map(line => {
         const parsed = extractAmountFromLine(line, isSlovenian);
         return {
@@ -102,7 +97,6 @@ export function parseReceipt(text) {
       const parsed = extractAmountFromLine(line, isSlovenian);
       if (!parsed) continue;
 
-      // Detect VAT summary line like: C 22,00 % 208,12 45,78 — 253,90 €
       const vatMatch = line.match(
         /c\s+\d{1,2},\d{1,2}\s*%\s+(\d{1,3}(?:[ .,]?\d{3})*(?:[.,]\d{1,2}))\s+(\d{1,3}(?:[ .,]?\d{3})*(?:[.,]\d{1,2}))/i
       );
@@ -121,21 +115,13 @@ export function parseReceipt(text) {
       if (isSlovenian) {
         if (lower.includes("osnova za ddv") || lower.includes("brez ddv")) {
           net = parsed.value;
-          currency = parsed.currency ?? currency;
         }
         if (lower.includes("skupaj ddv") || (lower.includes("ddv") && lower.includes("%"))) {
           vat = parsed.value;
-          currency = parsed.currency ?? currency;
         }
       } else {
-        if (lower.includes("net")) {
-          net = parsed.value;
-          currency = parsed.currency ?? currency;
-        }
-        if (lower.includes("vat") || lower.includes("tax")) {
-          vat = parsed.value;
-          currency = parsed.currency ?? currency;
-        }
+        if (lower.includes("net")) net = parsed.value;
+        if (lower.includes("vat") || lower.includes("tax")) vat = parsed.value;
       }
     }
 
@@ -148,8 +134,6 @@ export function parseReceipt(text) {
   }
 
   function extractDate(lines) {
-    // Match date format dd.mm.yyyy, dd/mm/yyyy, yyyy-mm-dd, etc.
-    // Day: 1-31, Month: 1-12, Year: 4 digits or 2 digits assumed 2000+
     const dateRegex = /\b(0?[1-9]|[12][0-9]|3[01])[./-](0?[1-9]|1[0-2])[./-](\d{2}|\d{4})\b/;
 
     for (const line of lines) {
@@ -168,15 +152,10 @@ export function parseReceipt(text) {
     return null;
   }
 
-  // --- Start processing ---
-
-  let lines = text
+  const lines = text
     .split("\n")
     .map(l => l.trim())
     .filter(Boolean);
-
-  // Apply merging logic here:
-  lines = mergeLines(lines);
 
   const joinedText = lines.join(" ").toLowerCase();
   const isSlovenian = [
@@ -200,7 +179,6 @@ export function parseReceipt(text) {
 
   if (fallbackTotal) {
     const delta = total ? Math.abs(fallbackTotal.value - total) : 0;
-
     const isFallbackMoreTrustworthy =
       !total || delta <= 0.05 || fallbackTotal.value > total;
 
@@ -218,30 +196,17 @@ export function parseReceipt(text) {
 
   const nonItemPatterns = [
     /^plačano/i,
-    /^c\s+\d{1,2},\d{1,2}\s*%\s+[\d\s.,]+—?\s*[\d\s.,]+/i, // VAT lines
-    /^[a-zA-Z]\s*\d{1,2}[,.]\d{1,2}%\s+\d+[,.]\d+\s+\d+[,.]\d+/i,  // strict VAT line filter
-    /^dov:/i,     // skip VAT lines starting with 'Dov:'
-    /^bl:/i,      // skip metadata lines starting with 'BL:'
-    /^eor[: ]/i,
-    /^zol[: ]/i,
-    /^spar plus/i,
-    /mat\.št/i,
-    /osn\.kapital/i,
-    /splošni pogoji/i,
-    /vaše današnje ugodnosti/i,
-    /točke zvestobe/i,
-    /številka naročila/i,
-    /datum naročila/i,
-    /datum računa/i,
-    /skupaj eur/i,
-    /^kartica/i,
-    /^date[: ]?/i,
-    /^znesek\s*—?\s*\d+[,.]/i,
-    /^a\s+\d{1,2}[,.]\d+\s+\d+[,.]/i,
+    /^c\s+\d{1,2},\d{1,2}\s*%\s+[\d\s.,]+—?\s*[\d\s.,]+/i,
+    /^[a-zA-Z]\s*\d{1,2}[,.]\d{1,2}%\s+\d+[,.]\d+\s+\d+[,.]\d+/i,
+    /^dov:/i, /^bl:/i, /^eor[: ]/i, /^zol[: ]/i, /^spar plus/i,
+    /mat\.št/i, /osn\.kapital/i, /splošni pogoji/i,
+    /vaše današnje ugodnosti/i, /točke zvestobe/i,
+    /številka naročila/i, /datum naročila/i, /datum računa/i,
+    /skupaj eur/i, /^kartica/i, /^date[: ]?/i,
+    /^znesek\s*—?\s*\d+[,.]/i, /^a\s+\d{1,2}[,.]\d+\s+\d+[,.]/i,
     /^[a-z]?\s*\d{1,2}[,.]\d+\s+\d+[,.]/i,
     /^,?\d{1,3}[,.]\d{2}\s*—?\s*\d{1,3}[,.]\d{2}/,
-    /^obračunsko obdobje/i,
-    /^vsi zneski so v/i
+    /^obračunsko obdobje/i, /^vsi zneski so v/i
   ];
 
   for (const line of lines) {
@@ -251,82 +216,42 @@ export function parseReceipt(text) {
       console.log("Skipping known non-item line:", line);
       continue;
     }
-    if (/veljavnost ponudbe/i.test(line)) {
-      console.log("Skipping line due to 'veljavnost ponudbe':", line);
-      continue;
-    }
-    if (totalCandidates.some(t => t.line === line)) {
-      console.log("Skipping total candidate line:", line);
-      continue;
-    }
-    if (/rekapitulacija|osnova za ddv|skupaj ddv/i.test(line)) {
-      console.log("Skipping tax summary line:", line);
-      continue;
-    }
 
-    // Extract all amounts in line
+    if (totalCandidates.some(t => t.line === line)) continue;
+    if (/rekapitulacija|osnova za ddv|skupaj ddv/i.test(line)) continue;
+
     const allAmounts = [...line.matchAll(/(\d{1,3}(?:[ .,]?\d{3})*(?:[.,]\d{1,2}))/g)];
-    if (!allAmounts.length && !isServiceCostLine) {
-      console.log("No amounts found in line:", line);
-      continue;
-    }
+    if (!allAmounts.length && !isServiceCostLine) continue;
 
-    // Use last amount as price candidate
     const lastAmountMatch = allAmounts.length ? allAmounts[allAmounts.length - 1] : null;
     const rawAmount = lastAmountMatch ? lastAmountMatch[1] : "0";
     const priceStr = normalizeAmount(rawAmount, isSlovenian);
     const priceFloat = parseFloat(priceStr);
 
-    // New check: if last amount is followed by a unit like 'L', 'ml', 'kg', 'g', etc. => skip line (volume/quantity, not price)
     const units = ["l", "ml", "kg", "g", "pcs", "x"];
-    const afterLastAmountIndex = lastAmountMatch.index + rawAmount.length;
+    const afterLastAmountIndex = lastAmountMatch?.index + rawAmount.length;
     const afterToken = line.slice(afterLastAmountIndex).trim().toLowerCase().split(/\s+/)[0] || "";
-    if (units.includes(afterToken)) {
-      console.log(`Skipping line because last number looks like volume/quantity unit '${afterToken}':`, line);
-      continue;
-    }
+    if (units.includes(afterToken)) continue;
 
-    if (isNaN(priceFloat)) {
-      console.log("Price is NaN, skipping line:", line);
-      continue;
-    }
+    if (isNaN(priceFloat) || priceFloat <= 0) continue;
 
-    // Extract quantity if possible (look for number before last amount, or default 1)
-    let quantity = 1;
-    const quantityMatch = line.match(/(\d+)\s*x/i);
-    if (quantityMatch) {
-      quantity = parseInt(quantityMatch[1], 10);
-    }
+    let namePart = lastAmountMatch ? line.slice(0, lastAmountMatch.index).trim() : line.trim();
+    namePart = namePart.replace(/^\d+\s*x?\s*/i, "").trim();
+    namePart = namePart.replace(/^[-–—]\s*/, "");
 
-    // Clean item name by removing amounts and known keywords
-    let itemName = line;
+    const hasExcludedKeyword = excludeKeywords.some(kw =>
+      new RegExp(`\\b${kw}\\b`, "i").test(namePart)
+    );
+    if (!isServiceCostLine && (namePart.length < 2 || hasExcludedKeyword)) continue;
 
-    // Remove last amount from item name
-    const lastAmountRegex = new RegExp(rawAmount.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*$");
-    itemName = itemName.replace(lastAmountRegex, "").trim();
-
-    // Remove quantity notation like "2x" or "x2"
-    itemName = itemName.replace(/\b\d+x\b/i, "").trim();
-
-    // Remove currency symbols or keywords
-    itemName = itemName.replace(/(EUR|USD|€|\$)/gi, "").trim();
-
-    if (itemName.length === 0) {
-      itemName = "(item)";
-    }
-
-    items.push({
-      name: itemName,
-      price: priceFloat,
-      quantity,
-    });
+    const itemName = namePart.length > 0 ? namePart : "Stroški storitve";
+    items.push({ name: itemName, price: `${priceFloat.toFixed(2)} ${currency}` });
   }
 
   return {
-    items,
-    total,
-    currency,
-    date,
     version: PARSER_VERSION,
+    date,
+    total: total ? `${total.toFixed(2)} ${currency}` : null,
+    items,
   };
 }
