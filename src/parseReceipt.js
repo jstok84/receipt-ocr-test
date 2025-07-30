@@ -1,5 +1,5 @@
 export function parseReceipt(text) {
-  const PARSER_VERSION = "v1.5.1"; // bumped version for this fix
+  const PARSER_VERSION = "v1.5.2"; // bumped version for these fixes
   console.log("🧾 Receipt parser version:", PARSER_VERSION);
 
   // Enhanced OCR fix: merge broken lines containing only letters or letters + next line numbers/amounts
@@ -201,8 +201,12 @@ export function parseReceipt(text) {
         "rekapitulacija",
         "osnova",
         "veljavnost ponudbe",
+        "keine", // exclude "Keine" (added lowercase to match)
       ]
     : ["transaction", "terminal", "subtotal", "tax", "vat", "invoice", "date", "validity"];
+
+  // Regex to detect date-like amounts (e.g., 24.06 or 24,06)
+  const dateLikeAmountRegex = /^\d{1,2}[.,]\d{1,2}$/;
 
   // Extract total candidates
   const totalCandidates = extractAllTotalCandidates(lines, isSlovenian);
@@ -278,6 +282,13 @@ export function parseReceipt(text) {
 
     const lastAmountMatch = allAmounts.length ? allAmounts[allAmounts.length - 1] : null;
     const rawAmount = lastAmountMatch ? lastAmountMatch[1] : "0";
+
+    // Skip lines with date-like amount patterns (fix for 24.06 problem)
+    if (dateLikeAmountRegex.test(rawAmount)) {
+      console.log("Skipping line with date-like amount:", line);
+      continue;
+    }
+
     const priceStr = normalizeAmount(rawAmount, isSlovenian);
     const priceFloat = parseFloat(priceStr);
 
