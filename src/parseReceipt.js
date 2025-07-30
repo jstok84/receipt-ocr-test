@@ -1,6 +1,27 @@
 export function parseReceipt(text) {
-  const PARSER_VERSION = "v1.3.9";  // updated version
+  const PARSER_VERSION = "v1.3.9"; // updated version
   console.log("🧾 Receipt parser version:", PARSER_VERSION);
+
+  // --- NEW: Merge broken lines that belong together ---
+  // Lines ending without punctuation and next line starting lowercase or number often belong together.
+  function mergeLines(lines) {
+    const merged = [];
+    for (let i = 0; i < lines.length; i++) {
+      let currentLine = lines[i];
+      while (
+        i + 1 < lines.length &&
+        // Current line does NOT end with punctuation or currency symbol:
+        !/[.!?€$]$/.test(currentLine.trim()) &&
+        // Next line starts with lowercase or number (often continuation):
+        /^[a-z0-9]/.test(lines[i + 1].trim())
+      ) {
+        currentLine += " " + lines[i + 1].trim();
+        i++;
+      }
+      merged.push(currentLine);
+    }
+    return merged;
+  }
 
   function normalizeAmount(value, isSlovenian) {
     if (isSlovenian) {
@@ -147,10 +168,15 @@ export function parseReceipt(text) {
     return null;
   }
 
-  const lines = text
+  // --- Start processing ---
+
+  let lines = text
     .split("\n")
     .map(l => l.trim())
     .filter(Boolean);
+
+  // Apply merging logic here:
+  lines = mergeLines(lines);
 
   const joinedText = lines.join(" ").toLowerCase();
   const isSlovenian = [
@@ -260,40 +286,47 @@ export function parseReceipt(text) {
       continue;
     }
 
-    if (isNaN(priceFloat) || priceFloat <= 0) {
-      console.log("Skipping line due to invalid or zero price:", priceStr);
+    if (isNaN(priceFloat)) {
+      console.log("Price is NaN, skipping line:", line);
       continue;
     }
 
-    // Extract name part: from start until last amount position
-    let namePart = lastAmountMatch ? line.slice(0, lastAmountMatch.index).trim() : line.trim();
-
-    // Remove leading quantities like "2x " or "2 "
-    namePart = namePart.replace(/^\d+\s*x?\s*/i, "").trim();
-
-    // Remove leading dashes or separators
-    namePart = namePart.replace(/^[-–—]\s*/, "");
-
-    // Exclude if name is too short or contains excluded keywords
-    const hasExcludedKeyword = excludeKeywords.some(kw =>
-      new RegExp(`\\b${kw}\\b`, "i").test(namePart)
-    );
-    if (!isServiceCostLine && (namePart.length < 2 || hasExcludedKeyword)) {
-      console.log(`Skipping line due to excluded keyword or short name (${namePart}):`, line);
-      continue;
+    // Extract quantity if possible (look for number before last amount, or default 1)
+    let quantity = 1;
+    const quantityMatch = line.match(/(\d+)\s*x/i);
+    if (quantityMatch) {
+      quantity = parseInt(quantityMatch[1], 10);
     }
 
-    const itemName = namePart.length > 0 ? namePart : "Stroški storitve";
+    // Clean item name by removing amounts and known keywords
+    let itemName = line;
 
-    console.log(`Parsed item: name='${itemName}', price='${priceFloat.toFixed(2)} ${currency}'`);
+    // Remove last amount from item name
+    const lastAmountRegex = new RegExp(rawAmount.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*$");
+    itemName = itemName.replace(lastAmountRegex, "").trim();
 
-    items.push({ name: itemName, price: `${priceFloat.toFixed(2)} ${currency}` });
+    // Remove quantity notation like "2x" or "x2"
+    itemName = itemName.replace(/\b\d+x\b/i, "").trim();
+
+    // Remove currency symbols or keywords
+    itemName = itemName.replace(/(EUR|USD|€|\$)/gi, "").trim();
+
+    if (itemName.length === 0) {
+      itemName = "(item)";
+    }
+
+    items.push({
+      name: itemName,
+      price: priceFloat,
+      quantity,
+    });
   }
 
   return {
-    version: PARSER_VERSION,
-    date,
-    total: total ? `${total.toFixed(2)} ${currency}` : null,
     items,
+    total,
+    currency,
+    date,
+    version: PARSER_VERSION,
   };
 }
