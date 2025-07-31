@@ -1,25 +1,29 @@
 export function parseReceipt(text) {
-  const PARSER_VERSION = "v1.4.1"; // updated version
+  const PARSER_VERSION = "v1.4.1"; // version tag updated
   console.log("🧾 Receipt parser version:", PARSER_VERSION);
 
+  // Normalize amount according to Slovenian locale rules (comma decimal, dot thousand sep)
   function normalizeAmount(value, isSlovenian) {
     if (isSlovenian) {
       if (value.includes(",")) {
+        // Replace thousand dots and convert decimal comma to dot
         return value.replace(/\./g, "").replace(",", ".");
       } else {
+        // If multiple dots and no commas, remove thousand dots
         const dotCount = (value.match(/\./g) || []).length;
         if (dotCount <= 1) return value;
         return value.replace(/\./g, "");
       }
     } else {
+      // For non-Slovenian, remove thousand commas
       return value.replace(/,/g, "");
     }
   }
 
+  // Extract last amount and currency from a line
   function extractAmountFromLine(line, isSlovenian) {
     const regex = /(\d{1,3}(?:[ .,\s]?\d{3})*(?:[.,]\d{1,2}))\s*(EUR|USD|\$|€)?/gi;
-    let match,
-      lastMatch = null;
+    let match, lastMatch = null;
     while ((match = regex.exec(line)) !== null) {
       lastMatch = match;
     }
@@ -32,7 +36,7 @@ export function parseReceipt(text) {
     return isNaN(value) ? null : { value, currency };
   }
 
-  // Updated to check next line if no amount on line with total keyword
+  // Extract all candidate totals based on keywords and amounts, checking next line if needed
   function extractAllTotalCandidates(lines, isSlovenian) {
     const totalKeywords = isSlovenian
       ? [
@@ -53,7 +57,7 @@ export function parseReceipt(text) {
 
       let parsed = extractAmountFromLine(line, isSlovenian);
       if (!parsed) {
-        // Try next line as amount if current line has no amount
+        // Try next line in case total and amount are split
         const nextLine = lines[i + 1];
         if (nextLine) {
           parsed = extractAmountFromLine(nextLine, isSlovenian);
@@ -75,6 +79,7 @@ export function parseReceipt(text) {
     return candidates;
   }
 
+  // Fallback total extraction from VAT summary or net+vat sum lines
   function tryFallbackTotal(lines, isSlovenian) {
     let net = null,
       vat = null;
@@ -121,6 +126,7 @@ export function parseReceipt(text) {
     return null;
   }
 
+  // Extract date in yyyy-mm-dd ISO format from any line
   function extractDate(lines) {
     const dateRegex = /\b(0?[1-9]|[12][0-9]|3[01])[./-](0?[1-9]|1[0-2])[./-](\d{2}|\d{4})\b/;
 
@@ -145,6 +151,7 @@ export function parseReceipt(text) {
     .map((l) => l.trim())
     .filter(Boolean);
 
+  // Detect Slovenian language presence via keywords
   const joinedText = lines.join(" ").toLowerCase();
   const isSlovenian = [
     "račun",
@@ -157,6 +164,7 @@ export function parseReceipt(text) {
     "plačano",
   ].some((keyword) => joinedText.includes(keyword));
 
+  // Keywords to exclude lines from being parsed as items
   const excludeKeywords = isSlovenian
     ? [
         "številka",
@@ -169,7 +177,7 @@ export function parseReceipt(text) {
         "rekapitulacija",
         "osnova",
         "veljavnost ponudbe",
-        "keine", // Added "keine" to exclude German 'none'
+        "keine", // exclude German 'none'
       ]
     : [
         "transaction",
@@ -182,7 +190,7 @@ export function parseReceipt(text) {
         "validity",
       ];
 
-  // Regex for date-like amounts to exclude from items (e.g., "24.06")
+  // Regex that matches amounts that look like dates (e.g. "24.06")
   const dateLikeAmountRegex = /^\d{1,2}[.,]\d{1,2}$/;
 
   const totalCandidates = extractAllTotalCandidates(lines, isSlovenian);
