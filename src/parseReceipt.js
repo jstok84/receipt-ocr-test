@@ -1,11 +1,12 @@
 export function parseReceipt(text) {
-  const PARSER_VERSION = "v1.6.0";
+  const PARSER_VERSION = "v1.6.1";
   console.log("🧾 Receipt parser version:", PARSER_VERSION);
 
-  // --- Utility: Normalize amount string for parsing floats ---
+  // --- Normalize amount string for safe parseFloat ---
   function normalizeAmount(value, isSlovenian) {
     if (isSlovenian) {
       if (value.includes(",")) {
+        // Slovenian style: '.' thousands separator and ',' decimal separator
         return value.replace(/\./g, "").replace(",", ".");
       } else {
         const dotCount = (value.match(/\./g) || []).length;
@@ -13,21 +14,22 @@ export function parseReceipt(text) {
         return value.replace(/\./g, "");
       }
     } else {
+      // English style: remove commas as thousands separator
       return value.replace(/,/g, "");
     }
   }
 
-  // --- Extract the last amount + currency from a line using regex ---
+  // --- Extract last amount + currency in line via regex ---
   function extractLastAmountWithCurrency(line) {
     const amountWithCurrencyRegex = /(\d{1,3}(?:[ .,]\d{3})*(?:[.,]\d{1,2}))\s*(€|EUR|USD|\$)?/gi;
     let match, lastMatch = null;
     while ((match = amountWithCurrencyRegex.exec(line)) !== null) {
       lastMatch = match;
     }
-    return lastMatch;
+    return lastMatch; // null if none
   }
 
-  // --- Extract total amount candidates ---
+  // --- Extract all total amount candidates ---
   function extractAllTotalCandidates(lines, isSlovenian) {
     const totalKeywords = isSlovenian
       ? [
@@ -72,7 +74,7 @@ export function parseReceipt(text) {
     return candidates;
   }
 
-  // --- Fallback total extraction from net + VAT lines ---
+  // --- Fallback total extraction from net+VAT summary lines ---
   function tryFallbackTotal(lines, isSlovenian) {
     let net = null,
       vat = null,
@@ -116,7 +118,7 @@ export function parseReceipt(text) {
     return null;
   }
 
-  // --- Date extraction ---
+  // --- Extract ISO date from lines ---
   function extractDate(lines) {
     const dateRegex = /\b(0?[1-9]|[12][0-9]|3[01])[./-](0?[1-9]|1[0-2])[./-](\d{2}|\d{4})\b/;
     for (const line of lines) {
@@ -134,12 +136,11 @@ export function parseReceipt(text) {
     return null;
   }
 
-  // --- Main parsing begins ---
+  // --- Start parsing ---
   const lines = text
     .split("\n")
     .map((l) => l.trim())
     .filter(Boolean);
-
   const joinedText = lines.join(" ").toLowerCase();
   const isSlovenian = [
     "račun",
@@ -152,7 +153,7 @@ export function parseReceipt(text) {
     "plačano",
   ].some((kw) => joinedText.includes(kw));
 
-  // Keywords used to exclude non-item lines
+  // --- Refined exclude keywords without ambiguous short words like "si", "mobil" ---
   const excludeKeywords = isSlovenian
     ? [
         "številka",
@@ -171,10 +172,6 @@ export function parseReceipt(text) {
         "stran",
         "ljubljana",
         "p.p.",
-        "ho t",
-        "mobil",
-        "si",
-        "si767",
       ]
     : [
         "transaction",
@@ -216,7 +213,6 @@ export function parseReceipt(text) {
   ];
 
   const totalCandidates = extractAllTotalCandidates(lines, isSlovenian);
-
   let total = totalCandidates.length > 0 ? totalCandidates[0].value : null;
   let currency = totalCandidates.length > 0 ? totalCandidates[0].currency ?? "€" : "€";
 
@@ -236,12 +232,16 @@ export function parseReceipt(text) {
   const date = extractDate(lines);
   const items = [];
 
+  // --- Parse items ---
   for (const line of lines) {
     console.log(`Checking line: "${line}"`);
 
-    // Skip lines based on keywords
-    if (excludeKeywords.some((kw) => line.toLowerCase().includes(kw))) {
-      console.log("  Skipping due to exclude keyword.");
+    // Exclude lines based on whole-word matching of exclude keywords
+    const excludeWholeWord = excludeKeywords.some(
+      (kw) => new RegExp(`\\b${kw}\\b`, "i").test(line)
+    );
+    if (excludeWholeWord) {
+      console.log("  Skipping due to exclude keyword (whole word match).");
       continue;
     }
     if (nonItemPatterns.some((pat) => pat.test(line))) {
@@ -257,18 +257,11 @@ export function parseReceipt(text) {
       continue;
     }
 
-    // --- CUSTOM Spar Receipt Line Parsing ---
-    // Detect if this line looks like a Spar receipt item line by:
-    // Splitting by multiple spaces/tabs (at least 10 fields is a good heuristic)
+    // --- SPAR multi-column receipt line heuristic ---
+    // Spar lines have >= 10 columns split by multiple spaces/tabs
     const parts = line.split(/\s{2,}|\t/).filter((x) => x.trim() !== "");
 
-    // Spar item lines tend to have many columns (>= 10), skip otherwise
     if (parts.length >= 10) {
-      // According to Spar example:
-      // [0] Poz. (quantity)
-      // [1] Št. art. (article code)
-      // [2..N-7] Artikel (item description)
-      // last 7 fields: ordered qty, delivered qty, unit, price gross, discount, net price, VAT code
       const quantityRaw = parts[0];
       const articleCode = parts[1];
       const nameTokens = parts.slice(2, parts.length - 7);
@@ -277,20 +270,17 @@ export function parseReceipt(text) {
       const orderedQtyRaw = parts[parts.length - 7];
       const deliveredQtyRaw = parts[parts.length - 6];
       const unit = parts[parts.length - 5];
-
       const priceGrossRaw = parts[parts.length - 4];
       const discountRaw = parts[parts.length - 3];
       const priceNetRaw = parts[parts.length - 2];
       const vatCode = parts[parts.length - 1];
 
-      // Normalize net price
       const priceNum = parseFloat(normalizeAmount(priceNetRaw, isSlovenian));
       if (isNaN(priceNum) || priceNum <= 0) {
         console.log("  Skipping Spar item line due to invalid net price.");
         continue;
       }
 
-      // Normalize quantity (try delivered qty first)
       let quantityNum = parseFloat(normalizeAmount(deliveredQtyRaw, isSlovenian));
       if (isNaN(quantityNum)) {
         quantityNum = parseFloat(normalizeAmount(orderedQtyRaw, isSlovenian));
@@ -314,13 +304,11 @@ export function parseReceipt(text) {
         quantity: quantityNum,
       });
 
-      // Continue to next line after processing Spar item line
-      continue;
+      continue; // Move to next line
     }
 
-    // --- FALLBACK to old generic line parsing ---
+    // --- Generic fallback parsing for simpler receipts ---
 
-    // Extract last amount and currency
     const amountMatch = extractLastAmountWithCurrency(line);
     if (!amountMatch) {
       console.log("  Skipping due to no valid amount found in line.");
@@ -342,7 +330,6 @@ export function parseReceipt(text) {
       continue;
     }
 
-    // Description preceeding last amount in line
     const descEndIndex = amountMatch.index;
     let description = line.slice(0, descEndIndex).trim();
 
@@ -351,7 +338,6 @@ export function parseReceipt(text) {
       continue;
     }
 
-    // Try extract quantity from last token in description
     let quantityNum = undefined;
     const descTokens = description.split(/\s+/);
     if (descTokens.length > 1) {
@@ -375,7 +361,7 @@ export function parseReceipt(text) {
       price: `${price.toFixed(2)} ${detectedCurrency}`,
       quantity: quantityNum,
     });
-  } // end for lines
+  }
 
   console.log(`Extracted date: ${date}`);
   console.log(`Detected total candidates: ${totalCandidates.length}`);
