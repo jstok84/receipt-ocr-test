@@ -11,8 +11,8 @@ const tesseractConfig = {
     "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€",
 };
 
-// Preprocess image with OpenCV.js
-function preprocessWithOpenCV(imageSrc) {
+// --- OpenCV.js preprocessing ---
+export function preprocessWithOpenCV(imageSrc) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = "Anonymous";
@@ -47,39 +47,58 @@ function preprocessWithOpenCV(imageSrc) {
       resolve(canvas.toDataURL("image/png"));
     };
     img.onerror = reject;
-    img.src =
-      typeof imageSrc === "string"
-        ? imageSrc
-        : URL.createObjectURL(imageSrc);
+    img.src = typeof imageSrc === "string" ? imageSrc : URL.createObjectURL(imageSrc);
   });
 }
 
-// OCR for images
-export async function processImage(imageSrc, onProgress = () => {}) {
-  console.log("Starting image preprocessing");
-  const preprocessedDataURL = await preprocessWithOpenCV(imageSrc);
-  console.log("Image preprocessed, starting OCR");
+// --- Text cleanup and line merging for PDF/OCR text ---
 
-  const result = await Tesseract.recognize(preprocessedDataURL, "eng+slv", {
-    logger: (m) => {
-      console.log("Tesseract OCR:", m);
-      onProgress(m);
-    },
-    ...tesseractConfig,
-  });
+function cleanAndMergeText(rawText) {
+  if (!rawText) return "";
 
-  console.log("OCR complete");
-  return result.data.text;
+  let text = rawText
+    .replace(/\u00A0/g, " ") // non-breaking spaces → space
+    .replace(/[\u200B-\u200D\uFEFF]/g, "") // zero-width spaces removed
+    .replace(/\t/g, " ") // tabs → space
+    .replace(/[ ]{2,}/g, " "); // collapse multiple spaces
+
+  const lines = text.split("\n").map(line => line.trim()).filter(Boolean);
+
+  const mergedLines = [];
+  for (let i = 0; i < lines.length; i++) {
+    const current = lines[i];
+    const next = lines[i + 1];
+
+    if (next) {
+      const isCurrentLettersOnly = /^[a-zA-ZšžčćđŠŽČĆĐ\s\-]+$/.test(current);
+      const isNextStartsWithNumberOrCurrency = /^[€$]?[\d]/.test(next);
+
+      if (isCurrentLettersOnly && isNextStartsWithNumberOrCurrency) {
+        mergedLines.push(current + " " + next);
+        i++;
+        continue;
+      }
+
+      if (current.endsWith(":") && next.length > 0) {
+        mergedLines.push(current + " " + next);
+        i++;
+        continue;
+      }
+    }
+    mergedLines.push(current);
+  }
+
+  return mergedLines.join("\n");
 }
 
-// PDF text extraction fallback (when possible)
+// --- Extract text (raw) from a PDF page ---
 async function extractTextFromPDFPage(page) {
   const textContent = await page.getTextContent();
   const strings = textContent.items.map((item) => item.str).filter(Boolean);
   return strings.join("\n").trim();
 }
 
-// OCR for PDFs + previews
+// --- Main processPDF function: extract and OCR fallback with text cleaning ---
 export async function processPDF(file, onProgress = () => {}) {
   const reader = new FileReader();
 
@@ -95,14 +114,13 @@ export async function processPDF(file, onProgress = () => {}) {
         const page = await pdf.getPage(i);
         console.log(`Processing page ${i}...`);
 
-        // Try direct text extraction
         const extractedText = await extractTextFromPDFPage(page);
 
         if (extractedText && extractedText.length > 20) {
           console.log(`Page ${i}: Text extracted without OCR`);
-          fullText += `\n\n--- Page ${i} (Extracted Text) ---\n${extractedText}`;
+          const cleanedText = cleanAndMergeText(extractedText);
+          fullText += `\n\n--- Page ${i} (Extracted Text) ---\n${cleanedText}`;
         } else {
-          // Fallback to OCR
           const viewport = page.getViewport({ scale: 3 });
           const canvas = document.createElement("canvas");
           const context = canvas.getContext("2d");
@@ -126,7 +144,8 @@ export async function processPDF(file, onProgress = () => {}) {
             ...tesseractConfig,
           });
 
-          fullText += `\n\n--- Page ${i} (OCR) ---\n${result.data.text}`;
+          const cleanedOCRText = cleanAndMergeText(result.data.text);
+          fullText += `\n\n--- Page ${i} (OCR) ---\n${cleanedOCRText}`;
           console.log(`OCR complete for page ${i}`);
         }
       }
@@ -136,4 +155,22 @@ export async function processPDF(file, onProgress = () => {}) {
 
     reader.readAsArrayBuffer(file);
   });
+}
+
+// --- OCR for images directly ---
+export async function processImage(imageSrc, onProgress = () => {}) {
+  console.log("Starting image preprocessing");
+  const preprocessedDataURL = await preprocessWithOpenCV(imageSrc);
+  console.log("Image preprocessed, starting OCR");
+
+  const result = await Tesseract.recognize(preprocessedDataURL, "eng+slv", {
+    logger: (m) => {
+      console.log("Tesseract OCR:", m);
+      onProgress(m);
+    },
+    ...tesseractConfig,
+  });
+
+  console.log("OCR complete");
+  return cleanAndMergeText(result.data.text);
 }
