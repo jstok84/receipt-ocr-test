@@ -1,34 +1,26 @@
 export function parseReceipt(text) {
-  const PARSER_VERSION = "v1.5.1";
+  const PARSER_VERSION = "v1.5.2";
   console.log("🧾 Receipt parser version:", PARSER_VERSION);
 
-  // Normalize amounts to parseable format depending on locale
   function normalizeAmount(value, isSlovenian) {
     if (isSlovenian) {
       if (value.includes(",")) {
-        // Slovenian style: dot as thousand separator, comma as decimal separator
         return value.replace(/\./g, "").replace(",", ".");
       } else {
-        // No comma decimal - remove dots if >1
         const dotCount = (value.match(/\./g) || []).length;
         if (dotCount <= 1) return value;
         return value.replace(/\./g, "");
       }
     } else {
-      // English style: comma thousand separator removed
       return value.replace(/,/g, "");
     }
   }
 
-  // Extract last amount in line (supposedly price or total)
   function extractAmountFromLine(line, isSlovenian) {
     const regex = /(\d{1,3}(?:[ .,]?\d{3})*(?:[.,]\d{1,2}))\s*(EUR|USD|\$|€)?/gi;
     let match, lastMatch = null;
-    while ((match = regex.exec(line)) !== null) {
-      lastMatch = match;
-    }
+    while ((match = regex.exec(line)) !== null) lastMatch = match;
     if (!lastMatch) return null;
-
     const rawValue = lastMatch[1];
     const normalizedValue = normalizeAmount(rawValue, isSlovenian);
     const value = parseFloat(normalizedValue);
@@ -36,7 +28,74 @@ export function parseReceipt(text) {
     return isNaN(value) ? null : { value, currency };
   }
 
-  // Extract first date found in the lines in ISO format
+  function extractAllTotalCandidates(lines, isSlovenian) {
+    const totalKeywords = isSlovenian
+      ? ["plačano", "za plačilo", "skupaj", "znesek", "končni znesek", "skupna vrednost", "skupaj z ddv"]
+      : ["paid", "total", "amount due", "grand total", "amount", "to pay"];
+
+    const candidates = [];
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!totalKeywords.some(kw => line.toLowerCase().includes(kw))) continue;
+      if (line.toLowerCase().includes("keine")) continue; // from v1.4.2 to exclude 'keine'
+
+      let parsed = extractAmountFromLine(line, isSlovenian);
+      if (!parsed) {
+        const nextLine = lines[i + 1];
+        if (nextLine) {
+          parsed = extractAmountFromLine(nextLine, isSlovenian);
+          if (parsed) {
+            candidates.push({ line: line + " " + nextLine, value: parsed.value, currency: parsed.currency });
+            continue;
+          }
+        }
+      }
+      if (parsed && parsed.value > 0) {
+        candidates.push({ line, value: parsed.value, currency: parsed.currency });
+      }
+    }
+    candidates.sort((a, b) => b.value - a.value);
+    return candidates;
+  }
+
+  function tryFallbackTotal(lines, isSlovenian) {
+    let net = null,
+      vat = null,
+      currency = null;
+
+    for (const line of lines) {
+      const lower = line.toLowerCase();
+      const parsed = extractAmountFromLine(line, isSlovenian);
+      if (!parsed) continue;
+
+      const vatMatch = line.match(/c\s+\d{1,2},\d{1,2}\s*%\s+(\d{1,3}(?:[ .,]?\d{3})*(?:[.,]\d{1,2}))\s+(\d{1,3}(?:[ .,]?\d{3})*(?:[.,]\d{1,2}))/i);
+      if (vatMatch) {
+        net = parseFloat(normalizeAmount(vatMatch[1], isSlovenian));
+        vat = parseFloat(normalizeAmount(vatMatch[2], isSlovenian));
+        currency = parsed.currency ?? currency;
+        if (!isNaN(net) && !isNaN(vat)) {
+          const total = parseFloat((net + vat).toFixed(2));
+          console.log(`💡 Fallback from VAT summary: ${net} + ${vat} = ${total}`);
+          return { value: total, currency };
+        }
+      }
+
+      if (isSlovenian) {
+        if (lower.includes("osnova za ddv") || lower.includes("brez ddv")) net = parsed.value;
+        if (lower.includes("skupaj ddv") || (lower.includes("ddv") && lower.includes("%"))) vat = parsed.value;
+      } else {
+        if (lower.includes("net")) net = parsed.value;
+        if (lower.includes("vat") || lower.includes("tax")) vat = parsed.value;
+      }
+    }
+
+    if (net !== null && vat !== null) {
+      const total = parseFloat((net + vat).toFixed(2));
+      return { value: total, currency };
+    }
+    return null;
+  }
+
   function extractDate(lines) {
     const dateRegex = /\b(0?[1-9]|[12][0-9]|3[01])[./-](0?[1-9]|1[0-2])[./-](\d{2}|\d{4})\b/;
     for (const line of lines) {
@@ -54,14 +113,8 @@ export function parseReceipt(text) {
     return null;
   }
 
-  const lines = text
-    .split("\n")
-    .map(l => l.trim())
-    .filter(Boolean);
-
+  const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
   const joinedText = lines.join(" ").toLowerCase();
-
-  // Detect Slovenian language presence for number parsing and keywords
   const isSlovenian = [
     "račun",
     "kupec",
@@ -71,9 +124,8 @@ export function parseReceipt(text) {
     "skupaj",
     "za plačilo",
     "plačano",
-  ].some(keyword => joinedText.includes(keyword));
+  ].some(kw => joinedText.includes(kw));
 
-  // Keywords for lines likely NOT containing items; used for filtering
   const excludeKeywords = isSlovenian
     ? [
       "številka",
@@ -86,6 +138,16 @@ export function parseReceipt(text) {
       "rekapitulacija",
       "osnova",
       "veljavnost ponudbe",
+      "keine",
+      "telefonska",
+      "telefon",
+      "stran",
+      "ljubljana",
+      "p.p.",
+      "ho t",
+      "mobil",
+      "si",
+      "si767",
     ]
     : [
       "transaction",
@@ -98,41 +160,6 @@ export function parseReceipt(text) {
       "validity",
     ];
 
-  // Keywords to detect total amount lines
-  const totalKeywords = isSlovenian
-    ? [
-      "plačano",
-      "za plačilo",
-      "skupaj",
-      "znesek",
-      "končni znesek",
-      "skupna vrednost",
-      "skupaj z ddv",
-    ]
-    : ["paid", "total", "amount due", "grand total", "amount", "to pay"];
-
-  // Extract total candidates from lines with total keywords
-  const totalCandidates = lines
-    .filter(line => totalKeywords.some(kw => line.toLowerCase().includes(kw)))
-    .filter(line => !/^c\s+\d{1,2},\d{1,2}\s*%\s+[\d\s.,]+—?\s*[\d\s.,]+/i.test(line.toLowerCase()))
-    .map(line => {
-      const parsed = extractAmountFromLine(line, isSlovenian);
-      return {
-        line,
-        value: parsed?.value ?? 0,
-        currency: parsed?.currency ?? null,
-      };
-    })
-    .filter(entry => entry.value > 0)
-    .sort((a, b) => b.value - a.value);
-
-  let total = totalCandidates.length > 0 ? totalCandidates[0].value : null;
-  let currency = totalCandidates.length > 0 ? totalCandidates[0].currency ?? "€" : "€";
-
-  const date = extractDate(lines);
-  const items = [];
-
-  // Patterns of lines to skip as non-items
   const nonItemPatterns = [
     /^plačano/i,
     /^c\s+\d{1,2},\d{1,2}\s*%\s+[\d\s.,]+—?\s*[\d\s.,]+/i,
@@ -161,22 +188,41 @@ export function parseReceipt(text) {
     /^vsi zneski so v/i,
   ];
 
+  const totalCandidates = extractAllTotalCandidates(lines, isSlovenian);
+  let total = totalCandidates.length > 0 ? totalCandidates[0].value : null;
+  let currency = totalCandidates.length > 0 ? totalCandidates[0].currency ?? "€" : "€";
+
+  const fallbackTotal = tryFallbackTotal(lines, isSlovenian);
+  if (fallbackTotal) {
+    const delta = total ? Math.abs(fallbackTotal.value - total) : 0;
+    const useFallback = !total || delta <= 0.05 || fallbackTotal.value > total;
+    if (useFallback) {
+      console.log(`✅ Using fallback total: ${fallbackTotal.value} > main: ${total}`);
+      total = fallbackTotal.value;
+      currency = fallbackTotal.currency ?? currency;
+    } else {
+      console.log(`⚠️ Ignoring fallback: ${fallbackTotal.value} vs main: ${total}`);
+    }
+  }
+
+  const date = extractDate(lines);
+  const items = [];
+
   for (const line of lines) {
-    // Skip non-item lines or total candidate lines or summary lines
-    if (nonItemPatterns.some(pattern => pattern.test(line))) continue;
-    if (totalCandidates.some(t => t.line === line)) continue;
+    // Exclude lines by keywords anywhere in line (case-insensitive)
+    if (excludeKeywords.some(kw => line.toLowerCase().includes(kw))) continue;
+    if (nonItemPatterns.some(pat => pat.test(line))) continue;
+    if (totalCandidates.some(tc => tc.line === line)) continue;
     if (/rekapitulacija|osnova za ddv|skupaj ddv/i.test(line)) continue;
 
-    // DEBUG - uncomment to watch candidate lines:
-     console.log("Checking line for item parsing:", JSON.stringify(line));
-
-    // Split line by two or more spaces or tabs; fallback to single spaces if needed
+    // Split line first by two or more spaces or tabs
     let parts = line.split(/\s{2,}|\t/).filter(Boolean);
-    if (parts.length < 3) {
+    if (parts.length < 4) {
+      // Fallback to splitting by single space if too few parts
       parts = line.trim().split(/\s+/);
     }
 
-    if (parts.length < 3) continue;
+    if (parts.length < 4) continue; // Require minimum 4 parts for an item line
 
     let possibleDate = parts[0];
     const datePattern = /^\d{1,2}[./-]\d{1,2}[./-](?:\d{2}|\d{4})$/;
@@ -185,24 +231,19 @@ export function parseReceipt(text) {
 
     if (datePattern.test(possibleDate)) {
       itemDate = possibleDate;
-
-      if (parts.length < 4) continue; // Too few parts to have quantity and price
-
-      // quantity and price are usually last 2 or 3 columns, adapt if needed
+      if (parts.length < 4) continue;
       quantity = parts[parts.length - 3];
       priceStr = parts[parts.length - 1];
       description = parts.slice(1, parts.length - 3).join(" ");
     } else {
-      // No date in first column; assume last two fields quantity and price
       priceStr = parts[parts.length - 1];
       quantity = parts[parts.length - 2];
       description = parts.slice(0, parts.length - 2).join(" ");
     }
 
-    // Normalize price and quantity
     const priceNorm = normalizeAmount(priceStr.replace(/[^\d,.\-]/g, ""), isSlovenian);
     const price = parseFloat(priceNorm);
-    if (isNaN(price) || price <= 0) continue;
+    if (isNaN(price) || price <= 0 || price > 10000) continue; // plausibility check
 
     let quantityNum = null;
     if (quantity) {
@@ -211,8 +252,7 @@ export function parseReceipt(text) {
       quantityNum = isNaN(parsedQty) ? null : parsedQty;
     }
 
-    // Skip item if description is empty or contains exclude keywords
-    if (!description || excludeKeywords.some(kw => new RegExp(`\\b${kw}\\b`, "i").test(description))) continue;
+    if (!description || description.length < 3 || !/[a-zA-Zčšž]/i.test(description)) continue;
 
     items.push({
       name: description.trim(),
