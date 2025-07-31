@@ -11,7 +11,7 @@ const tesseractConfig = {
     "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€",
 };
 
-// --- OpenCV.js preprocessing ---
+// --- OpenCV.js preprocessing of images ---
 export function preprocessWithOpenCV(imageSrc) {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -51,16 +51,16 @@ export function preprocessWithOpenCV(imageSrc) {
   });
 }
 
-// --- Text cleanup and line merging for PDF/OCR text ---
-
-function cleanAndMergeText(rawText) {
+// --- Helper: Clean invisible/control chars and merge broken lines intelligently ---
+export function cleanAndMergeText(rawText) {
   if (!rawText) return "";
 
+  // Remove invisible Unicode characters and replace unusual spaces
   let text = rawText
-    .replace(/\u00A0/g, " ") // non-breaking spaces → space
+    .replace(/\u00A0/g, " ")           // non-breaking spaces → space
     .replace(/[\u200B-\u200D\uFEFF]/g, "") // zero-width spaces removed
-    .replace(/\t/g, " ") // tabs → space
-    .replace(/[ ]{2,}/g, " "); // collapse multiple spaces
+    .replace(/\t/g, " ")               // tabs → space
+    .replace(/[ ]{2,}/g, " ");         // collapse multiple spaces
 
   const lines = text.split("\n").map(line => line.trim()).filter(Boolean);
 
@@ -73,15 +73,17 @@ function cleanAndMergeText(rawText) {
       const isCurrentLettersOnly = /^[a-zA-ZšžčćđŠŽČĆĐ\s\-]+$/.test(current);
       const isNextStartsWithNumberOrCurrency = /^[€$]?[\d]/.test(next);
 
+      // Merge text line followed by amount line (e.g. item description + price)
       if (isCurrentLettersOnly && isNextStartsWithNumberOrCurrency) {
         mergedLines.push(current + " " + next);
-        i++;
+        i++; // skip next line, already merged
         continue;
       }
 
+      // Merge label lines ending with ":" with next line
       if (current.endsWith(":") && next.length > 0) {
         mergedLines.push(current + " " + next);
-        i++;
+        i++; // skip next line, merged here
         continue;
       }
     }
@@ -91,14 +93,14 @@ function cleanAndMergeText(rawText) {
   return mergedLines.join("\n");
 }
 
-// --- Extract text (raw) from a PDF page ---
+// --- Extract text from a PDF page (using pdfjs-dist) ---
 async function extractTextFromPDFPage(page) {
   const textContent = await page.getTextContent();
   const strings = textContent.items.map((item) => item.str).filter(Boolean);
   return strings.join("\n").trim();
 }
 
-// --- Main processPDF function: extract and OCR fallback with text cleaning ---
+// --- Main PDF processing function ---
 export async function processPDF(file, onProgress = () => {}) {
   const reader = new FileReader();
 
@@ -114,13 +116,17 @@ export async function processPDF(file, onProgress = () => {}) {
         const page = await pdf.getPage(i);
         console.log(`Processing page ${i}...`);
 
+        // Try direct text extraction first
         const extractedText = await extractTextFromPDFPage(page);
 
         if (extractedText && extractedText.length > 20) {
           console.log(`Page ${i}: Text extracted without OCR`);
+
           const cleanedText = cleanAndMergeText(extractedText);
+
           fullText += `\n\n--- Page ${i} (Extracted Text) ---\n${cleanedText}`;
         } else {
+          // Fallback to OCR if no good text found
           const viewport = page.getViewport({ scale: 3 });
           const canvas = document.createElement("canvas");
           const context = canvas.getContext("2d");
@@ -145,6 +151,7 @@ export async function processPDF(file, onProgress = () => {}) {
           });
 
           const cleanedOCRText = cleanAndMergeText(result.data.text);
+
           fullText += `\n\n--- Page ${i} (OCR) ---\n${cleanedOCRText}`;
           console.log(`OCR complete for page ${i}`);
         }
@@ -157,7 +164,7 @@ export async function processPDF(file, onProgress = () => {}) {
   });
 }
 
-// --- OCR for images directly ---
+// --- OCR for images (directly) ---
 export async function processImage(imageSrc, onProgress = () => {}) {
   console.log("Starting image preprocessing");
   const preprocessedDataURL = await preprocessWithOpenCV(imageSrc);
