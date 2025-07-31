@@ -96,10 +96,9 @@ export function mergeItemLines(rawText) {
   const merged = [];
   let buffer = "";
 
-  // Keywords to avoid merging across semantic blocks
+  // Keywords to block merging across totals and summaries
   const forbiddenKeywords = ["znesek", "keine", "ddv", "skupaj", "datum", "obdobje"];
-
-  // Keywords to identify item description lines (optional)
+  // Keywords to identify item description lines
   const itemDescriptionKeywords = ["storitev", "opis", "item", "artikel"];
 
   for (let i = 0; i < lines.length; i++) {
@@ -120,19 +119,18 @@ export function mergeItemLines(rawText) {
     const currentAmounts = [...line.matchAll(/\d{1,3}(?:[ .,]?\d{3})*(?:[.,]\d{1,2})/g)];
     const nextAmounts = [...nextLine.matchAll(/\d{1,3}(?:[ .,]?\d{3})*(?:[.,]\d{1,2})/g)];
 
-    // Heuristic for strong price presence: multiple amounts or single amount above 10
+    // Check if current line has strong price amount: multiple amounts or amount >10
     const currentHasStrongPrice =
       currentAmounts.length > 1 ||
       (currentAmounts.length === 1 && parseFloat(currentAmounts[0][0].replace(",", ".")) > 10);
 
     const nextHasAmounts = nextAmounts.length > 0;
 
-    // Merge if:
-    // - Neither line has forbidden keywords
-    // - Current line has no strong price OR
-    //   Current line has item description keyword (likely incomplete line)
-    // - Next line has amounts (price or quantity)
-    if (!hasForbiddenCurrent && !hasForbiddenNext && ( !currentHasStrongPrice || hasDescriptionKeyword) && nextHasAmounts) {
+    // Merge lines if:
+    // - Neither line has forbidden keywords (to keep blocks separate)
+    // - Current line either has no strong price or contains a description keyword
+    // - Next line has amounts (likely prices or quantities)
+    if (!hasForbiddenCurrent && !hasForbiddenNext && (!currentHasStrongPrice || hasDescriptionKeyword) && nextHasAmounts) {
       buffer += " " + nextLine;
       i++;
       continue;
@@ -141,10 +139,10 @@ export function mergeItemLines(rawText) {
       buffer = line;
     }
   }
-
   if (buffer) merged.push(buffer);
   return merged.join("\n");
 }
+
 
 
 async function extractTextFromPDFPage(page) {
