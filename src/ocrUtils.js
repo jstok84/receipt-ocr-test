@@ -96,7 +96,11 @@ export function mergeItemLines(rawText) {
   const merged = [];
   let buffer = "";
 
+  // Keywords to avoid merging across semantic blocks
   const forbiddenKeywords = ["znesek", "keine", "ddv", "skupaj", "datum", "obdobje"];
+
+  // Keywords to identify item description lines (optional)
+  const itemDescriptionKeywords = ["storitev", "opis", "item", "artikel"];
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -110,16 +114,25 @@ export function mergeItemLines(rawText) {
       continue;
     }
 
+    const currentLower = line.toLowerCase();
+    const hasDescriptionKeyword = itemDescriptionKeywords.some(kw => currentLower.includes(kw));
+
     const currentAmounts = [...line.matchAll(/\d{1,3}(?:[ .,]?\d{3})*(?:[.,]\d{1,2})/g)];
     const nextAmounts = [...nextLine.matchAll(/\d{1,3}(?:[ .,]?\d{3})*(?:[.,]\d{1,2})/g)];
 
+    // Heuristic for strong price presence: multiple amounts or single amount above 10
     const currentHasStrongPrice =
       currentAmounts.length > 1 ||
       (currentAmounts.length === 1 && parseFloat(currentAmounts[0][0].replace(",", ".")) > 10);
 
     const nextHasAmounts = nextAmounts.length > 0;
 
-    if (!hasForbiddenCurrent && !hasForbiddenNext && !currentHasStrongPrice && nextHasAmounts) {
+    // Merge if:
+    // - Neither line has forbidden keywords
+    // - Current line has no strong price OR
+    //   Current line has item description keyword (likely incomplete line)
+    // - Next line has amounts (price or quantity)
+    if (!hasForbiddenCurrent && !hasForbiddenNext && ( !currentHasStrongPrice || hasDescriptionKeyword) && nextHasAmounts) {
       buffer += " " + nextLine;
       i++;
       continue;
@@ -132,6 +145,7 @@ export function mergeItemLines(rawText) {
   if (buffer) merged.push(buffer);
   return merged.join("\n");
 }
+
 
 async function extractTextFromPDFPage(page) {
   const textContent = await page.getTextContent();
