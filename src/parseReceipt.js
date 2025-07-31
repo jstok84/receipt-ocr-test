@@ -2,36 +2,31 @@ export function parseReceipt(text) {
   const PARSER_VERSION = "v1.6.1";
   console.log("🧾 Receipt parser version:", PARSER_VERSION);
 
-  // --- Normalize amount string for safe parseFloat ---
+  /** Normalize amount string for parseFloat, handling Slovenian or non-Slovenian formats */
   function normalizeAmount(value, isSlovenian) {
     if (isSlovenian) {
       if (value.includes(",")) {
-        // Slovenian style: '.' thousands separator and ',' decimal separator
         return value.replace(/\./g, "").replace(",", ".");
       } else {
         const dotCount = (value.match(/\./g) || []).length;
-        if (dotCount <= 1) return value;
-        return value.replace(/\./g, "");
+        return dotCount <= 1 ? value : value.replace(/\./g, "");
       }
     } else {
-      // English style: remove commas as thousands separator
       return value.replace(/,/g, "");
     }
   }
 
-  // --- Extract last amount + currency in line via regex ---
+  /** Regex to find the last amount and optional currency symbol in a line */
   function extractLastAmountWithCurrency(line) {
-    const amountWithCurrencyRegex = /(\d{1,3}(?:[ .,]\d{3})*(?:[.,]\d{1,2}))\s*(€|EUR|USD|\$)?/gi;
-    let match, lastMatch = null;
-    while ((match = amountWithCurrencyRegex.exec(line)) !== null) {
-      lastMatch = match;
-    }
+    const regex = /(\d{1,3}(?:[ .,]\d{3})*(?:[.,]\d{1,2}))\s*(€|EUR|USD|\$)?/gi;
+    let lastMatch = null, match;
+    while ((match = regex.exec(line)) !== null) lastMatch = match;
     return lastMatch; // null if none
   }
 
-  // --- Extract all total amount candidates ---
+  /** Extract all total candidates by scanning lines with certain keywords */
   function extractAllTotalCandidates(lines, isSlovenian) {
-    const totalKeywords = isSlovenian
+    const keywords = isSlovenian
       ? [
           "plačano",
           "za plačilo",
@@ -41,49 +36,56 @@ export function parseReceipt(text) {
           "skupna vrednost",
           "skupaj z ddv",
         ]
-      : ["paid", "total", "amount due", "grand total", "amount", "to pay"];
+      : [
+          "paid",
+          "total",
+          "amount due",
+          "grand total",
+          "amount",
+          "to pay",
+        ];
 
     const candidates = [];
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      if (!totalKeywords.some((kw) => line.toLowerCase().includes(kw))) continue;
+      if (!keywords.some((kw) => line.toLowerCase().includes(kw))) continue;
       if (line.toLowerCase().includes("keine")) continue;
 
-      let parsedMatch = extractLastAmountWithCurrency(line);
-      if (!parsedMatch) {
+      let match = extractLastAmountWithCurrency(line);
+      if (!match) {
         const nextLine = lines[i + 1];
         if (nextLine) {
-          parsedMatch = extractLastAmountWithCurrency(nextLine);
-          if (parsedMatch) {
-            const rawValue = parsedMatch[1];
-            const currency = (parsedMatch[2] || "€").toUpperCase();
-            const value = parseFloat(normalizeAmount(rawValue, isSlovenian));
-            if (!isNaN(value) && value > 0)
-              candidates.push({ line: line + " " + nextLine, value, currency });
-            continue;
+          match = extractLastAmountWithCurrency(nextLine);
+          if (match) {
+            const raw = match[1];
+            const curr = (match[2] || "€").toUpperCase();
+            const val = parseFloat(normalizeAmount(raw, isSlovenian));
+            if (!isNaN(val) && val > 0) {
+              candidates.push({ line: line + " " + nextLine, value: val, currency: curr });
+              continue;
+            }
           }
         }
       } else {
-        const rawValue = parsedMatch[1];
-        const currency = (parsedMatch[2] || "€").toUpperCase();
-        const value = parseFloat(normalizeAmount(rawValue, isSlovenian));
-        if (!isNaN(value) && value > 0) candidates.push({ line, value, currency });
+        const raw = match[1];
+        const curr = (match[2] || "€").toUpperCase();
+        const val = parseFloat(normalizeAmount(raw, isSlovenian));
+        if (!isNaN(val) && val > 0) candidates.push({ line, value: val, currency: curr });
       }
     }
+
     candidates.sort((a, b) => b.value - a.value);
     return candidates;
   }
 
-  // --- Fallback total extraction from net+VAT summary lines ---
+  /** Tries fallback total extraction from VAT summary lines */
   function tryFallbackTotal(lines, isSlovenian) {
-    let net = null,
-      vat = null,
-      currency = null;
+    let net = null, vat = null, currency = null;
 
     for (const line of lines) {
       const lower = line.toLowerCase();
-      const parsedMatch = extractLastAmountWithCurrency(line);
-      if (!parsedMatch) continue;
+      const match = extractLastAmountWithCurrency(line);
+      if (!match) continue;
 
       const vatMatch = line.match(
         /c\s+\d{1,2},\d{1,2}\s*%\s+(\d{1,3}(?:[ .,]?\d{3})*(?:[.,]\d{1,2}))\s+(\d{1,3}(?:[ .,]?\d{3})*(?:[.,]\d{1,2}))/i
@@ -91,7 +93,7 @@ export function parseReceipt(text) {
       if (vatMatch) {
         net = parseFloat(normalizeAmount(vatMatch[1], isSlovenian));
         vat = parseFloat(normalizeAmount(vatMatch[2], isSlovenian));
-        currency = parsedMatch[2]?.toUpperCase() || currency;
+        currency = match[2]?.toUpperCase() || currency;
         if (!isNaN(net) && !isNaN(vat)) {
           const total = parseFloat((net + vat).toFixed(2));
           console.log(`💡 Fallback from VAT summary: ${net} + ${vat} = ${total}`);
@@ -101,24 +103,24 @@ export function parseReceipt(text) {
 
       if (isSlovenian) {
         if (lower.includes("osnova za ddv") || lower.includes("brez ddv"))
-          net = parseFloat(normalizeAmount(parsedMatch[1], isSlovenian));
+          net = parseFloat(normalizeAmount(match[1], isSlovenian));
         if (lower.includes("skupaj ddv") || (lower.includes("ddv") && lower.includes("%")))
-          vat = parseFloat(normalizeAmount(parsedMatch[1], isSlovenian));
+          vat = parseFloat(normalizeAmount(match[1], isSlovenian));
       } else {
         if (lower.includes("net"))
-          net = parseFloat(normalizeAmount(parsedMatch[1], isSlovenian));
+          net = parseFloat(normalizeAmount(match[1], isSlovenian));
         if (lower.includes("vat") || lower.includes("tax"))
-          vat = parseFloat(normalizeAmount(parsedMatch[1], isSlovenian));
+          vat = parseFloat(normalizeAmount(match[1], isSlovenian));
       }
     }
+
     if (net !== null && vat !== null) {
-      const total = parseFloat((net + vat).toFixed(2));
-      return { value: total, currency };
+      return { value: parseFloat((net + vat).toFixed(2)), currency };
     }
     return null;
   }
 
-  // --- Extract ISO date from lines ---
+  /** Extract ISO-format date (YYYY-MM-DD) from lines if any */
   function extractDate(lines) {
     const dateRegex = /\b(0?[1-9]|[12][0-9]|3[01])[./-](0?[1-9]|1[0-2])[./-](\d{2}|\d{4})\b/;
     for (const line of lines) {
@@ -136,11 +138,13 @@ export function parseReceipt(text) {
     return null;
   }
 
-  // --- Start parsing ---
-  const lines = text
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
+  /** Checks whether to exclude a line by matching keywords as whole words */
+  function shouldExcludeLine(line, excludeKeywords) {
+    return excludeKeywords.some((kw) => new RegExp(`\\b${kw}\\b`, "i").test(line));
+  }
+
+  /** Main body of parseReceipt **/
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
   const joinedText = lines.join(" ").toLowerCase();
   const isSlovenian = [
     "račun",
@@ -153,7 +157,7 @@ export function parseReceipt(text) {
     "plačano",
   ].some((kw) => joinedText.includes(kw));
 
-  // --- Refined exclude keywords without ambiguous short words like "si", "mobil" ---
+  // Refined exclude keywords (avoid overly generic small words)
   const excludeKeywords = isSlovenian
     ? [
         "številka",
@@ -212,10 +216,12 @@ export function parseReceipt(text) {
     /^vsi zneski so v/i,
   ];
 
+  // Detect total candidates from lines
   const totalCandidates = extractAllTotalCandidates(lines, isSlovenian);
   let total = totalCandidates.length > 0 ? totalCandidates[0].value : null;
   let currency = totalCandidates.length > 0 ? totalCandidates[0].currency ?? "€" : "€";
 
+  // Attempt fallback total from VAT net+vat summary
   const fallbackTotal = tryFallbackTotal(lines, isSlovenian);
   if (fallbackTotal) {
     const delta = total ? Math.abs(fallbackTotal.value - total) : 0;
@@ -232,34 +238,32 @@ export function parseReceipt(text) {
   const date = extractDate(lines);
   const items = [];
 
-  // --- Parse items ---
+  // Parse items with support for Spar multi-column format and fallback generic parsing
   for (const line of lines) {
     console.log(`Checking line: "${line}"`);
 
-    // Exclude lines based on whole-word matching of exclude keywords
-    const excludeWholeWord = excludeKeywords.some(
-      (kw) => new RegExp(`\\b${kw}\\b`, "i").test(line)
-    );
-    if (excludeWholeWord) {
+    if (shouldExcludeLine(line, excludeKeywords)) {
       console.log("  Skipping due to exclude keyword (whole word match).");
       continue;
     }
+
     if (nonItemPatterns.some((pat) => pat.test(line))) {
       console.log("  Skipping due to non-item pattern.");
       continue;
     }
+
     if (totalCandidates.some((tc) => tc.line === line)) {
       console.log("  Skipping line matching total candidate.");
       continue;
     }
+
     if (/rekapitulacija|osnova za ddv|skupaj ddv/i.test(line)) {
       console.log("  Skipping VAT summary or similar.");
       continue;
     }
 
-    // --- SPAR multi-column receipt line heuristic ---
-    // Spar lines have >= 10 columns split by multiple spaces/tabs
-    const parts = line.split(/\s{2,}|\t/).filter((x) => x.trim() !== "");
+    // Spar multi-column detection heuristic: >=10 parts split by several spaces/tabs
+    const parts = line.split(/\s{2,}|\t/).filter((p) => p.trim() !== "");
 
     if (parts.length >= 10) {
       const quantityRaw = parts[0];
@@ -303,17 +307,16 @@ export function parseReceipt(text) {
         price: `${priceNum.toFixed(2)} ${currency}`,
         quantity: quantityNum,
       });
-
-      continue; // Move to next line
+      continue;
     }
 
-    // --- Generic fallback parsing for simpler receipts ---
-
+    // Fallback generic parsing: extract last amount
     const amountMatch = extractLastAmountWithCurrency(line);
     if (!amountMatch) {
       console.log("  Skipping due to no valid amount found in line.");
       continue;
     }
+
     const rawAmount = amountMatch[1];
     const detectedCurrency = (amountMatch[2] || currency).toUpperCase();
 
@@ -325,6 +328,7 @@ export function parseReceipt(text) {
       console.log(`  Skipping due to invalid price: "${priceStr}" parsed as ${price}`);
       continue;
     }
+
     if (price > 10000) {
       console.log(`  Skipping due to implausible large price: ${price.toFixed(2)}`);
       continue;
