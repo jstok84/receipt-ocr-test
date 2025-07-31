@@ -11,7 +11,7 @@ const tesseractConfig = {
     "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€",
 };
 
-// OpenCV preprocessing for images (requires OpenCV.js loaded in your environment)
+// OpenCV.js preprocessing helper (requires OpenCV.js loaded globally as `cv`)
 export function preprocessWithOpenCV(imageSrc) {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -20,7 +20,6 @@ export function preprocessWithOpenCV(imageSrc) {
       const canvas = document.createElement("canvas");
       canvas.width = img.width;
       canvas.height = img.height;
-
       const ctx = canvas.getContext("2d");
       ctx.drawImage(img, 0, 0);
 
@@ -51,15 +50,15 @@ export function preprocessWithOpenCV(imageSrc) {
   });
 }
 
-// Clean invisible chars and merge broken lines (label + amount merge)
+// Clean invisible characters and merge simple broken lines (label + amount)
 export function cleanAndMergeText(rawText) {
   if (!rawText) return "";
 
   let text = rawText
-    .replace(/\u00A0/g, " ")              // non-breaking spaces → space
-    .replace(/[\u200B-\u200D\uFEFF]/g, "") // zero-width spaces removed
-    .replace(/\t/g, " ")                  // tabs → space
-    .replace(/[ ]{2,}/g, " ");            // collapse multiple spaces
+    .replace(/\u00A0/g, " ")             
+    .replace(/[\u200B-\u200D\uFEFF]/g, "") 
+    .replace(/\t/g, " ")               
+    .replace(/[ ]{2,}/g, " ");         
 
   const lines = text.split("\n").map(line => line.trim()).filter(Boolean);
 
@@ -74,13 +73,13 @@ export function cleanAndMergeText(rawText) {
 
       if (isCurrentTextLine && isNextStartsWithNumberOrCurrency) {
         mergedLines.push(current + " " + next);
-        i++; // skip next line, merged
+        i++; 
         continue;
       }
 
       if (current.endsWith(":") && next.length > 0) {
         mergedLines.push(current + " " + next);
-        i++; // skip next line
+        i++; 
         continue;
       }
     }
@@ -90,7 +89,7 @@ export function cleanAndMergeText(rawText) {
   return mergedLines.join("\n");
 }
 
-// Merge multi-line item fragments into single lines for better parsing
+// Enhanced merge for multiple consecutive lines belonging to one item: 
 export function mergeItemLines(rawText) {
   const lines = rawText.split("\n").map(l => l.trim()).filter(Boolean);
   const merged = [];
@@ -108,10 +107,14 @@ export function mergeItemLines(rawText) {
       continue;
     }
 
-    // Merge if current line lacks amount but next line has amount or is percentages/price line
     if (!hasAmount && (nextHasAmount || /^[\d.,% €]+$/.test(nextLine))) {
       buffer += " " + nextLine;
-      i++; // skip next line merged here
+      i++;
+      // Merge further lines if they are also mostly digits, %, or € signs
+      while (i + 1 < lines.length && /^[\d.,% €]+$/.test(lines[i + 1].trim())) {
+        buffer += " " + lines[i + 1].trim();
+        i++;
+      }
       continue;
     } else {
       merged.push(buffer);
@@ -122,14 +125,14 @@ export function mergeItemLines(rawText) {
   return merged.join("\n");
 }
 
-// Extract raw text content from a PDF page
+// Extract text content from PDF page using pdfjs-dist
 async function extractTextFromPDFPage(page) {
   const textContent = await page.getTextContent();
   const strings = textContent.items.map(item => item.str).filter(Boolean);
   return strings.join("\n").trim();
 }
 
-// Main PDF processing function
+// Main function to process PDF: extract, clean, merge, OCR fallback
 export async function processPDF(file, onProgress = () => {}) {
   const reader = new FileReader();
 
@@ -155,7 +158,7 @@ export async function processPDF(file, onProgress = () => {}) {
 
           fullText += `\n\n--- Page ${i} (Extracted Text) ---\n${fullyMergedText}`;
         } else {
-          // Fallback OCR for scanned or textless pages
+          // Fallback OCR on image render if no good text extracted
           const viewport = page.getViewport({ scale: 3 });
           const canvas = document.createElement("canvas");
           const context = canvas.getContext("2d");
@@ -194,7 +197,7 @@ export async function processPDF(file, onProgress = () => {}) {
   });
 }
 
-// OCR for direct images
+// OCR process for direct images
 export async function processImage(imageSrc, onProgress = () => {}) {
   console.log("Starting image preprocessing");
   const preprocessedDataURL = await preprocessWithOpenCV(imageSrc);
