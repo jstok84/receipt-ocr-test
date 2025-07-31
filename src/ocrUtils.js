@@ -11,6 +11,7 @@ const tesseractConfig = {
     "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€",
 };
 
+// OpenCV preprocessing for images (requires OpenCV.js loaded in your environment)
 export function preprocessWithOpenCV(imageSrc) {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -50,14 +51,15 @@ export function preprocessWithOpenCV(imageSrc) {
   });
 }
 
+// Clean invisible chars and merge broken lines (label + amount merge)
 export function cleanAndMergeText(rawText) {
   if (!rawText) return "";
 
   let text = rawText
-    .replace(/\u00A0/g, " ")           // non-breaking spaces → space
+    .replace(/\u00A0/g, " ")              // non-breaking spaces → space
     .replace(/[\u200B-\u200D\uFEFF]/g, "") // zero-width spaces removed
-    .replace(/\t/g, " ")               // tabs → space
-    .replace(/[ ]{2,}/g, " ");         // collapse multiple spaces
+    .replace(/\t/g, " ")                  // tabs → space
+    .replace(/[ ]{2,}/g, " ");            // collapse multiple spaces
 
   const lines = text.split("\n").map(line => line.trim()).filter(Boolean);
 
@@ -67,10 +69,10 @@ export function cleanAndMergeText(rawText) {
     const next = lines[i + 1];
 
     if (next) {
-      const isCurrentLettersOnly = /^[a-zA-ZšžčćđŠŽČĆĐ\s\-]+$/.test(current);
+      const isCurrentTextLine = /^[\w\s\-\/.,+]+$/i.test(current);
       const isNextStartsWithNumberOrCurrency = /^[€$]?[\d]/.test(next);
 
-      if (isCurrentLettersOnly && isNextStartsWithNumberOrCurrency) {
+      if (isCurrentTextLine && isNextStartsWithNumberOrCurrency) {
         mergedLines.push(current + " " + next);
         i++; // skip next line, merged
         continue;
@@ -78,7 +80,7 @@ export function cleanAndMergeText(rawText) {
 
       if (current.endsWith(":") && next.length > 0) {
         mergedLines.push(current + " " + next);
-        i++;
+        i++; // skip next line
         continue;
       }
     }
@@ -88,7 +90,7 @@ export function cleanAndMergeText(rawText) {
   return mergedLines.join("\n");
 }
 
-// New function: merge multi-line item details into single lines for parsing
+// Merge multi-line item fragments into single lines for better parsing
 export function mergeItemLines(rawText) {
   const lines = rawText.split("\n").map(l => l.trim()).filter(Boolean);
   const merged = [];
@@ -106,10 +108,10 @@ export function mergeItemLines(rawText) {
       continue;
     }
 
-    // Heuristic: If buffer line doesn't have amount but next line likely contains numbers, merge
+    // Merge if current line lacks amount but next line has amount or is percentages/price line
     if (!hasAmount && (nextHasAmount || /^[\d.,% €]+$/.test(nextLine))) {
       buffer += " " + nextLine;
-      i++; // advance pointer, joined next line
+      i++; // skip next line merged here
       continue;
     } else {
       merged.push(buffer);
@@ -120,12 +122,14 @@ export function mergeItemLines(rawText) {
   return merged.join("\n");
 }
 
+// Extract raw text content from a PDF page
 async function extractTextFromPDFPage(page) {
   const textContent = await page.getTextContent();
-  const strings = textContent.items.map((item) => item.str).filter(Boolean);
+  const strings = textContent.items.map(item => item.str).filter(Boolean);
   return strings.join("\n").trim();
 }
 
+// Main PDF processing function
 export async function processPDF(file, onProgress = () => {}) {
   const reader = new FileReader();
 
@@ -135,7 +139,7 @@ export async function processPDF(file, onProgress = () => {}) {
       const pdf = await getDocument({ data: reader.result }).promise;
 
       let fullText = "";
-      let previews = [];
+      const previews = [];
 
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
@@ -145,10 +149,13 @@ export async function processPDF(file, onProgress = () => {}) {
 
         if (extractedText && extractedText.length > 20) {
           console.log(`Page ${i}: Text extracted without OCR`);
+
           const cleanedText = cleanAndMergeText(extractedText);
           const fullyMergedText = mergeItemLines(cleanedText);
+
           fullText += `\n\n--- Page ${i} (Extracted Text) ---\n${fullyMergedText}`;
         } else {
+          // Fallback OCR for scanned or textless pages
           const viewport = page.getViewport({ scale: 3 });
           const canvas = document.createElement("canvas");
           const context = canvas.getContext("2d");
@@ -187,6 +194,7 @@ export async function processPDF(file, onProgress = () => {}) {
   });
 }
 
+// OCR for direct images
 export async function processImage(imageSrc, onProgress = () => {}) {
   console.log("Starting image preprocessing");
   const preprocessedDataURL = await preprocessWithOpenCV(imageSrc);
