@@ -1,21 +1,26 @@
 export function parseReceipt(text) {
-  const PARSER_VERSION = "v1.5.0";
+  const PARSER_VERSION = "v1.5.1";
   console.log("🧾 Receipt parser version:", PARSER_VERSION);
 
+  // Normalize amounts to parseable format depending on locale
   function normalizeAmount(value, isSlovenian) {
     if (isSlovenian) {
       if (value.includes(",")) {
+        // Slovenian style: dot as thousand separator, comma as decimal separator
         return value.replace(/\./g, "").replace(",", ".");
       } else {
+        // No comma decimal - remove dots if >1
         const dotCount = (value.match(/\./g) || []).length;
         if (dotCount <= 1) return value;
         return value.replace(/\./g, "");
       }
     } else {
+      // English style: comma thousand separator removed
       return value.replace(/,/g, "");
     }
   }
 
+  // Extract last amount in line (supposedly price or total)
   function extractAmountFromLine(line, isSlovenian) {
     const regex = /(\d{1,3}(?:[ .,]?\d{3})*(?:[.,]\d{1,2}))\s*(EUR|USD|\$|€)?/gi;
     let match, lastMatch = null;
@@ -31,6 +36,7 @@ export function parseReceipt(text) {
     return isNaN(value) ? null : { value, currency };
   }
 
+  // Extract first date found in the lines in ISO format
   function extractDate(lines) {
     const dateRegex = /\b(0?[1-9]|[12][0-9]|3[01])[./-](0?[1-9]|1[0-2])[./-](\d{2}|\d{4})\b/;
     for (const line of lines) {
@@ -54,14 +60,45 @@ export function parseReceipt(text) {
     .filter(Boolean);
 
   const joinedText = lines.join(" ").toLowerCase();
+
+  // Detect Slovenian language presence for number parsing and keywords
   const isSlovenian = [
-    "račun", "kupec", "ddv", "znesek", "ponudba", "skupaj", "za plačilo", "plačano"
+    "račun",
+    "kupec",
+    "ddv",
+    "znesek",
+    "ponudba",
+    "skupaj",
+    "za plačilo",
+    "plačano",
   ].some(keyword => joinedText.includes(keyword));
 
+  // Keywords for lines likely NOT containing items; used for filtering
   const excludeKeywords = isSlovenian
-    ? ["številka", "transakcija", "ddv", "datum", "račun", "osnovni kapital", "ponudbe", "rekapitulacija", "osnova", "veljavnost ponudbe"]
-    : ["transaction", "terminal", "subtotal", "tax", "vat", "invoice", "date", "validity"];
+    ? [
+      "številka",
+      "transakcija",
+      "ddv",
+      "datum",
+      "račun",
+      "osnovni kapital",
+      "ponudbe",
+      "rekapitulacija",
+      "osnova",
+      "veljavnost ponudbe",
+    ]
+    : [
+      "transaction",
+      "terminal",
+      "subtotal",
+      "tax",
+      "vat",
+      "invoice",
+      "date",
+      "validity",
+    ];
 
+  // Keywords to detect total amount lines
   const totalKeywords = isSlovenian
     ? [
       "plačano",
@@ -74,6 +111,7 @@ export function parseReceipt(text) {
     ]
     : ["paid", "total", "amount due", "grand total", "amount", "to pay"];
 
+  // Extract total candidates from lines with total keywords
   const totalCandidates = lines
     .filter(line => totalKeywords.some(kw => line.toLowerCase().includes(kw)))
     .filter(line => !/^c\s+\d{1,2},\d{1,2}\s*%\s+[\d\s.,]+—?\s*[\d\s.,]+/i.test(line.toLowerCase()))
@@ -94,6 +132,7 @@ export function parseReceipt(text) {
   const date = extractDate(lines);
   const items = [];
 
+  // Patterns of lines to skip as non-items
   const nonItemPatterns = [
     /^plačano/i,
     /^c\s+\d{1,2},\d{1,2}\s*%\s+[\d\s.,]+—?\s*[\d\s.,]+/i,
@@ -123,54 +162,62 @@ export function parseReceipt(text) {
   ];
 
   for (const line of lines) {
+    // Skip non-item lines or total candidate lines or summary lines
     if (nonItemPatterns.some(pattern => pattern.test(line))) continue;
     if (totalCandidates.some(t => t.line === line)) continue;
     if (/rekapitulacija|osnova za ddv|skupaj ddv/i.test(line)) continue;
 
-    // Split line by 2+ spaces or tabs
-    const parts = line.split(/\s{2,}|\t/).filter(Boolean);
+    // DEBUG - uncomment to watch candidate lines:
+     console.log("Checking line for item parsing:", JSON.stringify(line));
+
+    // Split line by two or more spaces or tabs; fallback to single spaces if needed
+    let parts = line.split(/\s{2,}|\t/).filter(Boolean);
+    if (parts.length < 3) {
+      parts = line.trim().split(/\s+/);
+    }
 
     if (parts.length < 3) continue;
 
-    let [possibleDate, ...rest] = parts;
-
+    let possibleDate = parts[0];
     const datePattern = /^\d{1,2}[./-]\d{1,2}[./-](?:\d{2}|\d{4})$/;
     let itemDate = null;
-    let description = null;
-    let quantity = null;
-    let priceStr = null;
+    let description, quantity, priceStr;
 
     if (datePattern.test(possibleDate)) {
       itemDate = possibleDate;
-      if (rest.length < 3) continue;
-      quantity = rest[rest.length - 3];
-      priceStr = rest[rest.length - 1];
-      description = rest.slice(0, rest.length - 3).join(" ");
-    } else {
-      description = parts.slice(0, parts.length - 2).join(" ");
-      quantity = parts[parts.length - 2];
+
+      if (parts.length < 4) continue; // Too few parts to have quantity and price
+
+      // quantity and price are usually last 2 or 3 columns, adapt if needed
+      quantity = parts[parts.length - 3];
       priceStr = parts[parts.length - 1];
+      description = parts.slice(1, parts.length - 3).join(" ");
+    } else {
+      // No date in first column; assume last two fields quantity and price
+      priceStr = parts[parts.length - 1];
+      quantity = parts[parts.length - 2];
+      description = parts.slice(0, parts.length - 2).join(" ");
     }
 
+    // Normalize price and quantity
     const priceNorm = normalizeAmount(priceStr.replace(/[^\d,.\-]/g, ""), isSlovenian);
     const price = parseFloat(priceNorm);
     if (isNaN(price) || price <= 0) continue;
 
+    let quantityNum = null;
     if (quantity) {
       const quantityNorm = normalizeAmount(quantity.replace(/[^\d,.\-]/g, ""), isSlovenian);
-      const quantityParsed = parseFloat(quantityNorm);
-      quantity = isNaN(quantityParsed) ? null : quantityParsed;
-    } else {
-      quantity = null;
+      const parsedQty = parseFloat(quantityNorm);
+      quantityNum = isNaN(parsedQty) ? null : parsedQty;
     }
 
-    const hasExcludedKeyword = excludeKeywords.some(kw => new RegExp(`\\b${kw}\\b`, "i").test(description));
-    if (hasExcludedKeyword) continue;
+    // Skip item if description is empty or contains exclude keywords
+    if (!description || excludeKeywords.some(kw => new RegExp(`\\b${kw}\\b`, "i").test(description))) continue;
 
     items.push({
       name: description.trim(),
       price: `${price.toFixed(2)} ${currency}`,
-      quantity: quantity !== null ? quantity : undefined,
+      quantity: quantityNum !== null ? quantityNum : undefined,
       date: itemDate || undefined,
     });
   }
