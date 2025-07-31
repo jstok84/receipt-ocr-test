@@ -24,26 +24,66 @@ export function preprocessWithOpenCV(imageSrc) {
       ctx.drawImage(img, 0, 0);
 
       let src = cv.imread(canvas);
-      let gray = new cv.Mat();
-      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+      try {
+        // Convert to grayscale
+        let gray = new cv.Mat();
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
 
-      let blur = new cv.Mat();
-      cv.GaussianBlur(gray, blur, new cv.Size(5, 5), 0);
+        // --- Unsharp masking for advanced sharpening ---
 
-      let thresh = new cv.Mat();
-      cv.threshold(blur, thresh, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+        // Gaussian blur the grayscale image
+        let blurred = new cv.Mat();
+        // sigma 1.0 and kernel size auto
+        cv.GaussianBlur(gray, blurred, new cv.Size(0, 0), 1.0);
 
-      const mean = cv.mean(thresh)[0];
-      if (mean > 127) cv.bitwise_not(thresh, thresh);
+        // Unsharp masking formula:
+        // sharpened = original * (1 + strength) - blurred * strength
+        const strength = 1.5; // adjust strength (1.0 - 2.0 is common)
+        let sharpened = new cv.Mat();
+        cv.addWeighted(
+          gray,
+          1.0 + strength,
+          blurred,
+          -strength,
+          0,
+          sharpened
+        );
 
-      cv.imshow(canvas, thresh);
+        // Clean up intermediate mats
+        gray.delete();
+        blurred.delete();
 
-      src.delete();
-      gray.delete();
-      blur.delete();
-      thresh.delete();
+        // Optional: reduce noise a bit after sharpening with a mild Gaussian blur
+        let smoothed = new cv.Mat();
+        cv.GaussianBlur(sharpened, smoothed, new cv.Size(3, 3), 0);
 
-      resolve(canvas.toDataURL("image/png"));
+        sharpened.delete();
+
+        // Threshold using Otsu to binarize
+        let thresh = new cv.Mat();
+        cv.threshold(smoothed, thresh, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+
+        smoothed.delete();
+
+        // Invert image if background is too bright
+        const mean = cv.mean(thresh)[0];
+        if (mean > 127) {
+          let inverted = new cv.Mat();
+          cv.bitwise_not(thresh, inverted);
+          thresh.delete();
+          thresh = inverted;
+        }
+
+        // Show processed image on canvas
+        cv.imshow(canvas, thresh);
+        thresh.delete();
+        src.delete();
+
+        resolve(canvas.toDataURL("image/png"));
+      } catch (err) {
+        src.delete();
+        reject(err);
+      }
     };
     img.onerror = reject;
     img.src = typeof imageSrc === "string" ? imageSrc : URL.createObjectURL(imageSrc);
