@@ -5,7 +5,7 @@ import pdfWorker from "pdfjs-dist/build/pdf.worker.js";
 GlobalWorkerOptions.workerSrc = pdfWorker;
 
 const tesseractConfig = {
-  tessedit_pageseg_mode: 6,
+  tessedit_pageseg_mode: 6, // Assume a PSM suitable for receipts
   tessedit_ocr_engine_mode: 1,
   tessedit_char_whitelist:
     "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€",
@@ -55,10 +55,10 @@ export function cleanAndMergeText(rawText) {
   if (!rawText) return "";
 
   let text = rawText
-    .replace(/\u00A0/g, " ")             
-    .replace(/[\u200B-\u200D\uFEFF]/g, "") 
-    .replace(/\t/g, " ")               
-    .replace(/[ ]{2,}/g, " ");         
+    .replace(/\u00A0/g, " ")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/\t/g, " ")
+    .replace(/[ ]{2,}/g, " ");
 
   const lines = text.split("\n").map(line => line.trim()).filter(Boolean);
 
@@ -73,146 +73,139 @@ export function cleanAndMergeText(rawText) {
 
       if (isCurrentTextLine && isNextStartsWithNumberOrCurrency) {
         mergedLines.push(current + " " + next);
-        i++; 
+        i++;
         continue;
       }
 
       if (current.endsWith(":") && next.length > 0) {
         mergedLines.push(current + " " + next);
-        i++; 
+        i++;
         continue;
       }
     }
+
     mergedLines.push(current);
   }
 
   return mergedLines.join("\n");
 }
 
-// Enhanced merge for multiple consecutive lines belonging to one item: 
+// Refined merge for multiple consecutive lines belonging to one item — prevents over-merging
 export function mergeItemLines(rawText) {
   const lines = rawText.split("\n").map(l => l.trim()).filter(Boolean);
   const merged = [];
   let buffer = "";
 
+  const forbiddenKeywords = ["znesek", "keine", "ddv", "skupaj", "datum", "obdobje"];
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const nextLine = lines[i + 1] || "";
 
-    const hasAmount = /\d{1,3}(?:[ .,]?\d{3})*(?:[.,]\d{1,2})/.test(line);
-    const nextHasAmount = /\d{1,3}(?:[ .,]?\d{3})*(?:[.,]\d{1,2})/.test(nextLine);
+    const hasForbiddenCurrent = forbiddenKeywords.some(kw => line.toLowerCase().includes(kw));
+    const hasForbiddenNext = forbiddenKeywords.some(kw => nextLine.toLowerCase().includes(kw));
 
     if (!buffer) {
       buffer = line;
       continue;
     }
 
-    if (!hasAmount && (nextHasAmount || /^[\d.,% €]+$/.test(nextLine))) {
+    const currentAmounts = [...line.matchAll(/\d{1,3}(?:[ .,]?\d{3})*(?:[.,]\d{1,2})/g)];
+    const nextAmounts = [...nextLine.matchAll(/\d{1,3}(?:[ .,]?\d{3})*(?:[.,]\d{1,2})/g)];
+
+    const currentHasStrongPrice =
+      currentAmounts.length > 1 ||
+      (currentAmounts.length === 1 && parseFloat(currentAmounts[0][0].replace(",", ".")) > 10);
+
+    const nextHasAmounts = nextAmounts.length > 0;
+
+    if (!hasForbiddenCurrent && !hasForbiddenNext && !currentHasStrongPrice && nextHasAmounts) {
       buffer += " " + nextLine;
       i++;
-      // Merge further lines if they are also mostly digits, %, or € signs
-      while (i + 1 < lines.length && /^[\d.,% €]+$/.test(lines[i + 1].trim())) {
-        buffer += " " + lines[i + 1].trim();
-        i++;
-      }
       continue;
     } else {
       merged.push(buffer);
       buffer = line;
     }
   }
+
   if (buffer) merged.push(buffer);
   return merged.join("\n");
 }
 
-// Extract text content from PDF page using pdfjs-dist
 async function extractTextFromPDFPage(page) {
   const textContent = await page.getTextContent();
   const strings = textContent.items.map(item => item.str).filter(Boolean);
   return strings.join("\n").trim();
 }
 
-// Main function to process PDF: extract, clean, merge, OCR fallback
 export async function processPDF(file, onProgress = () => {}) {
   const reader = new FileReader();
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     reader.onload = async () => {
-      console.log("PDF loaded, parsing...");
-      const pdf = await getDocument({ data: reader.result }).promise;
+      try {
+        const pdf = await getDocument({ data: reader.result }).promise;
 
-      let fullText = "";
-      const previews = [];
+        let fullText = "";
+        const previews = [];
 
-      for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i);
-        console.log(`Processing page ${i}...`);
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i);
 
-        const extractedText = await extractTextFromPDFPage(page);
+          const extractedText = await extractTextFromPDFPage(page);
 
-        if (extractedText && extractedText.length > 20) {
-          console.log(`Page ${i}: Text extracted without OCR`);
+          if (extractedText && extractedText.length > 20) {
+            const cleanedText = cleanAndMergeText(extractedText);
+            const fullyMergedText = mergeItemLines(cleanedText);
 
-          const cleanedText = cleanAndMergeText(extractedText);
-          const fullyMergedText = mergeItemLines(cleanedText);
+            fullText += `\n\n--- Page ${i} (Extracted Text) ---\n${fullyMergedText}`;
+          } else {
+            // Fallback OCR on rendered image page
+            const viewport = page.getViewport({ scale: 3 });
+            const canvas = document.createElement("canvas");
+            const context = canvas.getContext("2d");
 
-          fullText += `\n\n--- Page ${i} (Extracted Text) ---\n${fullyMergedText}`;
-        } else {
-          // Fallback OCR on image render if no good text extracted
-          const viewport = page.getViewport({ scale: 3 });
-          const canvas = document.createElement("canvas");
-          const context = canvas.getContext("2d");
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+            await page.render({ canvasContext: context, viewport }).promise;
 
-          canvas.width = viewport.width;
-          canvas.height = viewport.height;
-          await page.render({ canvasContext: context, viewport }).promise;
+            const image = canvas.toDataURL("image/png");
+            previews.push(image);
 
-          const image = canvas.toDataURL("image/png");
-          previews.push(image);
-          console.log(`Rendered page ${i} to image`);
+            const preprocessed = await preprocessWithOpenCV(image);
+            const ocrResult = await Tesseract.recognize(preprocessed, "eng+slv", {
+              logger: onProgress,
+              ...tesseractConfig,
+            });
 
-          const preprocessed = await preprocessWithOpenCV(image);
-          console.log(`Page ${i} preprocessed`);
+            const cleanedOCRText = cleanAndMergeText(ocrResult.data.text);
+            const fullyMergedOCRText = mergeItemLines(cleanedOCRText);
 
-          const result = await Tesseract.recognize(preprocessed, "eng+slv", {
-            logger: (m) => {
-              console.log(`Tesseract PDF Page ${i}:`, m);
-              onProgress(m);
-            },
-            ...tesseractConfig,
-          });
-
-          const cleanedOCRText = cleanAndMergeText(result.data.text);
-          const fullyMergedOCRText = mergeItemLines(cleanedOCRText);
-
-          fullText += `\n\n--- Page ${i} (OCR) ---\n${fullyMergedOCRText}`;
-          console.log(`OCR complete for page ${i}`);
+            fullText += `\n\n--- Page ${i} (OCR) ---\n${fullyMergedOCRText}`;
+          }
         }
-      }
 
-      resolve({ text: fullText, previews });
+        resolve({ text: fullText.trim(), previews });
+      } catch (err) {
+        reject(err);
+      }
     };
 
     reader.readAsArrayBuffer(file);
   });
 }
 
-// OCR process for direct images
 export async function processImage(imageSrc, onProgress = () => {}) {
-  console.log("Starting image preprocessing");
   const preprocessedDataURL = await preprocessWithOpenCV(imageSrc);
-  console.log("Image preprocessed, starting OCR");
 
   const result = await Tesseract.recognize(preprocessedDataURL, "eng+slv", {
-    logger: (m) => {
-      console.log("Tesseract OCR:", m);
-      onProgress(m);
-    },
+    logger: onProgress,
     ...tesseractConfig,
   });
 
-  console.log("OCR complete");
   const cleaned = cleanAndMergeText(result.data.text);
   const fullyMerged = mergeItemLines(cleaned);
+
   return fullyMerged;
 }
