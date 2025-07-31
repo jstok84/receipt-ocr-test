@@ -5,7 +5,7 @@ import pdfWorker from "pdfjs-dist/build/pdf.worker.js";
 GlobalWorkerOptions.workerSrc = pdfWorker;
 
 const tesseractConfig = {
-  tessedit_pageseg_mode: 6, // Assume a PSM suitable for receipts
+  tessedit_pageseg_mode: 6,
   tessedit_ocr_engine_mode: 1,
   tessedit_char_whitelist:
     "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€",
@@ -50,105 +50,30 @@ export function preprocessWithOpenCV(imageSrc) {
   });
 }
 
-// Clean invisible characters and merge simple broken lines (label + amount)
+// Clean invisible characters and normalize whitespace but DO NOT merge lines
 export function cleanAndMergeText(rawText) {
   if (!rawText) return "";
 
-  let text = rawText
+  return rawText
     .replace(/\u00A0/g, " ")
     .replace(/[\u200B-\u200D\uFEFF]/g, "")
     .replace(/\t/g, " ")
-    .replace(/[ ]{2,}/g, " ");
-
-  const lines = text.split("\n").map(line => line.trim()).filter(Boolean);
-
-  const mergedLines = [];
-  for (let i = 0; i < lines.length; i++) {
-    const current = lines[i];
-    const next = lines[i + 1];
-
-    if (next) {
-      const isCurrentTextLine = /^[\w\s\-\/.,+]+$/i.test(current);
-      const isNextStartsWithNumberOrCurrency = /^[€$]?[\d]/.test(next);
-
-      if (isCurrentTextLine && isNextStartsWithNumberOrCurrency) {
-        mergedLines.push(current + " " + next);
-        i++;
-        continue;
-      }
-
-      if (current.endsWith(":") && next.length > 0) {
-        mergedLines.push(current + " " + next);
-        i++;
-        continue;
-      }
-    }
-
-    mergedLines.push(current);
-  }
-
-  return mergedLines.join("\n");
+    .replace(/[ ]{2,}/g, " ")
+    .split("\n")
+    .map(line => line.trim())
+    .filter(Boolean)
+    .join("\n");
 }
 
-// Refined merge for multiple consecutive lines belonging to one item — prevents over-merging
+// NO merging at all. Just return input text as-is preserving lines
 export function mergeItemLines(rawText) {
-  const lines = rawText.split("\n").map(l => l.trim()).filter(Boolean);
-  const merged = [];
-  let buffer = "";
-
-  // Keywords to block merging across totals and summaries
-  const forbiddenKeywords = ["znesek", "keine", "ddv", "skupaj", "datum", "obdobje"];
-  // Keywords to identify item description lines
-  const itemDescriptionKeywords = ["storitev", "opis", "item", "artikel"];
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const nextLine = lines[i + 1] || "";
-
-    const hasForbiddenCurrent = forbiddenKeywords.some(kw => line.toLowerCase().includes(kw));
-    const hasForbiddenNext = forbiddenKeywords.some(kw => nextLine.toLowerCase().includes(kw));
-
-    if (!buffer) {
-      buffer = line;
-      continue;
-    }
-
-    const currentLower = line.toLowerCase();
-    const hasDescriptionKeyword = itemDescriptionKeywords.some(kw => currentLower.includes(kw));
-
-    const currentAmounts = [...line.matchAll(/\d{1,3}(?:[ .,]?\d{3})*(?:[.,]\d{1,2})/g)];
-    const nextAmounts = [...nextLine.matchAll(/\d{1,3}(?:[ .,]?\d{3})*(?:[.,]\d{1,2})/g)];
-
-    // Check if current line has strong price amount: multiple amounts or amount >10
-    const currentHasStrongPrice =
-      currentAmounts.length > 1 ||
-      (currentAmounts.length === 1 && parseFloat(currentAmounts[0][0].replace(",", ".")) > 10);
-
-    const nextHasAmounts = nextAmounts.length > 0;
-
-    // Merge lines if:
-    // - Neither line has forbidden keywords (to keep blocks separate)
-    // - Current line either has no strong price or contains a description keyword
-    // - Next line has amounts (likely prices or quantities)
-    if (!hasForbiddenCurrent && !hasForbiddenNext && (!currentHasStrongPrice || hasDescriptionKeyword) && nextHasAmounts) {
-      buffer += " " + nextLine;
-      i++;
-      continue;
-    } else {
-      merged.push(buffer);
-      buffer = line;
-    }
-  }
-  if (buffer) merged.push(buffer);
-  return merged.join("\n");
+  return rawText || "";
 }
-
-
 
 async function extractTextFromPDFPage(page) {
   const textContent = await page.getTextContent();
   const strings = textContent.items.map(item => item.str).filter(Boolean);
-  return strings.join("\n").trim();
+  return strings.join("\n");
 }
 
 export async function processPDF(file, onProgress = () => {}) {
@@ -164,14 +89,12 @@ export async function processPDF(file, onProgress = () => {}) {
 
         for (let i = 1; i <= pdf.numPages; i++) {
           const page = await pdf.getPage(i);
-
           const extractedText = await extractTextFromPDFPage(page);
 
           if (extractedText && extractedText.length > 20) {
             const cleanedText = cleanAndMergeText(extractedText);
-            const fullyMergedText = mergeItemLines(cleanedText);
-
-            fullText += `\n\n--- Page ${i} (Extracted Text) ---\n${fullyMergedText}`;
+            // NO merging applied here
+            fullText += `\n\n--- Page ${i} (Extracted Text) ---\n${cleanedText}`;
           } else {
             // Fallback OCR on rendered image page
             const viewport = page.getViewport({ scale: 3 });
@@ -192,9 +115,8 @@ export async function processPDF(file, onProgress = () => {}) {
             });
 
             const cleanedOCRText = cleanAndMergeText(ocrResult.data.text);
-            const fullyMergedOCRText = mergeItemLines(cleanedOCRText);
-
-            fullText += `\n\n--- Page ${i} (OCR) ---\n${fullyMergedOCRText}`;
+            // NO merging here either
+            fullText += `\n\n--- Page ${i} (OCR) ---\n${cleanedOCRText}`;
           }
         }
 
@@ -217,7 +139,6 @@ export async function processImage(imageSrc, onProgress = () => {}) {
   });
 
   const cleaned = cleanAndMergeText(result.data.text);
-  const fullyMerged = mergeItemLines(cleaned);
-
-  return fullyMerged;
+  // DO NOT merge lines here either
+  return cleaned;
 }
