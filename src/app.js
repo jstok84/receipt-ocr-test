@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { processImage, processPDF } from "./ocrUtils";
+import { processImage, processPDF, cleanAndMergeText, mergeItemLines } from "./ocrUtils";
 import { parseReceipt } from "./parseReceipt";
 import styles from "./styles";
 
@@ -51,9 +51,19 @@ export default function App() {
     };
   }, [useCamera]);
 
-  // 🔁 Shared function for applying parseReceipt with mode
+  // 🆕 Updated runParsing to preprocess text before parsing
   const runParsing = (rawText) => {
-    const preparedText = useFlatMode ? rawText.replace(/\n/g, " ") : rawText;
+    let preparedText = rawText;
+
+    if (!useFlatMode) {
+      // Clean and merge lines for best parser results
+      const cleaned = cleanAndMergeText(rawText);
+      preparedText = mergeItemLines(cleaned);
+    } else {
+      // In flat mode, simply flatten line breaks to spaces
+      preparedText = rawText.replace(/\n/g, " ");
+    }
+
     setParsed(parseReceipt(preparedText));
   };
 
@@ -77,9 +87,10 @@ export default function App() {
     setUploadedPreview(null);
     setPdfPreviews([]);
 
+    // Process image and run the parsing pipeline
     const result = await processImage(dataUrl, (p) => setProgress(p));
     setText(result);
-    runParsing(result); // 🔁 uses flat mode toggle
+    runParsing(result);
     setLoading(false);
   };
 
@@ -140,7 +151,6 @@ export default function App() {
         Mode: <strong>{useFlatMode ? "Flat (no line breaks)" : "Line-based OCR"}</strong>
       </p>
 
-      {/* Camera preview, uploaded preview, PDF previews — unchanged */}
       {useCamera && (
         <>
           <video ref={videoRef} autoPlay playsInline style={styles.videoPreview} />
