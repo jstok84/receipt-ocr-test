@@ -151,11 +151,13 @@ export function parseReceipt(text) {
     return null;
   }
 
-
   /** Checks whether to exclude a line by matching keywords as whole words */
   function shouldExcludeLine(line, excludeKeywords) {
     return excludeKeywords.some((kw) => new RegExp(`\\b${kw}\\b`, "i").test(line));
   }
+
+  /** Date/time pattern to exclude lines that look like metadata with times (e.g., "25.08. 2024 ob 13:17:09") */
+  const dateTimePattern = /\b\d{1,2}[.\-]\d{1,2}[.\-]\d{2,4}\b\s*ob\s*\d{1,2}:\d{2}(:\d{2})?/i;
 
   /** Main body of parseReceipt **/
   const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
@@ -255,6 +257,12 @@ export function parseReceipt(text) {
   // Parse items with support for Spar multi-column format and fallback generic parsing
   for (const line of lines) {
     console.log(`Checking line: "${line}"`);
+
+    // Skip lines with date/time metadata pattern
+    if (dateTimePattern.test(line)) {
+      console.log("  Skipping due to date/time metadata pattern.");
+      continue;
+    }
 
     if (shouldExcludeLine(line, excludeKeywords)) {
       console.log("  Skipping due to exclude keyword (whole word match).");
