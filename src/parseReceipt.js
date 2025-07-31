@@ -157,7 +157,7 @@ export function parseReceipt(text) {
   }
 
   /** Date/time pattern to exclude lines that look like metadata with times (e.g., "25.08. 2024 ob 13:17:09") */
-  const dateTimePattern = /\b\d{1,2}[.\-]\d{1,2}[.\-]\d{2,4}\b\s*ob\s*\d{1,2}:\d{2}(:\d{2})?/i;
+  const dateTimePattern = /\b\d{1,2}\.\s*\d{1,2}\.\s*\d{2,4}\b\s*ob\s*\d{1,2}:\d{2}(:\d{2})?/i;
 
   /** Main body of parseReceipt **/
   const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
