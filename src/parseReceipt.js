@@ -122,20 +122,35 @@ export function parseReceipt(text) {
 
   /** Extract ISO-format date (YYYY-MM-DD) from lines if any */
   function extractDate(lines) {
-    const dateRegex = /\b(0?[1-9]|[12][0-9]|3[01])\.\s*(0?[1-9]|1[0-2])\.\s*(\d{4})/;
+    // Array of regexes to match multiple date formats including dot+space and space-separated numeric
+    const dateRegexes = [
+      // Matches dates like "07. 07. 2025" or "11.06.2025" with optional spaces after dots
+      /\b(0?[1-9]|[12][0-9]|3[01])\.\s*(0?[1-9]|1[0-2])\.\s*(\d{4})\b/,
+
+      // NEW: Matches space-separated numeric dates like "25 8 2024"
+      /\b(0?[1-9]|[12][0-9]|3[01])\s+(0?[1-9]|1[0-2])\s+(\d{4})\b/,
+    ];
+
     for (const line of lines) {
-      const match = line.match(dateRegex);
-      if (match) {
-        let day = parseInt(match[1], 10);
-        let month = parseInt(match[2], 10);
-        let year = parseInt(match[3], 10);
-        return `${year.toString().padStart(4, "0")}-${month
-          .toString()
-          .padStart(2, "0")}-${day.toString().padStart(2, "0")}`;
+      for (const regex of dateRegexes) {
+        const match = line.match(regex);
+        if (match) {
+          let day = parseInt(match[1], 10);
+          let month = parseInt(match[2], 10);
+          let year = parseInt(match[3], 10);
+          return (
+            year.toString().padStart(4, "0") +
+            "-" +
+            month.toString().padStart(2, "0") +
+            "-" +
+            day.toString().padStart(2, "0")
+          );
+        }
       }
     }
     return null;
   }
+
 
   /** Checks whether to exclude a line by matching keywords as whole words */
   function shouldExcludeLine(line, excludeKeywords) {
