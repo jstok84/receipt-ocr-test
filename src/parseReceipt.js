@@ -1,5 +1,5 @@
 export function parseReceipt(text) {
-  const PARSER_VERSION = "v1.4.0";
+  const PARSER_VERSION = "v1.4.1"; // updated version
   console.log("🧾 Receipt parser version:", PARSER_VERSION);
 
   function normalizeAmount(value, isSlovenian) {
@@ -32,6 +32,7 @@ export function parseReceipt(text) {
     return isNaN(value) ? null : { value, currency };
   }
 
+  // Updated to check next line if no amount on line with total keyword
   function extractAllTotalCandidates(lines, isSlovenian) {
     const totalKeywords = isSlovenian
       ? [
@@ -45,27 +46,32 @@ export function parseReceipt(text) {
         ]
       : ["paid", "total", "amount due", "grand total", "amount", "to pay"];
 
-    const candidates = lines
-      .filter((line) =>
-        totalKeywords.some((kw) => line.toLowerCase().includes(kw))
-      )
-      .filter(
-        (line) =>
-          !/^c\s+\d{1,2},\d{1,2}\s*%\s+[\d\s.,]+—?\s*[\d\s.,]+/i.test(
-            line.toLowerCase()
-          )
-      )
-      .map((line) => {
-        const parsed = extractAmountFromLine(line, isSlovenian);
-        return {
-          line,
-          value: parsed?.value ?? 0,
-          currency: parsed?.currency ?? null,
-        };
-      })
-      .filter((entry) => entry.value > 0)
-      .sort((a, b) => b.value - a.value);
+    const candidates = [];
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!totalKeywords.some((kw) => line.toLowerCase().includes(kw))) continue;
 
+      let parsed = extractAmountFromLine(line, isSlovenian);
+      if (!parsed) {
+        // Try next line as amount if current line has no amount
+        const nextLine = lines[i + 1];
+        if (nextLine) {
+          parsed = extractAmountFromLine(nextLine, isSlovenian);
+          if (parsed) {
+            candidates.push({
+              line: line + " " + nextLine,
+              value: parsed.value,
+              currency: parsed.currency,
+            });
+            continue;
+          }
+        }
+      }
+      if (parsed && parsed.value > 0) {
+        candidates.push({ line, value: parsed.value, currency: parsed.currency });
+      }
+    }
+    candidates.sort((a, b) => b.value - a.value);
     return candidates;
   }
 
@@ -141,12 +147,43 @@ export function parseReceipt(text) {
 
   const joinedText = lines.join(" ").toLowerCase();
   const isSlovenian = [
-    "račun", "kupec", "ddv", "znesek", "ponudba", "skupaj", "za plačilo", "plačano"
+    "račun",
+    "kupec",
+    "ddv",
+    "znesek",
+    "ponudba",
+    "skupaj",
+    "za plačilo",
+    "plačano",
   ].some((keyword) => joinedText.includes(keyword));
 
   const excludeKeywords = isSlovenian
-    ? ["številka", "transakcija", "ddv", "datum", "račun", "osnovni kapital", "ponudbe", "rekapitulacija", "osnova", "veljavnost ponudbe"]
-    : ["transaction", "terminal", "subtotal", "tax", "vat", "invoice", "date", "validity"];
+    ? [
+        "številka",
+        "transakcija",
+        "ddv",
+        "datum",
+        "račun",
+        "osnovni kapital",
+        "ponudbe",
+        "rekapitulacija",
+        "osnova",
+        "veljavnost ponudbe",
+        "keine", // Added "keine" to exclude German 'none'
+      ]
+    : [
+        "transaction",
+        "terminal",
+        "subtotal",
+        "tax",
+        "vat",
+        "invoice",
+        "date",
+        "validity",
+      ];
+
+  // Regex for date-like amounts to exclude from items (e.g., "24.06")
+  const dateLikeAmountRegex = /^\d{1,2}[.,]\d{1,2}$/;
 
   const totalCandidates = extractAllTotalCandidates(lines, isSlovenian);
   let total = null;
@@ -180,26 +217,38 @@ export function parseReceipt(text) {
     /^plačano/i,
     /^c\s+\d{1,2},\d{1,2}\s*%\s+[\d\s.,]+—?\s*[\d\s.,]+/i,
     /^[a-zA-Z]\s*\d{1,2}[,.]\d{1,2}%\s+\d+[,.]\d+\s+\d+[,.]\d+/i,
-    /^dov:/i, /^bl:/i, /^eor[: ]/i, /^zol[: ]/i, /^spar plus/i,
-    /mat\.št/i, /osn\.kapital/i, /splošni pogoji/i,
-    /vaše današnje ugodnosti/i, /točke zvestobe/i,
-    /številka naročila/i, /datum naročila/i, /datum računa/i,
-    /skupaj eur/i, /^kartica/i, /^date[: ]?/i,
-    /^znesek\s*—?\s*\d+[,.]/i, /^a\s+\d{1,2}[,.]\d+\s+\d+[,.]/i,
+    /^dov:/i,
+    /^bl:/i,
+    /^eor[: ]/i,
+    /^zol[: ]/i,
+    /^spar plus/i,
+    /mat\.št/i,
+    /osn\.kapital/i,
+    /splošni pogoji/i,
+    /vaše današnje ugodnosti/i,
+    /točke zvestobe/i,
+    /številka naročila/i,
+    /datum naročila/i,
+    /datum računa/i,
+    /skupaj eur/i,
+    /^kartica/i,
+    /^date[: ]?/i,
+    /^znesek\s*—?\s*\d+[,.]/i,
+    /^a\s+\d{1,2}[,.]\d+\s+\d+[,.]/i,
     /^[a-z]?\s*\d{1,2}[,.]\d+\s+\d+[,.]/i,
     /^,?\d{1,3}[,.]\d{2}\s*—?\s*\d{1,3}[,.]\d{2}/,
-    /^obračunsko obdobje/i, /^vsi zneski so v/i
+    /^obračunsko obdobje/i,
+    /^vsi zneski so v/i,
   ];
 
   for (const line of lines) {
     const isServiceCostLine = /stroški storitve/i.test(line);
 
-    if (!isServiceCostLine && nonItemPatterns.some(pattern => pattern.test(line))) {
-      // Skip known non-item lines
-      continue;
+    if (!isServiceCostLine && nonItemPatterns.some((pattern) => pattern.test(line))) {
+      continue; // skip known non-item lines
     }
 
-    if (totalCandidates.some(t => t.line === line)) continue;
+    if (totalCandidates.some((t) => t.line === line)) continue;
     if (/rekapitulacija|osnova za ddv|skupaj ddv/i.test(line)) continue;
 
     const allAmounts = [...line.matchAll(/(\d{1,3}(?:[ .,]?\d{3})*(?:[.,]\d{1,2}))/g)];
@@ -207,6 +256,10 @@ export function parseReceipt(text) {
 
     const lastAmountMatch = allAmounts.length ? allAmounts[allAmounts.length - 1] : null;
     const rawAmount = lastAmountMatch ? lastAmountMatch[1] : "0";
+
+    // Skip amounts that look like dates (e.g., "24.06")
+    if (dateLikeAmountRegex.test(rawAmount)) continue;
+
     const priceStr = normalizeAmount(rawAmount, isSlovenian);
     const priceFloat = parseFloat(priceStr);
 
@@ -221,7 +274,7 @@ export function parseReceipt(text) {
     namePart = namePart.replace(/^\d+\s*x?\s*/i, "").trim();
     namePart = namePart.replace(/^[-–—]\s*/, "");
 
-    const hasExcludedKeyword = excludeKeywords.some(kw =>
+    const hasExcludedKeyword = excludeKeywords.some((kw) =>
       new RegExp(`\\b${kw}\\b`, "i").test(namePart)
     );
     if (!isServiceCostLine && (namePart.length < 2 || hasExcludedKeyword)) continue;
