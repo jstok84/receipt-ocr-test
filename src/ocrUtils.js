@@ -11,7 +11,7 @@ const tesseractConfig = {
     "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€",
 };
 
-// OpenCV.js preprocessing helper (requires OpenCV.js loaded globally as `cv`)
+// --- OpenCV.js preprocessing (requires OpenCV.js loaded globally as cv) ---
 export function preprocessWithOpenCV(imageSrc) {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -50,13 +50,14 @@ export function preprocessWithOpenCV(imageSrc) {
   });
 }
 
-// Clean invisible characters and normalize whitespace but DO NOT merge lines
+// --- Clean text by removing invisible chars and normalizing whitespace, preserve lines ---
 export function cleanAndMergeText(rawText) {
   if (!rawText) return "";
 
+  // Replace invisible chars, normalize spaces and trim lines
   return rawText
-    .replace(/\u00A0/g, " ")
-    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/\u00A0/g, " ") // non-breaking space to normal space
+    .replace(/[\u200B-\u200D\uFEFF]/g, "") // zero-width chars removed
     .replace(/\t/g, " ")
     .replace(/[ ]{2,}/g, " ")
     .split("\n")
@@ -65,16 +66,63 @@ export function cleanAndMergeText(rawText) {
     .join("\n");
 }
 
-// NO merging at all. Just return input text as-is preserving lines
+// --- No arbitrary merging - just a pass-through for now (adjust if needed) ---
 export function mergeItemLines(rawText) {
   return rawText || "";
 }
 
-async function extractTextFromPDFPage(page) {
+// --- Position-aware text extraction from a single PDF page ---
+// Clusters text items by their Y position to reconstruct lines
+export async function extractTextLinesFromPDFPage(page) {
   const textContent = await page.getTextContent();
-  const strings = textContent.items.map(item => item.str).filter(Boolean);
-  return strings.join("\n");
+  const items = textContent.items;
+
+  // Map of y position to array of text items belonging to that line
+  // Use a flexible grouping to handle small y variations
+  const linesMap = new Map();
+
+  // Vertical grouping threshold in PDF units (tweak if needed)
+  const yThreshold = 2;
+
+  // Helper function to find existing key within threshold or add new
+  function findOrAddLineKey(y) {
+    for (let key of linesMap.keys()) {
+      if (Math.abs(key - y) <= yThreshold) {
+        return key;
+      }
+    }
+    // No existing close key found, add new
+    linesMap.set(y, []);
+    return y;
+  }
+
+  items.forEach((item) => {
+    // y coordinate is normally transform[5]
+    const y = item.transform[5];
+    const key = findOrAddLineKey(y);
+    linesMap.get(key).push(item);
+  });
+
+  // Sort line Ys from top (largest y) to bottom (smallest y)
+  const sortedYs = Array.from(linesMap.keys()).sort((a, b) => b - a);
+
+  const finalLines = [];
+
+  for (const y of sortedYs) {
+    const lineItems = linesMap.get(y);
+    // Sort items left to right by x = transform[4]
+    const sortedItems = lineItems.sort((a, b) => a.transform[4] - b.transform[4]);
+
+    // Join text item strings with a space (adjust glue logic if needed)
+    const lineText = sortedItems.map((item) => item.str).join(" ").trim();
+
+    if (lineText) finalLines.push(lineText);
+  }
+
+  return finalLines.join("\n");
 }
+
+// --- Extract text from a PDF file, process pages via position-aware extraction ---
 
 export async function processPDF(file, onProgress = () => {}) {
   const reader = new FileReader();
@@ -89,20 +137,21 @@ export async function processPDF(file, onProgress = () => {}) {
 
         for (let i = 1; i <= pdf.numPages; i++) {
           const page = await pdf.getPage(i);
-          const extractedText = await extractTextFromPDFPage(page);
+
+          // Extract lines with position-aware method
+          const extractedText = await extractTextLinesFromPDFPage(page);
 
           if (extractedText && extractedText.length > 20) {
-            const cleanedText = cleanAndMergeText(extractedText);
-            // NO merging applied here
-            fullText += `\n\n--- Page ${i} (Extracted Text) ---\n${cleanedText}`;
+            fullText += `\n\n--- Page ${i} ---\n${extractedText}`;
           } else {
-            // Fallback OCR on rendered image page
+            // Fallback OCR for scanned or image-only pages
             const viewport = page.getViewport({ scale: 3 });
             const canvas = document.createElement("canvas");
             const context = canvas.getContext("2d");
 
             canvas.width = viewport.width;
             canvas.height = viewport.height;
+
             await page.render({ canvasContext: context, viewport }).promise;
 
             const image = canvas.toDataURL("image/png");
@@ -115,9 +164,11 @@ export async function processPDF(file, onProgress = () => {}) {
             });
 
             const cleanedOCRText = cleanAndMergeText(ocrResult.data.text);
-            // NO merging here either
             fullText += `\n\n--- Page ${i} (OCR) ---\n${cleanedOCRText}`;
           }
+
+          // Optionally report page progress (simple fraction)
+          onProgress({ status: "page", page: i, totalPages: pdf.numPages, progress: i / pdf.numPages });
         }
 
         resolve({ text: fullText.trim(), previews });
@@ -130,6 +181,7 @@ export async function processPDF(file, onProgress = () => {}) {
   });
 }
 
+// --- OCR + preprocessing for direct image files ---
 export async function processImage(imageSrc, onProgress = () => {}) {
   const preprocessedDataURL = await preprocessWithOpenCV(imageSrc);
 
@@ -139,6 +191,5 @@ export async function processImage(imageSrc, onProgress = () => {}) {
   });
 
   const cleaned = cleanAndMergeText(result.data.text);
-  // DO NOT merge lines here either
   return cleaned;
 }
