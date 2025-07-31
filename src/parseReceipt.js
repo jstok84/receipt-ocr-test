@@ -122,14 +122,13 @@ export function parseReceipt(text) {
 
   /** Extract ISO-format date (YYYY-MM-DD) from lines if any */
   function extractDate(lines) {
-    const dateRegex = /\b(0?[1-9]|[12][0-9]|3[01])[./-](0?[1-9]|1[0-2])[./-](\d{2}|\d{4})\b/;
+    const dateRegex = /\b(0?[1-9]|[12][0-9]|3[01])\.\s*(0?[1-9]|1[0-2])\.\s*(\d{4})/;
     for (const line of lines) {
       const match = line.match(dateRegex);
       if (match) {
         let day = parseInt(match[1], 10);
         let month = parseInt(match[2], 10);
         let year = parseInt(match[3], 10);
-        if (year < 100) year += 2000;
         return `${year.toString().padStart(4, "0")}-${month
           .toString()
           .padStart(2, "0")}-${day.toString().padStart(2, "0")}`;
