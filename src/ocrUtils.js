@@ -127,12 +127,16 @@ export function preprocessWithOpenCV(imageSrc) {
           //   else angle + 90.
 
           // Adjust angle for portrait or landscape:
+          let angle = rotatedRect.angle;
+
           if (rotatedRect.size.width < rotatedRect.size.height) {
-            // Portrait mode — angle as is
-            // angle is negative or zero
+            // portrait
           } else {
-            // Landscape mode — add 90 to angle
-            angle += 90;
+            angle += 90; // landscape
+          }
+
+          if (angle < -45) {
+            angle += 180; // rotate to upright
           }
 
           console.log("Detected rotation angle for deskew:", angle);
