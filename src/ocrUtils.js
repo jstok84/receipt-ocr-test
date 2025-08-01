@@ -14,43 +14,44 @@ const tesseractConfig = {
 // --- OpenCV.js preprocessing (requires OpenCV.js loaded globally as cv) ---
 // This version visualizes intermediate steps by creating labeled canvases appended to the page.
 
-export function preprocessWithOpenCV(imageSrc) {
+// --- OpenCV.js preprocessing (requires OpenCV.js loaded globally as cv) ---
+// This version visualizes intermediate steps by creating labeled canvases appended to the page,
+// and uses async delays so you can *see* each step as it happens.
+
+export async function preprocessWithOpenCV(imageSrc) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = "Anonymous";
-    img.onload = () => {
+    img.onload = async () => {
 
-      // Create a container element to hold all intermediate canvases
+      // Create container for intermediate canvases
       const container = document.createElement("div");
       container.style.display = "flex";
       container.style.flexWrap = "wrap";
       container.style.gap = "10px";
       container.style.margin = "20px 0";
-      // Optional styling to visually separate container
       container.style.border = "1px solid #ccc";
       container.style.padding = "10px";
       container.style.background = "#fafafa";
 
-      // Append container to body or to any preferred element
       document.body.appendChild(container);
 
-      // Helper function to create labeled canvas and show mat image
+      // Helper to create labeled canvas and display mat image
       function showIntermediate(mat, label) {
         const wrapper = document.createElement("div");
         wrapper.style.textAlign = "center";
         wrapper.style.fontFamily = "sans-serif";
         wrapper.style.fontSize = "12px";
-        wrapper.style.maxWidth = "240px"; // limit max width per canvas container
+        wrapper.style.maxWidth = "240px";
+        wrapper.style.marginBottom = "10px";
 
-        // Label above canvas
         const labelEl = document.createElement("div");
         labelEl.textContent = label;
         labelEl.style.marginBottom = "6px";
         labelEl.style.fontWeight = "bold";
 
-        // Canvas element that will hold the image
         const canvasEl = document.createElement("canvas");
-        canvasEl.style.width = "240px";           // scale canvases visually for display
+        canvasEl.style.width = "240px";
         canvasEl.style.height = "auto";
         canvasEl.style.border = "1px solid #eee";
         canvasEl.style.boxShadow = "0 0 6px rgba(0,0,0,0.12)";
@@ -59,10 +60,15 @@ export function preprocessWithOpenCV(imageSrc) {
         wrapper.appendChild(canvasEl);
         container.appendChild(wrapper);
 
-        cv.imshow(canvasEl, mat);    // Draw mat on this canvas
+        cv.imshow(canvasEl, mat);
       }
 
-      // Original canvas to read input image into cv.Mat
+      // Helper to pause execution so browser can repaint (delay in ms)
+      function delay(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+      }
+
+      // Original canvas to read image
       const canvas = document.createElement("canvas");
       canvas.width = img.width;
       canvas.height = img.height;
@@ -70,65 +76,70 @@ export function preprocessWithOpenCV(imageSrc) {
       ctx.drawImage(img, 0, 0);
 
       let src = cv.imread(canvas);
+
       try {
-        // Convert to grayscale
+        // Grayscale
         let gray = new cv.Mat();
         cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
         showIntermediate(gray, "Grayscale");
+        await delay(300);
 
-        // Gaussian blur the grayscale image - sigma 1.0, kernel size auto
+        // Gaussian blur - sigma 1.0, kernel size auto
         let blurred = new cv.Mat();
         cv.GaussianBlur(gray, blurred, new cv.Size(0, 0), 1.0);
         showIntermediate(blurred, "Gaussian Blur");
+        await delay(300);
 
-        // Unsharp masking sharpening:
-        // sharpened = original * (1 + strength) - blurred * strength
-        const strength = 1.5;  // adjust sharpening strength here
+        // Unsharp masking sharpening
+        const strength = 1.5;
         let sharpened = new cv.Mat();
         cv.addWeighted(gray, 1.0 + strength, blurred, -strength, 0, sharpened);
         showIntermediate(sharpened, "Unsharp Masking");
+        await delay(300);
 
-        // Clean up mats no longer needed
         gray.delete();
         blurred.delete();
 
-        // Optional: mild Gaussian blur to reduce noise after sharpening
+        // Mild Gaussian smoothing blur to reduce noise
         let smoothed = new cv.Mat();
         cv.GaussianBlur(sharpened, smoothed, new cv.Size(3, 3), 0);
         showIntermediate(smoothed, "Smoothing Blur");
+        await delay(300);
+
         sharpened.delete();
 
-        // Threshold using Otsu's method to binarize the image
+        // Threshold using Otsu binarization
         let thresh = new cv.Mat();
         cv.threshold(smoothed, thresh, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
         showIntermediate(thresh, "Threshold Otsu");
+        await delay(300);
+
         smoothed.delete();
 
-        // Calculate mean brightness; invert if background too bright (mean>127)
+        // Invert image if background is too bright
         const mean = cv.mean(thresh)[0];
         if (mean > 127) {
           let inverted = new cv.Mat();
           cv.bitwise_not(thresh, inverted);
           showIntermediate(inverted, "Inverted");
+          await delay(300);
           thresh.delete();
           thresh = inverted;
         }
 
-        // Show final processed image on our original canvas
+        // Show final processed image on original canvas
         cv.imshow(canvas, thresh);
 
-        // Cleanup mats
         thresh.delete();
         src.delete();
 
-        // Resolve the final preprocessed image as a PNG data URL (for OCR input)
+        // Return final preprocessed image as data URL for OCR
         resolve(canvas.toDataURL("image/png"));
       } catch (err) {
         src.delete();
         reject(err);
       }
     };
-
     img.onerror = reject;
     img.src = typeof imageSrc === "string" ? imageSrc : URL.createObjectURL(imageSrc);
   });
