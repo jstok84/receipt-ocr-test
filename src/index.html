@@ -7,6 +7,16 @@
 <body>
   <div id="root"></div>
 
+  <!-- OCR progress UI -->
+  <div id="ocr-progress-container" style="width: 100%; max-width: 400px; margin: 20px 0;">
+    <div style="background: #eee; border-radius: 4px; overflow: hidden; height: 20px; width: 100%;">
+      <div id="ocr-progress-bar" style="background: #4caf50; height: 100%; width: 0%; transition: width 0.3s;"></div>
+    </div>
+    <div id="ocr-status-text" style="margin-top: 8px; font-family: sans-serif; font-size: 14px; color: #333;">
+      Waiting to start OCR...
+    </div>
+  </div>
+
   <!-- ✅ Load OpenCV.js for image preprocessing -->
   <script async src="https://docs.opencv.org/4.x/opencv.js" onload="console.log('✅ OpenCV.js loaded')"></script>
 

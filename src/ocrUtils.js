@@ -164,6 +164,16 @@ export async function extractTextLinesFromPDFPage(page) {
 
 // --- Extract text from a PDF file, process pages via position-aware extraction ---
 
+// Helper to update UI progress bar and status text
+function updateOCRProgressUI(status, progressFraction) {
+  const progressBar = document.getElementById("ocr-progress-bar");
+  const statusText = document.getElementById("ocr-status-text");
+  if (progressBar && statusText) {
+    progressBar.style.width = `${(progressFraction * 100).toFixed(1)}%`;
+    statusText.textContent = status ? `OCR Status: ${status}` : "Waiting to start OCR...";
+  }
+}
+
 export async function processPDF(file, onProgress = () => {}) {
   const reader = new FileReader();
 
@@ -184,7 +194,6 @@ export async function processPDF(file, onProgress = () => {}) {
           if (extractedText && extractedText.length > 20) {
             fullText += `\n\n--- Page ${i} ---\n${extractedText}`;
           } else {
-            // Fallback OCR for scanned or image-only pages
             const viewport = page.getViewport({ scale: 3 });
             const canvas = document.createElement("canvas");
             const context = canvas.getContext("2d");
@@ -198,8 +207,18 @@ export async function processPDF(file, onProgress = () => {}) {
             previews.push(image);
 
             const preprocessed = await preprocessWithOpenCV(image);
+
             const ocrResult = await Tesseract.recognize(preprocessed, "eng+slv", {
-              logger: onProgress,
+              logger: (m) => {
+                if (m.status && typeof m.progress === "number") {
+                  const statusMsg = `Page ${i}/${pdf.numPages} - ${m.status}`;
+                  console.log(`OCR Status: ${statusMsg}, Progress: ${(m.progress * 100).toFixed(1)}%`);
+                  updateOCRProgressUI(statusMsg, m.progress);
+                } else {
+                  console.log(m);
+                }
+                onProgress(m);
+              },
               ...tesseractConfig,
             });
 
@@ -207,9 +226,15 @@ export async function processPDF(file, onProgress = () => {}) {
             fullText += `\n\n--- Page ${i} (OCR) ---\n${cleanedOCRText}`;
           }
 
-          // Optionally report page progress (simple fraction)
+          // Update page-level progress in UI
+          updateOCRProgressUI(`Processing page ${i} of ${pdf.numPages}`, i / pdf.numPages);
+
           onProgress({ status: "page", page: i, totalPages: pdf.numPages, progress: i / pdf.numPages });
         }
+
+        // Final UI update on complete
+        updateOCRProgressUI("OCR complete", 1);
+        setTimeout(() => updateOCRProgressUI("", 0), 2000);
 
         resolve({ text: fullText.trim(), previews });
       } catch (err) {
@@ -226,10 +251,23 @@ export async function processImage(imageSrc, onProgress = () => {}) {
   const preprocessedDataURL = await preprocessWithOpenCV(imageSrc);
 
   const result = await Tesseract.recognize(preprocessedDataURL, "eng+slv", {
-    logger: onProgress,
+    logger: (m) => {
+      if (m.status && typeof m.progress === "number") {
+        console.log(`OCR Status: ${m.status}, Progress: ${(m.progress * 100).toFixed(1)}%`);
+        updateOCRProgressUI(m.status, m.progress);
+      } else {
+        console.log(m);
+      }
+      onProgress(m);
+    },
     ...tesseractConfig,
   });
 
   const cleaned = cleanAndMergeText(result.data.text);
+  
+  // Reset UI after OCR done
+  updateOCRProgressUI("OCR complete", 1);
+  setTimeout(() => updateOCRProgressUI("", 0), 2000); // clear after 2s
+
   return cleaned;
 }

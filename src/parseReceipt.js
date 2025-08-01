@@ -344,7 +344,7 @@ export function parseReceipt(text) {
 
     const priceStr = rawAmount;
     const priceNorm = normalizeAmount(priceStr.replace(/[^\d,.\-]/g, ""), isSlovenian);
-    const price = parseFloat(priceNorm);
+        const price = parseFloat(priceNorm);
 
     if (isNaN(price) || price <= 0) {
       console.log(`  Skipping due to invalid price: "${priceStr}" parsed as ${price}`);
