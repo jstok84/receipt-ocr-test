@@ -12,9 +12,6 @@ const tesseractConfig = {
 };
 
 // --- OpenCV.js preprocessing (requires OpenCV.js loaded globally as cv) ---
-// This version visualizes intermediate steps by creating labeled canvases appended to the page.
-
-// --- OpenCV.js preprocessing (requires OpenCV.js loaded globally as cv) ---
 // This version visualizes intermediate steps by creating labeled canvases appended to the page,
 // and uses async delays so you can *see* each step as it happens.
 
@@ -42,7 +39,7 @@ export async function preprocessWithOpenCV(imageSrc) {
         wrapper.style.textAlign = "center";
         wrapper.style.fontFamily = "sans-serif";
         wrapper.style.fontSize = "12px";
-        wrapper.style.maxWidth = "240px";
+        wrapper.style.maxWidth = "480px";
         wrapper.style.marginBottom = "10px";
 
         const labelEl = document.createElement("div");
@@ -51,7 +48,7 @@ export async function preprocessWithOpenCV(imageSrc) {
         labelEl.style.fontWeight = "bold";
 
         const canvasEl = document.createElement("canvas");
-        canvasEl.style.width = "240px";
+        canvasEl.style.width = "480px";
         canvasEl.style.height = "auto";
         canvasEl.style.border = "1px solid #eee";
         canvasEl.style.boxShadow = "0 0 6px rgba(0,0,0,0.12)";
