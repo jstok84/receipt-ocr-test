@@ -100,11 +100,11 @@ export async function preprocessWithOpenCV(imageSrc) {
 
         // Step 4: Median blur for edge-preserving smoothing (replaces previous Gaussian smoothing blur)
         // Median blur kernel size must be an odd positive integer; 3 or 5 are common choices
-        let smoothed = new cv.Mat();
+        /*let smoothed = new cv.Mat();
         cv.bilateralFilter(sharpened, smoothed, 9, 75, 75); 
         showIntermediate(smoothed, "BilateralFilter (Edge-preserving)");
         await delay(300);
-        sharpened.delete();
+        sharpened.delete();*/
 
         // Step 5: Threshold using Otsu's method - binarize image for OCR
         let thresh = new cv.Mat();
