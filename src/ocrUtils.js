@@ -13,12 +13,15 @@ const tesseractConfig = {
 
 export function preprocessWithOpenCV(imageSrc) {
   return new Promise((resolve, reject) => {
+    if (typeof cv === "undefined" || !cv.imread) {
+      reject(new Error("OpenCV.js (cv) is not loaded or initialized."));
+      return;
+    }
+
     const img = new Image();
     img.crossOrigin = "Anonymous";
 
-    img.onload = async () => { // make handler async for delays
-
-      // Container for intermediate step canvases
+    img.onload = async () => {
       const container = document.createElement("div");
       container.style.display = "flex";
       container.style.flexWrap = "wrap";
@@ -27,16 +30,14 @@ export function preprocessWithOpenCV(imageSrc) {
       container.style.border = "1px solid #ccc";
       container.style.padding = "10px";
       container.style.background = "#fafafa";
-
       document.body.appendChild(container);
 
-      // Helper to show mat on labeled canvas
       function showIntermediate(mat, label) {
         const wrapper = document.createElement("div");
         wrapper.style.textAlign = "center";
         wrapper.style.fontFamily = "sans-serif";
         wrapper.style.fontSize = "12px";
-        wrapper.style.maxWidth = "480px"; // scaled width for display
+        wrapper.style.maxWidth = "480px";
         wrapper.style.marginBottom = "10px";
 
         const labelEl = document.createElement("div");
@@ -45,6 +46,8 @@ export function preprocessWithOpenCV(imageSrc) {
         labelEl.style.marginBottom = "6px";
 
         const canvasEl = document.createElement("canvas");
+        canvasEl.width = mat.cols;
+        canvasEl.height = mat.rows;
         canvasEl.style.width = "480px";
         canvasEl.style.height = "auto";
         canvasEl.style.border = "1px solid #eee";
@@ -57,49 +60,39 @@ export function preprocessWithOpenCV(imageSrc) {
         cv.imshow(canvasEl, mat);
       }
 
-      // Helper to allow visualization delay so browser repaints
       function delay(ms) {
-        return new Promise(resolve => setTimeout(resolve, ms));
+        return new Promise((res) => setTimeout(res, ms));
       }
 
-      // Create canvas to read src image into cv.Mat
       const canvas = document.createElement("canvas");
       canvas.width = img.width;
       canvas.height = img.height;
       const ctx = canvas.getContext("2d");
       ctx.drawImage(img, 0, 0);
 
-      let src = cv.imread(canvas);
+      let src, gray, coords, blurred, sharpened, smoothed, thresh;
 
       try {
-        // Step 1: Grayscale
-        let gray = new cv.Mat();
+        src = cv.imread(canvas);
+
+        // Grayscale
+        gray = new cv.Mat();
         cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
         showIntermediate(gray, "Grayscale");
         await delay(300);
 
-        // Step 1.5: Automatic Deskewing
-        // Find all non-zero (foreground) points
-        let coords = new cv.Mat();
+        // Deskew
+        coords = new cv.Mat();
         cv.findNonZero(gray, coords);
 
-        // If there are no foreground points (empty image), skip deskew
         if (coords.rows > 0) {
-          // Get rotated rectangle from points
           let rotatedRect = cv.minAreaRect(coords);
-
-          coords.delete();
-
           let angle = rotatedRect.angle;
-          // Adjust angle to rotate within [-45, 45] range
-          if (angle < -45) {
-            angle += 90;
-          }
 
-          // Compute rotation matrix around image center
+          if (angle < -45) angle += 90;
+
           let center = new cv.Point(gray.cols / 2, gray.rows / 2);
           let M = cv.getRotationMatrix2D(center, angle, 1);
-
           let deskewed = new cv.Mat();
           cv.warpAffine(
             gray,
@@ -110,54 +103,51 @@ export function preprocessWithOpenCV(imageSrc) {
             cv.BORDER_CONSTANT,
             new cv.Scalar()
           );
-
           showIntermediate(deskewed, `Deskewed (angle: ${angle.toFixed(2)}°)`);
           await delay(300);
 
           gray.delete();
-          gray = deskewed; // continue processing with deskewed image
+          gray = deskewed;
           M.delete();
-        } else {
-          coords.delete(); // just cleanup
         }
 
-        // Step 2: Gaussian blur for unsharp masking mask
-        let blurred = new cv.Mat();
+        coords.delete();
+
+        // Gaussian blur
+        blurred = new cv.Mat();
         cv.GaussianBlur(gray, blurred, new cv.Size(0, 0), 1.0);
         showIntermediate(blurred, "Gaussian Blur");
         await delay(300);
 
-        // Step 3: Unsharp masking sharpening
-        const strength = 1.5;
-        let sharpened = new cv.Mat();
-        cv.addWeighted(gray, 1.0 + strength, blurred, -strength, 0, sharpened);
+        // Unsharp masking
+        sharpened = new cv.Mat();
+        cv.addWeighted(gray, 2.5, blurred, -1.5, 0, sharpened);
         showIntermediate(sharpened, "Unsharp Masking");
         await delay(300);
 
-        // Cleanup intermediate mats no longer needed
         gray.delete();
         blurred.delete();
 
-        // Step 4: Optional smoothing blur (Gaussian)
-        let smoothed = new cv.Mat();
+        // Optional smoothing
+        smoothed = new cv.Mat();
         cv.GaussianBlur(sharpened, smoothed, new cv.Size(3, 3), 0);
         showIntermediate(smoothed, "Smoothing Blur");
         await delay(300);
 
         sharpened.delete();
 
-        // Step 5: Thresholding using Otsu's method
-        let thresh = new cv.Mat();
+        // Threshold
+        thresh = new cv.Mat();
         cv.threshold(smoothed, thresh, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
         showIntermediate(thresh, "Threshold Otsu");
         await delay(300);
 
         smoothed.delete();
 
-        // Step 6: Inversion if background brightness is high
-        const mean = cv.mean(thresh)[0];
-        if (mean > 127) {
-          let inverted = new cv.Mat();
+        // Invert if needed
+        const meanVal = cv.mean(thresh)[0];
+        if (meanVal > 127) {
+          const inverted = new cv.Mat();
           cv.bitwise_not(thresh, inverted);
           showIntermediate(inverted, "Inverted");
           await delay(300);
@@ -165,22 +155,32 @@ export function preprocessWithOpenCV(imageSrc) {
           thresh = inverted;
         }
 
-        // Show final processed image in main canvas
+        // Final output
         cv.imshow(canvas, thresh);
+        const result = canvas.toDataURL("image/png");
 
         thresh.delete();
         src.delete();
 
-        // Return processed image as data URL for OCR input
-        resolve(canvas.toDataURL("image/png"));
+        resolve(result);
       } catch (err) {
-        src.delete();
+        if (src) src.delete();
+        if (gray) gray.delete();
+        if (coords) coords.delete();
+        if (blurred) blurred.delete();
+        if (sharpened) sharpened.delete();
+        if (smoothed) smoothed.delete();
+        if (thresh) thresh.delete();
         reject(err);
       }
     };
 
     img.onerror = reject;
-    img.src = typeof imageSrc === "string" ? imageSrc : URL.createObjectURL(imageSrc);
+
+    img.src =
+      typeof imageSrc === "string"
+        ? imageSrc
+        : URL.createObjectURL(imageSrc);
   });
 }
 
