@@ -96,10 +96,11 @@ export async function preprocessWithOpenCV(imageSrc) {
         gray.delete();
         blurred.delete();
 
-        // Step 4: Bilateral filter smoothing (minimal smoothing)
+        // Step 4: Bilateral filter smoothing (edge-preserving)
         let smoothed = new cv.Mat();
-        cv.bilateralFilter(sharpened, smoothed, 3, 30, 30);
-        showIntermediate(smoothed, "Bilateral Filter (Minimal Smoothing)");
+        // Parameters tuned: diameter=9, sigmaColor=75, sigmaSpace=75
+        cv.bilateralFilter(sharpened, smoothed, 5, 50, 50);
+        showIntermediate(smoothed, "Bilateral Filter (Smoothing)");
         await delay(300);
         sharpened.delete();
 
