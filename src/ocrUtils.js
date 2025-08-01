@@ -11,17 +11,17 @@ const tesseractConfig = {
     "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€",
 };
 
-// --- OpenCV.js preprocessing ---
-// Uses bilateral filter smoothing, preserves edges better than median blur,
-// and provides stepwise visualization with async delays.
+// --- OpenCV.js preprocessing (requires OpenCV.js loaded globally as cv) ---
+// Base code with added visualization of intermediate steps on labeled canvases.
 
-export async function preprocessWithOpenCV(imageSrc) {
+export function preprocessWithOpenCV(imageSrc) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = "Anonymous";
-    img.onload = async () => {
 
-      // Container for displaying intermediate images
+    img.onload = async () => { // make handler async for delays
+
+      // Container for intermediate step canvases
       const container = document.createElement("div");
       container.style.display = "flex";
       container.style.flexWrap = "wrap";
@@ -30,21 +30,22 @@ export async function preprocessWithOpenCV(imageSrc) {
       container.style.border = "1px solid #ccc";
       container.style.padding = "10px";
       container.style.background = "#fafafa";
+
       document.body.appendChild(container);
 
-      // Helper to display Mat as labeled canvas
+      // Helper to show mat on labeled canvas
       function showIntermediate(mat, label) {
         const wrapper = document.createElement("div");
         wrapper.style.textAlign = "center";
         wrapper.style.fontFamily = "sans-serif";
         wrapper.style.fontSize = "12px";
-        wrapper.style.maxWidth = "480px";
+        wrapper.style.maxWidth = "480px"; // scaled width for display
         wrapper.style.marginBottom = "10px";
 
         const labelEl = document.createElement("div");
         labelEl.textContent = label;
-        labelEl.style.marginBottom = "6px";
         labelEl.style.fontWeight = "bold";
+        labelEl.style.marginBottom = "6px";
 
         const canvasEl = document.createElement("canvas");
         canvasEl.style.width = "480px";
@@ -59,12 +60,12 @@ export async function preprocessWithOpenCV(imageSrc) {
         cv.imshow(canvasEl, mat);
       }
 
-      // Pause function to allow browser repaint and visualization
+      // Helper to allow visualization delay so browser repaints
       function delay(ms) {
-        return new Promise((resolve) => setTimeout(resolve, ms));
+        return new Promise(resolve => setTimeout(resolve, ms));
       }
 
-      // Create input canvas and draw the original image
+      // Create canvas to read src image into cv.Mat
       const canvas = document.createElement("canvas");
       canvas.width = img.width;
       canvas.height = img.height;
@@ -80,7 +81,7 @@ export async function preprocessWithOpenCV(imageSrc) {
         showIntermediate(gray, "Grayscale");
         await delay(300);
 
-        // Step 2: Gaussian blur for unsharp mask
+        // Step 2: Gaussian blur for unsharp masking mask
         let blurred = new cv.Mat();
         cv.GaussianBlur(gray, blurred, new cv.Size(0, 0), 1.0);
         showIntermediate(blurred, "Gaussian Blur");
@@ -93,27 +94,29 @@ export async function preprocessWithOpenCV(imageSrc) {
         showIntermediate(sharpened, "Unsharp Masking");
         await delay(300);
 
+        // Cleanup intermediate mats no longer needed
         gray.delete();
         blurred.delete();
 
-        // Step 4: Bilateral filter smoothing (edge-preserving)
+        // Step 4: Optional smoothing blur (Gaussian)
         let smoothed = new cv.Mat();
-        // Parameters tuned: diameter=9, sigmaColor=75, sigmaSpace=75
-        cv.bilateralFilter(sharpened, smoothed, 9, 75, 75);
-        showIntermediate(smoothed, "Bilateral Filter (Smoothing)");
+        cv.GaussianBlur(sharpened, smoothed, new cv.Size(3, 3), 0);
+        showIntermediate(smoothed, "Smoothing Blur");
         await delay(300);
+
         sharpened.delete();
 
-        // Step 5: Threshold using Otsu's method for binarization
+        // Step 5: Thresholding using Otsu's method
         let thresh = new cv.Mat();
         cv.threshold(smoothed, thresh, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
         showIntermediate(thresh, "Threshold Otsu");
         await delay(300);
+
         smoothed.delete();
 
-        // Step 6: Invert if background is too bright
-        const meanBrightness = cv.mean(thresh)[0];
-        if (meanBrightness > 127) {
+        // Step 6: Inversion if background brightness is high
+        const mean = cv.mean(thresh)[0];
+        if (mean > 127) {
           let inverted = new cv.Mat();
           cv.bitwise_not(thresh, inverted);
           showIntermediate(inverted, "Inverted");
@@ -122,17 +125,17 @@ export async function preprocessWithOpenCV(imageSrc) {
           thresh = inverted;
         }
 
-        // Show final processed image on canvas
+        // Show final processed image in main canvas
         cv.imshow(canvas, thresh);
 
         thresh.delete();
         src.delete();
 
-        // Return final preprocessed image as data URL for OCR input
+        // Return processed image as data URL for OCR input
         resolve(canvas.toDataURL("image/png"));
-      } catch (error) {
+      } catch (err) {
         src.delete();
-        reject(error);
+        reject(err);
       }
     };
 
@@ -140,7 +143,6 @@ export async function preprocessWithOpenCV(imageSrc) {
     img.src = typeof imageSrc === "string" ? imageSrc : URL.createObjectURL(imageSrc);
   });
 }
-
 
 
 // --- Clean text by removing invisible chars and normalizing whitespace, preserve lines ---
