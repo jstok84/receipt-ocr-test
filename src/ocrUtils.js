@@ -70,89 +70,80 @@ export function preprocessWithOpenCV(imageSrc) {
       const ctx = canvas.getContext("2d");
       ctx.drawImage(img, 0, 0);
 
-      let src, gray, blurred, sharpened, smoothed, thresh;
+      let src, gray, coords, blurred, sharpened, smoothed, thresh;
 
       try {
         src = cv.imread(canvas);
 
-        // Step 1: Grayscale
+        // Grayscale
         gray = new cv.Mat();
         cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
         showIntermediate(gray, "Grayscale");
         await delay(300);
 
-        // Step 2: Deskew using largest contour angle
-        const binary = new cv.Mat();
-        cv.threshold(gray, binary, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+        // Deskew
+        coords = new cv.Mat();
+        cv.findNonZero(gray, coords);
 
-        const contours = new cv.MatVector();
-        const hierarchy = new cv.Mat();
-        cv.findContours(binary, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+        if (coords.rows > 0) {
+          let rotatedRect = cv.minAreaRect(coords);
+          let angle = rotatedRect.angle;
 
-        // Bonus: visualize all contours
-        const contourPreview = cv.Mat.zeros(gray.rows, gray.cols, cv.CV_8UC3);
-        for (let i = 0; i < contours.size(); ++i) {
-          cv.drawContours(contourPreview, contours, i, new cv.Scalar(0, 255, 0), 1);
-        }
-        showIntermediate(contourPreview, "Contours Found");
-        await delay(300);
-        contourPreview.delete();
+          if (angle < -45) angle += 90;
 
-        let maxArea = 0;
-        let maxContour = null;
+          console.log(`Detected deskew angle: ${angle.toFixed(2)}°`);
 
-        for (let i = 0; i < contours.size(); i++) {
-          const contour = contours.get(i);
-          const area = cv.contourArea(contour);
-          if (area > maxArea) {
-            maxArea = area;
-            maxContour = contour;
-          }
-        }
+          let center = new cv.Point(gray.cols / 2, gray.rows / 2);
+          let M = cv.getRotationMatrix2D(center, angle, 1);
+          let deskewed = new cv.Mat();
+          cv.warpAffine(
+            gray,
+            deskewed,
+            M,
+            new cv.Size(gray.cols, gray.rows),
+            cv.INTER_LINEAR,
+            cv.BORDER_CONSTANT,
+            new cv.Scalar()
+          );
 
-        let angle = 0;
-        if (maxContour && maxContour.rows >= 5) {
-          const rotatedRect = cv.minAreaRect(maxContour);
-          angle = rotatedRect.angle;
+          showIntermediate(deskewed, `Deskewed (angle: ${angle.toFixed(2)}°)`);
+          await delay(300);
 
-          if (rotatedRect.size.width < rotatedRect.size.height) {
-            angle += 90;
-          }
+          // --- Orientation fix to preserve portrait layout ---
+          const wasPortrait = img.height > img.width;
+          const nowLandscape = deskewed.cols > deskewed.rows;
 
-          if (Math.abs(angle) > 1.0) {
-            const center = new cv.Point(gray.cols / 2, gray.rows / 2);
-            const M = cv.getRotationMatrix2D(center, angle, 1.0);
-            const rotated = new cv.Mat();
-            cv.warpAffine(
-              gray,
-              rotated,
-              M,
-              new cv.Size(gray.cols, gray.rows),
-              cv.INTER_LINEAR,
-              cv.BORDER_CONSTANT,
-              new cv.Scalar(255, 255, 255, 255)
-            );
+          console.log(`Original image is ${wasPortrait ? "portrait" : "landscape"}`);
+          console.log(`Deskewed image is ${nowLandscape ? "landscape" : "portrait"}`);
 
-            showIntermediate(rotated, `Deskewed (angle: ${angle.toFixed(2)}°)`);
+          if (wasPortrait && nowLandscape) {
+            console.log("Fixing orientation by rotating deskewed image -90 degrees");
+
+            const corrected = new cv.Mat();
+            cv.transpose(deskewed, corrected);  // swap cols and rows
+            cv.flip(corrected, corrected, 0);   // rotate 90 CCW (-90 degrees)
+            deskewed.delete();
+            deskewed = corrected;
+
+            showIntermediate(deskewed, "Restored to Portrait Orientation");
             await delay(300);
-
-            gray.delete();
-            gray = rotated;
-            M.delete();
           }
+          // -----------------------------------------------------
+
+          gray.delete();
+          gray = deskewed;
+          M.delete();
         }
 
-        binary.delete();
-        hierarchy.delete();
-        contours.delete();
+        coords.delete();
 
-        // Step 3: Gaussian blur for unsharp masking
+        // Gaussian blur
         blurred = new cv.Mat();
         cv.GaussianBlur(gray, blurred, new cv.Size(0, 0), 1.0);
         showIntermediate(blurred, "Gaussian Blur");
         await delay(300);
 
-        // Step 4: Unsharp masking sharpening
+        // Unsharp masking
         sharpened = new cv.Mat();
         cv.addWeighted(gray, 2.5, blurred, -1.5, 0, sharpened);
         showIntermediate(sharpened, "Unsharp Masking");
@@ -161,7 +152,7 @@ export function preprocessWithOpenCV(imageSrc) {
         gray.delete();
         blurred.delete();
 
-        // Step 5: Optional smoothing blur
+        // Optional smoothing
         smoothed = new cv.Mat();
         cv.GaussianBlur(sharpened, smoothed, new cv.Size(3, 3), 0);
         showIntermediate(smoothed, "Smoothing Blur");
@@ -169,7 +160,7 @@ export function preprocessWithOpenCV(imageSrc) {
 
         sharpened.delete();
 
-        // Step 6: Thresholding (Otsu)
+        // Threshold
         thresh = new cv.Mat();
         cv.threshold(smoothed, thresh, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
         showIntermediate(thresh, "Threshold Otsu");
@@ -177,8 +168,10 @@ export function preprocessWithOpenCV(imageSrc) {
 
         smoothed.delete();
 
-        // Step 7: Invert if background is too bright
+        // Invert if needed
         const meanVal = cv.mean(thresh)[0];
+        console.log(`Mean pixel value after threshold: ${meanVal}`);
+
         if (meanVal > 127) {
           const inverted = new cv.Mat();
           cv.bitwise_not(thresh, inverted);
@@ -188,18 +181,19 @@ export function preprocessWithOpenCV(imageSrc) {
           thresh = inverted;
         }
 
-        // Step 8: Show final result
+        // Final output
         cv.imshow(canvas, thresh);
         const result = canvas.toDataURL("image/png");
 
-        // Cleanup
         thresh.delete();
         src.delete();
 
         resolve(result);
       } catch (err) {
+        console.error("Processing error:", err);
         if (src) src.delete();
         if (gray) gray.delete();
+        if (coords) coords.delete();
         if (blurred) blurred.delete();
         if (sharpened) sharpened.delete();
         if (smoothed) smoothed.delete();
@@ -208,7 +202,10 @@ export function preprocessWithOpenCV(imageSrc) {
       }
     };
 
-    img.onerror = reject;
+    img.onerror = (e) => {
+      console.error("Image load error:", e);
+      reject(new Error("Failed to load image."));
+    };
 
     img.src =
       typeof imageSrc === "string"
@@ -216,6 +213,7 @@ export function preprocessWithOpenCV(imageSrc) {
         : URL.createObjectURL(imageSrc);
   });
 }
+
 
 
 
