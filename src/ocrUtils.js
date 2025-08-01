@@ -101,8 +101,8 @@ export async function preprocessWithOpenCV(imageSrc) {
         // Step 4: Median blur for edge-preserving smoothing (replaces previous Gaussian smoothing blur)
         // Median blur kernel size must be an odd positive integer; 3 or 5 are common choices
         let smoothed = new cv.Mat();
-        cv.medianBlur(sharpened, smoothed, 3);  // using kernel size 3 here
-        showIntermediate(smoothed, "Median Blur (Edge-preserving)");
+        cv.bilateralFilter(sharpened, smoothed, 9, 75, 75); 
+        showIntermediate(smoothed, "BilateralFilter (Edge-preserving)");
         await delay(300);
         sharpened.delete();
 
