@@ -102,53 +102,53 @@ export async function preprocessWithOpenCV(imageSrc) {
         cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
         showIntermediate(gray, "Grayscale");
         await delay(300);
-
-        // Step 1.5: Automatic Deskewing
-        coords = new cv.Mat();
-        cv.findNonZero(gray, coords);
-
-        if (coords.rows > 0) {
-          let rotatedRect = cv.minAreaRect(coords);
-          let angle = rotatedRect.angle;
-
-          if (angle < -45) angle += 90;
-
-          // FIX: Correct angle and rotation direction
-          angle = -angle; // invert angle to rotate properly
-
-          let center = new cv.Point(gray.cols / 2, gray.rows / 2);
-          let M = cv.getRotationMatrix2D(center, angle, 1);
-
-          let deskewed = new cv.Mat();
-
-          // Calculate bounding size after rotation
-          const cos = Math.abs(M.doubleAt(0, 0));
-          const sin = Math.abs(M.doubleAt(0, 1));
-          const newWidth = Math.floor(gray.rows * sin + gray.cols * cos);
-          const newHeight = Math.floor(gray.rows * cos + gray.cols * sin);
-
-          // Adjust rotation matrix for translation
-          M.doublePtr(0, 2)[0] += newWidth / 2 - center.x;
-          M.doublePtr(1, 2)[0] += newHeight / 2 - center.y;
-
-          cv.warpAffine(
-            gray,
-            deskewed,
-            M,
-            new cv.Size(newWidth, newHeight),
-            cv.INTER_LINEAR,
-            cv.BORDER_CONSTANT,
-            new cv.Scalar(255, 255, 255, 255)
-          );
-          showIntermediate(deskewed, `Deskewed (angle: ${angle.toFixed(2)}°)`);
-          await delay(300);
-
-          gray.delete();
-          gray = deskewed;
-          M.delete();
+        try {
+          coords = new cv.Mat();
+          cv.findNonZero(gray, coords);
+          
+          if (coords.rows > 0) {
+            let rotatedRect = cv.minAreaRect(coords);
+            let angle = rotatedRect.angle;
+          
+            if (angle < -45) angle += 90;
+          
+            angle = -angle;
+          
+            let center = new cv.Point(gray.cols / 2, gray.rows / 2);
+            let M = cv.getRotationMatrix2D(center, angle, 1);
+          
+            const cos = Math.abs(M.doubleAt(0, 0));
+            const sin = Math.abs(M.doubleAt(0, 1));
+            const newWidth = Math.floor(gray.rows * sin + gray.cols * cos);
+            const newHeight = Math.floor(gray.rows * cos + gray.cols * sin);
+          
+            M.doublePtr(0, 2)[0] += newWidth / 2 - center.x;
+            M.doublePtr(1, 2)[0] += newHeight / 2 - center.y;
+          
+            let deskewed = new cv.Mat();
+            cv.warpAffine(
+              gray,
+              deskewed,
+              M,
+              new cv.Size(newWidth, newHeight),
+              cv.INTER_LINEAR,
+              cv.BORDER_CONSTANT,
+              new cv.Scalar(255, 255, 255, 255)
+            );
+          
+            showIntermediate(deskewed, `Deskewed (angle: ${angle.toFixed(2)}°)`);
+            await delay(300);
+          
+            gray.delete();
+            gray = deskewed;
+            M.delete();
+          }
+          coords.delete();
+        } catch (e) {
+          console.error("Error during deskewing:", e);
+          if (coords) coords.delete();
         }
-        coords.delete();
-
+        
         // Step 2: Gaussian blur
         blurred = new cv.Mat();
         cv.GaussianBlur(gray, blurred, new cv.Size(0, 0), 1.0);
