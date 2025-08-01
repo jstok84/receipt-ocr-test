@@ -22,22 +22,18 @@ export function preprocessWithOpenCV(imageSrc) {
     img.crossOrigin = "Anonymous";
 
     img.onload = async () => {
-      // Wait for OpenCV to initialize
       if (cv.getBuildInformation === undefined) {
-        console.warn("Waiting for OpenCV to finish initializing...");
         await new Promise((res) => {
           cv['onRuntimeInitialized'] = res;
         });
       }
 
       try {
-        // Check image dimensions
         if (img.width === 0 || img.height === 0) {
           reject(new Error("Image has invalid dimensions (0x0)."));
           return;
         }
 
-        // Create debug container
         const container = document.createElement("div");
         container.style.display = "flex";
         container.style.flexWrap = "wrap";
@@ -80,60 +76,63 @@ export function preprocessWithOpenCV(imageSrc) {
           return new Promise((res) => setTimeout(res, ms));
         }
 
-        // Prepare canvas
         const canvas = document.createElement("canvas");
         canvas.width = img.width;
         canvas.height = img.height;
         const ctx = canvas.getContext("2d");
         ctx.drawImage(img, 0, 0);
 
-        // Debug pixel
         const pixel = ctx.getImageData(0, 0, 1, 1).data;
         console.log("Top-left pixel RGBA:", pixel);
 
-        let src, gray, coords, blurred, sharpened, smoothed, thresh;
+        let src, gray, blurred, sharpened, smoothed, thresh;
 
         try {
           src = cv.imread(canvas);
-
           if (src.empty()) {
-            reject(new Error("cv.imread() returned empty Mat. Check if image is tainted or canvas is blank."));
+            reject(new Error("cv.imread() returned empty Mat. Image might be tainted or invalid."));
             return;
           }
 
           console.log("Image size:", src.cols, src.rows);
 
-          // Step 1: Grayscale
           gray = new cv.Mat();
           try {
             cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
           } catch (err) {
-            console.error("cv.cvtColor failed:", err);
-            reject(new Error("Grayscale conversion failed. Maybe src mat is not valid."));
+            reject(new Error("cv.cvtColor failed to convert image to grayscale."));
             return;
           }
 
           if (gray.empty()) {
-            reject(new Error("cv.cvtColor produced empty grayscale image."));
+            reject(new Error("Grayscale image is empty."));
             return;
           }
 
           showIntermediate(gray, "Grayscale");
           await delay(300);
 
-          // Step 1.5: Deskew
-          coords = new cv.Mat();
-          cv.findNonZero(gray, coords);
+          // --- Manual replacement for findNonZero ---
+          const nonZeroPoints = [];
+          for (let y = 0; y < gray.rows; y++) {
+            for (let x = 0; x < gray.cols; x++) {
+              if (gray.ucharPtr(y, x)[0] > 0) {
+                nonZeroPoints.push(new cv.Point(x, y));
+              }
+            }
+          }
 
-          if (coords.rows > 0) {
-            let rotatedRect = cv.minAreaRect(coords);
+          if (nonZeroPoints.length > 0) {
+            const flatArray = nonZeroPoints.flatMap(p => [p.x, p.y]);
+            const ptsMat = cv.matFromArray(nonZeroPoints.length, 1, cv.CV_32SC2, flatArray);
+            const rotatedRect = cv.minAreaRect(ptsMat);
             let angle = rotatedRect.angle;
 
             if (angle < -45) angle += 90;
 
-            let center = new cv.Point(gray.cols / 2, gray.rows / 2);
-            let M = cv.getRotationMatrix2D(center, angle, 1);
-            let deskewed = new cv.Mat();
+            const center = new cv.Point(gray.cols / 2, gray.rows / 2);
+            const M = cv.getRotationMatrix2D(center, angle, 1);
+            const deskewed = new cv.Mat();
             cv.warpAffine(
               gray,
               deskewed,
@@ -150,17 +149,16 @@ export function preprocessWithOpenCV(imageSrc) {
             gray.delete();
             gray = deskewed;
             M.delete();
+            ptsMat.delete();
           }
 
-          coords.delete();
-
-          // Step 2: Gaussian Blur
+          // --- Gaussian blur ---
           blurred = new cv.Mat();
           cv.GaussianBlur(gray, blurred, new cv.Size(0, 0), 1.0);
           showIntermediate(blurred, "Gaussian Blur");
           await delay(300);
 
-          // Step 3: Unsharp Masking
+          // --- Unsharp masking ---
           sharpened = new cv.Mat();
           cv.addWeighted(gray, 2.5, blurred, -1.5, 0, sharpened);
           showIntermediate(sharpened, "Unsharp Masking");
@@ -169,7 +167,7 @@ export function preprocessWithOpenCV(imageSrc) {
           gray.delete();
           blurred.delete();
 
-          // Step 4: Optional smoothing
+          // --- Optional smoothing ---
           smoothed = new cv.Mat();
           cv.GaussianBlur(sharpened, smoothed, new cv.Size(3, 3), 0);
           showIntermediate(smoothed, "Smoothing Blur");
@@ -177,7 +175,7 @@ export function preprocessWithOpenCV(imageSrc) {
 
           sharpened.delete();
 
-          // Step 5: Otsu thresholding
+          // --- Threshold using Otsu ---
           thresh = new cv.Mat();
           cv.threshold(smoothed, thresh, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
           showIntermediate(thresh, "Threshold Otsu");
@@ -185,7 +183,7 @@ export function preprocessWithOpenCV(imageSrc) {
 
           smoothed.delete();
 
-          // Step 6: Invert if background is light
+          // --- Inversion ---
           const meanVal = cv.mean(thresh)[0];
           if (meanVal > 127) {
             const inverted = new cv.Mat();
@@ -196,11 +194,10 @@ export function preprocessWithOpenCV(imageSrc) {
             thresh = inverted;
           }
 
-          // Final result
+          // --- Final output ---
           cv.imshow(canvas, thresh);
           const resultDataURL = canvas.toDataURL("image/png");
 
-          // Cleanup
           thresh.delete();
           src.delete();
 
@@ -208,7 +205,6 @@ export function preprocessWithOpenCV(imageSrc) {
         } catch (err) {
           if (src) src.delete();
           if (gray) gray.delete();
-          if (coords) coords.delete();
           if (blurred) blurred.delete();
           if (sharpened) sharpened.delete();
           if (smoothed) smoothed.delete();
