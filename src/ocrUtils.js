@@ -13,9 +13,8 @@ const tesseractConfig = {
 
 export function preprocessWithOpenCV(imageSrc) {
   return new Promise((resolve, reject) => {
-    // --- Ensure OpenCV is loaded and ready ---
     if (typeof cv === "undefined" || !cv.imread || !cv.Mat) {
-      reject(new Error("OpenCV.js is not loaded or not fully initialized."));
+      reject(new Error("OpenCV.js is not loaded or initialized."));
       return;
     }
 
@@ -23,23 +22,22 @@ export function preprocessWithOpenCV(imageSrc) {
     img.crossOrigin = "Anonymous";
 
     img.onload = async () => {
+      // Wait for OpenCV to initialize
+      if (cv.getBuildInformation === undefined) {
+        console.warn("Waiting for OpenCV to finish initializing...");
+        await new Promise((res) => {
+          cv['onRuntimeInitialized'] = res;
+        });
+      }
+
       try {
-        // --- Wait for OpenCV to be ready ---
-        if (!cv.Mat) {
-          await new Promise((res) => {
-            cv['onRuntimeInitialized'] = res;
-          });
-        }
-
-        console.log("Image loaded:", img.width, img.height);
-
-        // --- Check image dimensions ---
+        // Check image dimensions
         if (img.width === 0 || img.height === 0) {
-          reject(new Error("Loaded image has invalid dimensions (0x0)."));
+          reject(new Error("Image has invalid dimensions (0x0)."));
           return;
         }
 
-        // --- Create container for intermediate canvases ---
+        // Create debug container
         const container = document.createElement("div");
         container.style.display = "flex";
         container.style.flexWrap = "wrap";
@@ -82,12 +80,16 @@ export function preprocessWithOpenCV(imageSrc) {
           return new Promise((res) => setTimeout(res, ms));
         }
 
-        // --- Load image into canvas ---
+        // Prepare canvas
         const canvas = document.createElement("canvas");
         canvas.width = img.width;
         canvas.height = img.height;
         const ctx = canvas.getContext("2d");
         ctx.drawImage(img, 0, 0);
+
+        // Debug pixel
+        const pixel = ctx.getImageData(0, 0, 1, 1).data;
+        console.log("Top-left pixel RGBA:", pixel);
 
         let src, gray, coords, blurred, sharpened, smoothed, thresh;
 
@@ -95,23 +97,31 @@ export function preprocessWithOpenCV(imageSrc) {
           src = cv.imread(canvas);
 
           if (src.empty()) {
-            reject(new Error("cv.imread() returned empty image. Canvas might be tainted or invalid."));
+            reject(new Error("cv.imread() returned empty Mat. Check if image is tainted or canvas is blank."));
             return;
           }
 
-          // --- Grayscale ---
+          console.log("Image size:", src.cols, src.rows);
+
+          // Step 1: Grayscale
+          gray = new cv.Mat();
           try {
-            gray = new cv.Mat();
             cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-            showIntermediate(gray, "Grayscale");
-            await delay(300);
           } catch (err) {
-            console.error("Grayscale conversion failed:", err);
-            reject(new Error("Failed to convert image to grayscale."));
+            console.error("cv.cvtColor failed:", err);
+            reject(new Error("Grayscale conversion failed. Maybe src mat is not valid."));
             return;
           }
 
-          // --- Deskew ---
+          if (gray.empty()) {
+            reject(new Error("cv.cvtColor produced empty grayscale image."));
+            return;
+          }
+
+          showIntermediate(gray, "Grayscale");
+          await delay(300);
+
+          // Step 1.5: Deskew
           coords = new cv.Mat();
           cv.findNonZero(gray, coords);
 
@@ -133,6 +143,7 @@ export function preprocessWithOpenCV(imageSrc) {
               cv.BORDER_CONSTANT,
               new cv.Scalar()
             );
+
             showIntermediate(deskewed, `Deskewed (angle: ${angle.toFixed(2)}°)`);
             await delay(300);
 
@@ -143,13 +154,13 @@ export function preprocessWithOpenCV(imageSrc) {
 
           coords.delete();
 
-          // --- Gaussian Blur for sharpening ---
+          // Step 2: Gaussian Blur
           blurred = new cv.Mat();
           cv.GaussianBlur(gray, blurred, new cv.Size(0, 0), 1.0);
           showIntermediate(blurred, "Gaussian Blur");
           await delay(300);
 
-          // --- Unsharp Masking ---
+          // Step 3: Unsharp Masking
           sharpened = new cv.Mat();
           cv.addWeighted(gray, 2.5, blurred, -1.5, 0, sharpened);
           showIntermediate(sharpened, "Unsharp Masking");
@@ -158,7 +169,7 @@ export function preprocessWithOpenCV(imageSrc) {
           gray.delete();
           blurred.delete();
 
-          // --- Optional Smoothing ---
+          // Step 4: Optional smoothing
           smoothed = new cv.Mat();
           cv.GaussianBlur(sharpened, smoothed, new cv.Size(3, 3), 0);
           showIntermediate(smoothed, "Smoothing Blur");
@@ -166,7 +177,7 @@ export function preprocessWithOpenCV(imageSrc) {
 
           sharpened.delete();
 
-          // --- Threshold ---
+          // Step 5: Otsu thresholding
           thresh = new cv.Mat();
           cv.threshold(smoothed, thresh, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
           showIntermediate(thresh, "Threshold Otsu");
@@ -174,7 +185,7 @@ export function preprocessWithOpenCV(imageSrc) {
 
           smoothed.delete();
 
-          // --- Invert if needed ---
+          // Step 6: Invert if background is light
           const meanVal = cv.mean(thresh)[0];
           if (meanVal > 127) {
             const inverted = new cv.Mat();
@@ -185,15 +196,15 @@ export function preprocessWithOpenCV(imageSrc) {
             thresh = inverted;
           }
 
-          // --- Final result to canvas ---
+          // Final result
           cv.imshow(canvas, thresh);
-          const result = canvas.toDataURL("image/png");
+          const resultDataURL = canvas.toDataURL("image/png");
 
-          // --- Cleanup ---
+          // Cleanup
           thresh.delete();
           src.delete();
 
-          resolve(result);
+          resolve(resultDataURL);
         } catch (err) {
           if (src) src.delete();
           if (gray) gray.delete();
@@ -202,16 +213,18 @@ export function preprocessWithOpenCV(imageSrc) {
           if (sharpened) sharpened.delete();
           if (smoothed) smoothed.delete();
           if (thresh) thresh.delete();
+          console.error("Processing error:", err);
           reject(err);
         }
       } catch (outerErr) {
+        console.error("Outer error:", outerErr);
         reject(outerErr);
       }
     };
 
     img.onerror = (e) => {
-      console.error("Image load error:", e);
-      reject(new Error("Failed to load image."));
+      console.error("Image load error", e);
+      reject(new Error("Image failed to load."));
     };
 
     img.src = typeof imageSrc === "string"
@@ -219,8 +232,6 @@ export function preprocessWithOpenCV(imageSrc) {
       : URL.createObjectURL(imageSrc);
   });
 }
-
-
 
 // --- Clean text by removing invisible chars and normalizing whitespace, preserve lines ---
 export function cleanAndMergeText(rawText) {
