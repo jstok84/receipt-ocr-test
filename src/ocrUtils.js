@@ -21,13 +21,44 @@ export function preprocessWithOpenCV(imageSrc) {
     const img = new Image();
     img.crossOrigin = "Anonymous";
 
-    img.onload = async () => {
-      // Create container to show intermediate steps
+    img.onload = () => {
+      // ✅ Create UI
+      const controlPanel = document.createElement("div");
+      controlPanel.style.position = "fixed";
+      controlPanel.style.top = "10px";
+      controlPanel.style.right = "10px";
+      controlPanel.style.background = "#fff";
+      controlPanel.style.border = "1px solid #ccc";
+      controlPanel.style.padding = "10px";
+      controlPanel.style.boxShadow = "0 0 10px rgba(0,0,0,0.1)";
+      controlPanel.style.zIndex = "9999";
+      controlPanel.style.fontFamily = "sans-serif";
+      controlPanel.style.fontSize = "14px";
+
+      controlPanel.innerHTML = `
+        <label><input type="checkbox" id="deskew" checked> Deskew</label><br>
+        <label><input type="checkbox" id="unsharp" checked> Unsharp Mask</label><br>
+        <label><input type="checkbox" id="smooth" checked> Smoothing</label><br>
+        <label><input type="checkbox" id="threshold" checked> Threshold</label><br>
+        <label><input type="checkbox" id="invert" checked> Invert if Bright</label><br>
+        <button id="processBtn" style="margin-top: 10px;">Process Image</button>
+      `;
+
+      document.body.appendChild(controlPanel);
+
+      const deskewCheckbox = document.getElementById("deskew");
+      const unsharpCheckbox = document.getElementById("unsharp");
+      const smoothCheckbox = document.getElementById("smooth");
+      const thresholdCheckbox = document.getElementById("threshold");
+      const invertCheckbox = document.getElementById("invert");
+      const processBtn = document.getElementById("processBtn");
+
+      // ✅ Show preview container
       const container = document.createElement("div");
       container.style.display = "flex";
       container.style.flexWrap = "wrap";
       container.style.gap = "10px";
-      container.style.margin = "20px 0";
+      container.style.margin = "80px 0 20px";
       container.style.border = "1px solid #ccc";
       container.style.padding = "10px";
       container.style.background = "#fafafa";
@@ -36,10 +67,8 @@ export function preprocessWithOpenCV(imageSrc) {
       function showIntermediate(mat, label) {
         const wrapper = document.createElement("div");
         wrapper.style.textAlign = "center";
-        wrapper.style.fontFamily = "sans-serif";
         wrapper.style.fontSize = "12px";
         wrapper.style.maxWidth = "480px";
-        wrapper.style.marginBottom = "10px";
 
         const labelEl = document.createElement("div");
         labelEl.textContent = label;
@@ -50,7 +79,6 @@ export function preprocessWithOpenCV(imageSrc) {
         canvasEl.width = mat.cols;
         canvasEl.height = mat.rows;
         canvasEl.style.width = "480px";
-        canvasEl.style.height = "auto";
         canvasEl.style.border = "1px solid #eee";
         canvasEl.style.boxShadow = "0 0 6px rgba(0,0,0,0.12)";
 
@@ -62,179 +90,153 @@ export function preprocessWithOpenCV(imageSrc) {
       }
 
       function delay(ms) {
-        return new Promise((res) => setTimeout(res, ms));
+        return new Promise(res => setTimeout(res, ms));
       }
 
-      // Draw image on a canvas to create cv.Mat
-      const canvas = document.createElement("canvas");
-      canvas.width = img.width;
-      canvas.height = img.height;
-      const ctx = canvas.getContext("2d");
-      ctx.drawImage(img, 0, 0);
+      processBtn.onclick = async () => {
+        container.innerHTML = ""; // Clear previous results
 
-      let src, gray, blurred, sharpened, smoothed, thresh;
+        const canvas = document.createElement("canvas");
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0);
 
-      try {
-        src = cv.imread(canvas);
+        let src, gray, blurred, sharpened, smoothed, thresh;
 
-        // Step 1: Convert to Grayscale
-        gray = new cv.Mat();
-        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-        showIntermediate(gray, "Grayscale");
-        await delay(300);
+        try {
+          console.log("📥 Reading image to cv.Mat");
+          src = cv.imread(canvas);
 
-        // Step 2: Threshold to binary (Otsu)
-        const binary = new cv.Mat();
-        cv.threshold(gray, binary, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
-
-        // Step 3: Find contours
-        const contours = new cv.MatVector();
-        const hierarchy = new cv.Mat();
-        cv.findContours(binary, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-
-        // Visualize contours (optional)
-        const contourPreview = cv.Mat.zeros(gray.rows, gray.cols, cv.CV_8UC3);
-        for (let i = 0; i < contours.size(); ++i) {
-          cv.drawContours(contourPreview, contours, i, new cv.Scalar(0, 255, 0), 1);
-        }
-        showIntermediate(contourPreview, "Contours Found");
-        await delay(300);
-        contourPreview.delete();
-
-        // Step 4: Find largest contour by area
-        let maxArea = 0;
-        let maxContour = null;
-        for (let i = 0; i < contours.size(); i++) {
-          const contour = contours.get(i);
-          const area = cv.contourArea(contour);
-          if (area > maxArea) {
-            maxArea = area;
-            maxContour = contour;
-          }
-        }
-
-        // Step 5: Calculate rotation angle from largest contour
-        let angle = 0;
-        if (maxContour && maxContour.rows >= 5) {
-          const rotatedRect = cv.minAreaRect(maxContour);
-          angle = rotatedRect.angle;
-
-          // OpenCV minAreaRect angle handling:
-          // If width < height, angle = angle (in [-90, 0))
-          // Else, angle = angle + 90
-
-          if (rotatedRect.size.width < rotatedRect.size.height) {
-            // portrait mode - angle as is
-          } else {
-            angle += 90;
-          }
-
-          // Fix upside down:
-          // If angle is less than -45 degrees, add 180 degrees
-          // Because sometimes it flips the box orientation
-          if (angle < -45) {
-            angle += 180;
-          }
-
-          // ALSO: If angle is positive and > 45, subtract 180 to fix upside-down
-          if (angle > 45) {
-            angle -= 180;
-          }
-
-          console.log("Detected rotation angle for deskew:", angle);
-
-          // Rotate only if angle is significant (> 1 degree)
-          if (Math.abs(angle) > 1.0) {
-            const center = new cv.Point(gray.cols / 2, gray.rows / 2);
-            const M = cv.getRotationMatrix2D(center, angle, 1.0);
-            const rotated = new cv.Mat();
-
-            cv.warpAffine(
-              gray,
-              rotated,
-              M,
-              new cv.Size(gray.cols, gray.rows),
-              cv.INTER_LINEAR,
-              cv.BORDER_CONSTANT,
-              new cv.Scalar(255, 255, 255, 255) // white background
-            );
-
-            showIntermediate(rotated, `Deskewed (angle: ${angle.toFixed(2)}°)`);
-            await delay(300);
-
-            gray.delete();
-            gray = rotated;
-            M.delete();
-          }
-        }
-
-        binary.delete();
-        hierarchy.delete();
-        contours.delete();
-
-        // Step 6: Gaussian blur for unsharp masking
-        blurred = new cv.Mat();
-        cv.GaussianBlur(gray, blurred, new cv.Size(0, 0), 1.0);
-        showIntermediate(blurred, "Gaussian Blur");
-        await delay(300);
-
-        // Step 7: Unsharp masking sharpening
-        sharpened = new cv.Mat();
-        cv.addWeighted(gray, 2.5, blurred, -1.5, 0, sharpened);
-        showIntermediate(sharpened, "Unsharp Masking");
-        await delay(300);
-
-        gray.delete();
-        blurred.delete();
-
-        // Step 8: Optional smoothing blur
-        smoothed = new cv.Mat();
-        cv.GaussianBlur(sharpened, smoothed, new cv.Size(3, 3), 0);
-        showIntermediate(smoothed, "Smoothing Blur");
-        await delay(300);
-
-        sharpened.delete();
-
-        // Step 9: Thresholding (Otsu)
-        thresh = new cv.Mat();
-        cv.threshold(smoothed, thresh, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
-        showIntermediate(thresh, "Threshold Otsu");
-        await delay(300);
-
-        smoothed.delete();
-
-        // Step 10: Invert if background is too bright
-        const meanVal = cv.mean(thresh)[0];
-        if (meanVal > 127) {
-          const inverted = new cv.Mat();
-          cv.bitwise_not(thresh, inverted);
-          showIntermediate(inverted, "Inverted");
+          console.log("🎨 Converting to grayscale");
+          gray = new cv.Mat();
+          cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+          showIntermediate(gray, "Grayscale");
           await delay(300);
-          thresh.delete();
-          thresh = inverted;
+
+          if (deskewCheckbox.checked) {
+            console.log("📐 Deskewing...");
+            const binary = new cv.Mat();
+            cv.threshold(gray, binary, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+
+            const contours = new cv.MatVector();
+            const hierarchy = new cv.Mat();
+            cv.findContours(binary, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+            let maxArea = 0;
+            let maxContour = null;
+            for (let i = 0; i < contours.size(); i++) {
+              const contour = contours.get(i);
+              const area = cv.contourArea(contour);
+              if (area > maxArea) {
+                maxArea = area;
+                maxContour = contour;
+              }
+            }
+
+            if (maxContour && maxContour.rows >= 5) {
+              const rotatedRect = cv.minAreaRect(maxContour);
+              let angle = rotatedRect.angle;
+              if (rotatedRect.size.width < rotatedRect.size.height) {
+                // angle stays
+              } else {
+                angle += 90;
+              }
+              if (angle < -45) angle += 180;
+              if (Math.abs(angle) > 1) {
+                const center = new cv.Point(gray.cols / 2, gray.rows / 2);
+                const M = cv.getRotationMatrix2D(center, angle, 1.0);
+                const rotated = new cv.Mat();
+                cv.warpAffine(
+                  gray,
+                  rotated,
+                  M,
+                  new cv.Size(gray.cols, gray.rows),
+                  cv.INTER_LINEAR,
+                  cv.BORDER_CONSTANT,
+                  new cv.Scalar(255, 255, 255, 255)
+                );
+                showIntermediate(rotated, `Deskewed (${angle.toFixed(2)}°)`);
+                await delay(300);
+                gray.delete();
+                gray = rotated;
+                M.delete();
+              }
+            }
+
+            binary.delete();
+            hierarchy.delete();
+            contours.delete();
+          }
+
+          if (unsharpCheckbox.checked) {
+            console.log("🔪 Unsharp mask...");
+            blurred = new cv.Mat();
+            cv.GaussianBlur(gray, blurred, new cv.Size(0, 0), 1.0);
+            sharpened = new cv.Mat();
+            cv.addWeighted(gray, 2.5, blurred, -1.5, 0, sharpened);
+            showIntermediate(sharpened, "Unsharp Masking");
+            await delay(300);
+            gray.delete();
+            blurred.delete();
+            gray = sharpened;
+          }
+
+          if (smoothCheckbox.checked) {
+            console.log("💧 Smoothing...");
+            smoothed = new cv.Mat();
+            cv.GaussianBlur(gray, smoothed, new cv.Size(3, 3), 0);
+            showIntermediate(smoothed, "Smoothing Blur");
+            await delay(300);
+            gray.delete();
+            gray = smoothed;
+          }
+
+          if (thresholdCheckbox.checked) {
+            console.log("⚡ Thresholding...");
+            thresh = new cv.Mat();
+            cv.threshold(gray, thresh, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+            showIntermediate(thresh, "Threshold Otsu");
+            await delay(300);
+            gray.delete();
+            gray = thresh;
+          }
+
+          if (invertCheckbox.checked) {
+            const meanVal = cv.mean(gray)[0];
+            if (meanVal > 127) {
+              console.log("🔄 Inverting image...");
+              const inverted = new cv.Mat();
+              cv.bitwise_not(gray, inverted);
+              showIntermediate(inverted, "Inverted");
+              await delay(300);
+              gray.delete();
+              gray = inverted;
+            }
+          }
+
+          console.log("✅ Final result ready.");
+          cv.imshow(canvas, gray);
+          const result = canvas.toDataURL("image/png");
+
+          gray.delete();
+          src.delete();
+
+          resolve(result);
+        } catch (err) {
+          console.error("❌ Preprocessing error:", err);
+          if (src) src.delete();
+          if (gray) gray.delete();
+          if (blurred) blurred.delete();
+          if (sharpened) sharpened.delete();
+          if (smoothed) smoothed.delete();
+          if (thresh) thresh.delete();
+          reject(err);
         }
+      };
 
-        // Step 11: Show final result on original canvas
-        cv.imshow(canvas, thresh);
-        const result = canvas.toDataURL("image/png");
-
-        // Cleanup
-        thresh.delete();
-        src.delete();
-
-        resolve(result);
-      } catch (err) {
-        if (src) src.delete();
-        if (gray) gray.delete();
-        if (blurred) blurred.delete();
-        if (sharpened) sharpened.delete();
-        if (smoothed) smoothed.delete();
-        if (thresh) thresh.delete();
-        reject(err);
-      }
+      img.onerror = reject;
     };
-
-    img.onerror = reject;
 
     img.src = typeof imageSrc === "string" ? imageSrc : URL.createObjectURL(imageSrc);
   });
