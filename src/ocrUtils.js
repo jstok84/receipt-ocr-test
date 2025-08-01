@@ -119,25 +119,27 @@ export function preprocessWithOpenCV(imageSrc) {
           const rotatedRect = cv.minAreaRect(maxContour);
           angle = rotatedRect.angle;
 
-          // IMPORTANT FIX:
-          // minAreaRect.angle returns:
-          //   angle in [-90, 0) degrees.
-          //   The angle is the rotation to get the box upright:
-          //   if width < height, angle is angle,
-          //   else angle + 90.
+          // OpenCV minAreaRect angle handling:
+          // If width < height, angle = angle (in [-90, 0))
+          // Else, angle = angle + 90
 
-          // Adjust angle for portrait or landscape:
           if (rotatedRect.size.width < rotatedRect.size.height) {
-            // portrait, angle as is
+            // portrait mode - angle as is
           } else {
-            angle += 90; // landscape correction
+            angle += 90;
           }
 
-          // Fix upside down images by rotating angle by 180 if needed
+          // Fix upside down:
+          // If angle is less than -45 degrees, add 180 degrees
+          // Because sometimes it flips the box orientation
           if (angle < -45) {
             angle += 180;
           }
 
+          // ALSO: If angle is positive and > 45, subtract 180 to fix upside-down
+          if (angle > 45) {
+            angle -= 180;
+          }
 
           console.log("Detected rotation angle for deskew:", angle);
 
@@ -237,9 +239,6 @@ export function preprocessWithOpenCV(imageSrc) {
     img.src = typeof imageSrc === "string" ? imageSrc : URL.createObjectURL(imageSrc);
   });
 }
-
-
-
 // --- Clean text by removing invisible chars and normalizing whitespace, preserve lines ---
 export function cleanAndMergeText(rawText) {
   if (!rawText) return "";
