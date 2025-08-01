@@ -13,8 +13,8 @@ const tesseractConfig = {
 
 export function preprocessWithOpenCV(imageSrc) {
   return new Promise((resolve, reject) => {
-    if (typeof cv === "undefined" || !cv.imread || !cv.Mat) {
-      reject(new Error("OpenCV.js is not loaded or initialized."));
+    if (typeof cv === "undefined" || !cv.imread) {
+      reject(new Error("OpenCV.js (cv) is not loaded or initialized."));
       return;
     }
 
@@ -22,205 +22,201 @@ export function preprocessWithOpenCV(imageSrc) {
     img.crossOrigin = "Anonymous";
 
     img.onload = async () => {
+      const container = document.createElement("div");
+      container.style.display = "flex";
+      container.style.flexWrap = "wrap";
+      container.style.gap = "10px";
+      container.style.margin = "20px 0";
+      container.style.border = "1px solid #ccc";
+      container.style.padding = "10px";
+      container.style.background = "#fafafa";
+      document.body.appendChild(container);
+
+      function showIntermediate(mat, label) {
+        const wrapper = document.createElement("div");
+        wrapper.style.textAlign = "center";
+        wrapper.style.fontFamily = "sans-serif";
+        wrapper.style.fontSize = "12px";
+        wrapper.style.maxWidth = "480px";
+        wrapper.style.marginBottom = "10px";
+
+        const labelEl = document.createElement("div");
+        labelEl.textContent = label;
+        labelEl.style.fontWeight = "bold";
+        labelEl.style.marginBottom = "6px";
+
+        const canvasEl = document.createElement("canvas");
+        canvasEl.width = mat.cols;
+        canvasEl.height = mat.rows;
+        canvasEl.style.width = "480px";
+        canvasEl.style.height = "auto";
+        canvasEl.style.border = "1px solid #eee";
+        canvasEl.style.boxShadow = "0 0 6px rgba(0,0,0,0.12)";
+
+        wrapper.appendChild(labelEl);
+        wrapper.appendChild(canvasEl);
+        container.appendChild(wrapper);
+
+        cv.imshow(canvasEl, mat);
+      }
+
+      function delay(ms) {
+        return new Promise((res) => setTimeout(res, ms));
+      }
+
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+
+      let src, gray, blurred, sharpened, smoothed, thresh;
+
       try {
-        if (img.width === 0 || img.height === 0) {
-          reject(new Error("Image has invalid dimensions (0x0)."));
-          return;
+        src = cv.imread(canvas);
+
+        // Step 1: Grayscale
+        gray = new cv.Mat();
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+        showIntermediate(gray, "Grayscale");
+        await delay(300);
+
+        // Step 2: Deskew using largest contour angle
+        const binary = new cv.Mat();
+        cv.threshold(gray, binary, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+
+        const contours = new cv.MatVector();
+        const hierarchy = new cv.Mat();
+        cv.findContours(binary, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+        // Bonus: visualize all contours
+        const contourPreview = cv.Mat.zeros(gray.rows, gray.cols, cv.CV_8UC3);
+        for (let i = 0; i < contours.size(); ++i) {
+          cv.drawContours(contourPreview, contours, i, new cv.Scalar(0, 255, 0), 1);
+        }
+        showIntermediate(contourPreview, "Contours Found");
+        await delay(300);
+        contourPreview.delete();
+
+        let maxArea = 0;
+        let maxContour = null;
+
+        for (let i = 0; i < contours.size(); i++) {
+          const contour = contours.get(i);
+          const area = cv.contourArea(contour);
+          if (area > maxArea) {
+            maxArea = area;
+            maxContour = contour;
+          }
         }
 
-        const container = document.createElement("div");
-        container.style.display = "flex";
-        container.style.flexWrap = "wrap";
-        container.style.gap = "10px";
-        container.style.margin = "20px 0";
-        container.style.border = "1px solid #ccc";
-        container.style.padding = "10px";
-        container.style.background = "#fafafa";
-        document.body.appendChild(container);
+        let angle = 0;
+        if (maxContour && maxContour.rows >= 5) {
+          const rotatedRect = cv.minAreaRect(maxContour);
+          angle = rotatedRect.angle;
 
-        function showIntermediate(mat, label) {
-          const wrapper = document.createElement("div");
-          wrapper.style.textAlign = "center";
-          wrapper.style.fontFamily = "sans-serif";
-          wrapper.style.fontSize = "12px";
-          wrapper.style.maxWidth = "480px";
-          wrapper.style.marginBottom = "10px";
-
-          const labelEl = document.createElement("div");
-          labelEl.textContent = label;
-          labelEl.style.fontWeight = "bold";
-          labelEl.style.marginBottom = "6px";
-
-          const canvasEl = document.createElement("canvas");
-          canvasEl.width = mat.cols;
-          canvasEl.height = mat.rows;
-          canvasEl.style.width = "480px";
-          canvasEl.style.height = "auto";
-          canvasEl.style.border = "1px solid #eee";
-          canvasEl.style.boxShadow = "0 0 6px rgba(0,0,0,0.12)";
-
-          wrapper.appendChild(labelEl);
-          wrapper.appendChild(canvasEl);
-          container.appendChild(wrapper);
-
-          cv.imshow(canvasEl, mat);
-        }
-
-        function delay(ms) {
-          return new Promise((res) => setTimeout(res, ms));
-        }
-
-        const canvas = document.createElement("canvas");
-        canvas.width = img.width;
-        canvas.height = img.height;
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(img, 0, 0);
-
-        let src, gray, blurred, sharpened, smoothed, thresh;
-
-        try {
-          src = cv.imread(canvas);
-          if (src.empty()) {
-            reject(new Error("cv.imread() returned an empty image."));
-            return;
+          if (rotatedRect.size.width < rotatedRect.size.height) {
+            angle += 90;
           }
 
-          gray = new cv.Mat();
-          cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-          showIntermediate(gray, "Grayscale");
-          await delay(300);
-
-          // Invert gray if background is brighter
-          const meanGray = cv.mean(gray)[0];
-          if (meanGray > 127) {
-            const invertedGray = new cv.Mat();
-            cv.bitwise_not(gray, invertedGray);
-            gray.delete();
-            gray = invertedGray;
-          }
-
-          // --- Deskew: use bounding box angle ---
-          const nonZeroPoints = [];
-          for (let y = 0; y < gray.rows; y++) {
-            for (let x = 0; x < gray.cols; x++) {
-              if (gray.ucharPtr(y, x)[0] > 0) {
-                nonZeroPoints.push(new cv.Point(x, y));
-              }
-            }
-          }
-
-          if (nonZeroPoints.length > 0) {
-            const flat = nonZeroPoints.flatMap(p => [p.x, p.y]);
-            const ptsMat = cv.matFromArray(nonZeroPoints.length, 1, cv.CV_32SC2, flat);
-            const rotatedRect = cv.minAreaRect(ptsMat);
-            const angle = rotatedRect.angle;
-            const size = rotatedRect.size;
-
-            let correctedAngle = angle;
-            if (size.width < size.height) {
-              correctedAngle += 90;
-            }
-
-            if (Math.abs(correctedAngle) > 80) correctedAngle = 0;
-
+          if (Math.abs(angle) > 1.0) {
             const center = new cv.Point(gray.cols / 2, gray.rows / 2);
-            const M = cv.getRotationMatrix2D(center, correctedAngle, 1);
-            const deskewed = new cv.Mat();
+            const M = cv.getRotationMatrix2D(center, angle, 1.0);
+            const rotated = new cv.Mat();
             cv.warpAffine(
               gray,
-              deskewed,
+              rotated,
               M,
               new cv.Size(gray.cols, gray.rows),
               cv.INTER_LINEAR,
               cv.BORDER_CONSTANT,
-              new cv.Scalar()
+              new cv.Scalar(255, 255, 255, 255)
             );
 
-            showIntermediate(deskewed, `Deskewed (angle: ${correctedAngle.toFixed(2)}°)`);
+            showIntermediate(rotated, `Deskewed (angle: ${angle.toFixed(2)}°)`);
             await delay(300);
 
             gray.delete();
-            gray = deskewed;
+            gray = rotated;
             M.delete();
-            ptsMat.delete();
           }
-
-          // --- Gaussian blur ---
-          blurred = new cv.Mat();
-          cv.GaussianBlur(gray, blurred, new cv.Size(0, 0), 1.0);
-          showIntermediate(blurred, "Gaussian Blur");
-          await delay(300);
-
-          // --- Unsharp masking ---
-          sharpened = new cv.Mat();
-          cv.addWeighted(gray, 2.5, blurred, -1.5, 0, sharpened);
-          showIntermediate(sharpened, "Unsharp Masking");
-          await delay(300);
-
-          gray.delete();
-          blurred.delete();
-
-          // --- Optional smoothing ---
-          smoothed = new cv.Mat();
-          cv.GaussianBlur(sharpened, smoothed, new cv.Size(3, 3), 0);
-          showIntermediate(smoothed, "Smoothing Blur");
-          await delay(300);
-
-          sharpened.delete();
-
-          // --- Threshold using Otsu ---
-          thresh = new cv.Mat();
-          cv.threshold(smoothed, thresh, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
-          showIntermediate(thresh, "Threshold Otsu");
-          await delay(300);
-
-          smoothed.delete();
-
-          // --- Inversion (if background still bright) ---
-          const meanThresh = cv.mean(thresh)[0];
-          if (meanThresh > 127) {
-            const inverted = new cv.Mat();
-            cv.bitwise_not(thresh, inverted);
-            showIntermediate(inverted, "Inverted");
-            await delay(300);
-            thresh.delete();
-            thresh = inverted;
-          }
-
-          // --- Final output ---
-          cv.imshow(canvas, thresh);
-          const result = canvas.toDataURL("image/png");
-
-          thresh.delete();
-          src.delete();
-
-          resolve(result);
-        } catch (err) {
-          if (src) src.delete();
-          if (gray) gray.delete();
-          if (blurred) blurred.delete();
-          if (sharpened) sharpened.delete();
-          if (smoothed) smoothed.delete();
-          if (thresh) thresh.delete();
-          console.error("Processing error:", err);
-          reject(err);
         }
-      } catch (outerErr) {
-        console.error("Outer error:", outerErr);
-        reject(outerErr);
+
+        binary.delete();
+        hierarchy.delete();
+        contours.delete();
+
+        // Step 3: Gaussian blur for unsharp masking
+        blurred = new cv.Mat();
+        cv.GaussianBlur(gray, blurred, new cv.Size(0, 0), 1.0);
+        showIntermediate(blurred, "Gaussian Blur");
+        await delay(300);
+
+        // Step 4: Unsharp masking sharpening
+        sharpened = new cv.Mat();
+        cv.addWeighted(gray, 2.5, blurred, -1.5, 0, sharpened);
+        showIntermediate(sharpened, "Unsharp Masking");
+        await delay(300);
+
+        gray.delete();
+        blurred.delete();
+
+        // Step 5: Optional smoothing blur
+        smoothed = new cv.Mat();
+        cv.GaussianBlur(sharpened, smoothed, new cv.Size(3, 3), 0);
+        showIntermediate(smoothed, "Smoothing Blur");
+        await delay(300);
+
+        sharpened.delete();
+
+        // Step 6: Thresholding (Otsu)
+        thresh = new cv.Mat();
+        cv.threshold(smoothed, thresh, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+        showIntermediate(thresh, "Threshold Otsu");
+        await delay(300);
+
+        smoothed.delete();
+
+        // Step 7: Invert if background is too bright
+        const meanVal = cv.mean(thresh)[0];
+        if (meanVal > 127) {
+          const inverted = new cv.Mat();
+          cv.bitwise_not(thresh, inverted);
+          showIntermediate(inverted, "Inverted");
+          await delay(300);
+          thresh.delete();
+          thresh = inverted;
+        }
+
+        // Step 8: Show final result
+        cv.imshow(canvas, thresh);
+        const result = canvas.toDataURL("image/png");
+
+        // Cleanup
+        thresh.delete();
+        src.delete();
+
+        resolve(result);
+      } catch (err) {
+        if (src) src.delete();
+        if (gray) gray.delete();
+        if (blurred) blurred.delete();
+        if (sharpened) sharpened.delete();
+        if (smoothed) smoothed.delete();
+        if (thresh) thresh.delete();
+        reject(err);
       }
     };
 
-    img.onerror = (e) => {
-      console.error("Image load error", e);
-      reject(new Error("Image failed to load."));
-    };
+    img.onerror = reject;
 
-    img.src = typeof imageSrc === "string"
-      ? imageSrc
-      : URL.createObjectURL(imageSrc);
+    img.src =
+      typeof imageSrc === "string"
+        ? imageSrc
+        : URL.createObjectURL(imageSrc);
   });
 }
+
 
 
 // --- Clean text by removing invisible chars and normalizing whitespace, preserve lines ---
