@@ -11,16 +11,60 @@ const tesseractConfig = {
     "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€",
 };
 
-// --- OpenCV.js preprocessing with robust deskew, unsharp masking, adaptive thresholding, and visualization ---
-// Requires OpenCV.js loaded globally as cv.
+// Create a single reusable Tesseract.js worker instance
+const worker = Tesseract.createWorker({
+  logger: (m) => {
+    // Global logger (can be overridden in calls)
+    console.log(m);
+  },
+});
 
+let workerInitialized = false;
+
+// Initialize worker once
+async function initWorker() {
+  if (!workerInitialized) {
+    await worker.load();
+    await worker.loadLanguage("eng+slv");
+    await worker.initialize("eng+slv");
+    await worker.setParameters(tesseractConfig);
+    workerInitialized = true;
+  }
+}
+
+// Terminate worker at end of batch processing
+async function terminateWorker() {
+  if (workerInitialized) {
+    await worker.terminate();
+    workerInitialized = false;
+  }
+}
+
+// OCR helper using the reusable worker with progress callbacks
+async function recognizeImage(imageDataURL, onProgress = () => {}) {
+  await initWorker();
+
+  const { data } = await worker.recognize(imageDataURL, {
+    logger: (m) => {
+      if (m.status && typeof m.progress === "number") {
+        onProgress(m);
+      }
+    },
+  });
+
+  return data.text;
+}
+
+
+// --- OpenCV.js preprocessing with deskew, unsharp masking, adaptive thresholding, visualization ---
+// Requires OpenCV.js globally loaded as 'cv'
 export function preprocessWithOpenCV(imageSrc) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = "Anonymous";
 
     img.onload = async () => {
-      // Container for visualizing intermediate steps
+      // Container div for step visualization
       const container = document.createElement("div");
       container.style.display = "flex";
       container.style.flexWrap = "wrap";
@@ -31,7 +75,7 @@ export function preprocessWithOpenCV(imageSrc) {
       container.style.background = "#fafafa";
       document.body.appendChild(container);
 
-      // Helper to show a Mat on labeled canvas
+      // Helper: show cv.Mat on labeled canvas inside container
       function showIntermediate(mat, label) {
         const wrapper = document.createElement("div");
         wrapper.style.textAlign = "center";
@@ -58,12 +102,12 @@ export function preprocessWithOpenCV(imageSrc) {
         cv.imshow(canvasEl, mat);
       }
 
-      // Delay helper for visualization effect
+      // Async delay to allow browser repaint for visualization
       function delay(ms) {
-        return new Promise(resolve => setTimeout(resolve, ms));
+        return new Promise((resolve) => setTimeout(resolve, ms));
       }
 
-      // Load input image into Mat
+      // Load image into cv.Mat via canvas
       const canvas = document.createElement("canvas");
       canvas.width = img.width;
       canvas.height = img.height;
@@ -72,9 +116,7 @@ export function preprocessWithOpenCV(imageSrc) {
       let src = cv.imread(canvas);
 
       try {
-        // --- Deskew support functions ---
-
-        // Get skew angle in degrees
+        // --- Deskew Helpers ---
         function getSkewAngle(mat) {
           let gray = new cv.Mat();
           if (mat.channels() === 4) {
@@ -83,8 +125,14 @@ export function preprocessWithOpenCV(imageSrc) {
             mat.copyTo(gray);
           }
 
+          // Optional: mild blur before threshold for stable binarization
+          let blurred = new cv.Mat();
+          cv.GaussianBlur(gray, blurred, new cv.Size(3, 3), 0.5);
+
           let binary = new cv.Mat();
-          cv.threshold(gray, binary, 0, 255, cv.THRESH_BINARY_INV + cv.THRESH_OTSU);
+          cv.threshold(blurred, binary, 0, 255, cv.THRESH_BINARY_INV + cv.THRESH_OTSU);
+
+          blurred.delete();
 
           let nonZero = new cv.Mat();
           cv.findNonZero(binary, nonZero);
@@ -94,7 +142,7 @@ export function preprocessWithOpenCV(imageSrc) {
 
           if (nonZero.rows === 0) {
             nonZero.delete();
-            return 0; // no text detected
+            return 0; // no text found
           }
 
           let points = new cv.Mat();
@@ -104,14 +152,12 @@ export function preprocessWithOpenCV(imageSrc) {
           let rect = cv.minAreaRect(points);
           points.delete();
 
-          // Angle correction
           let angle = rect.angle;
           if (angle < -45) angle += 90;
 
           return angle;
         }
 
-        // Rotate image by angle degrees around center
         function rotateImage(mat, angle) {
           let center = new cv.Point(mat.cols / 2, mat.rows / 2);
           let M = cv.getRotationMatrix2D(center, angle, 1);
@@ -128,27 +174,27 @@ export function preprocessWithOpenCV(imageSrc) {
           return rotated;
         }
 
-        // --- Step 0: Deskew ---
+        // Step 0: Deskew image
         const angle = getSkewAngle(src);
         let deskewed = angle !== 0 ? rotateImage(src, -angle) : src;
         if (angle !== 0) src.delete();
         showIntermediate(deskewed, `Deskewed (Angle ${angle.toFixed(2)}°)`);
         await delay(300);
 
-        // --- Step 1: Grayscale ---
+        // Step 1: Grayscale conversion
         let gray = new cv.Mat();
         cv.cvtColor(deskewed, gray, cv.COLOR_RGBA2GRAY);
         if (deskewed !== src) deskewed.delete();
         showIntermediate(gray, "Grayscale");
         await delay(300);
 
-        // --- Step 2: Gaussian Blur (mask for unsharp masking) ---
+        // Step 2: Gaussian blur (mask for unsharp masking)
         let blurred = new cv.Mat();
         cv.GaussianBlur(gray, blurred, new cv.Size(0, 0), 1.0);
         showIntermediate(blurred, "Gaussian Blur");
         await delay(300);
 
-        // --- Step 3: Unsharp Masking sharpening ---
+        // Step 3: Unsharp masking sharpening
         const strength = 1.5;
         let sharpened = new cv.Mat();
         cv.addWeighted(gray, 1.0 + strength, blurred, -strength, 0, sharpened);
@@ -158,7 +204,7 @@ export function preprocessWithOpenCV(imageSrc) {
         gray.delete();
         blurred.delete();
 
-        // --- Step 4: Mild Gaussian Smoothing (noise reduction) ---
+        // Step 4: Mild Gaussian smoothing for noise reduction
         let smoothed = new cv.Mat();
         cv.GaussianBlur(sharpened, smoothed, new cv.Size(3, 3), 0.3);
         showIntermediate(smoothed, "Smoothing Blur");
@@ -166,7 +212,7 @@ export function preprocessWithOpenCV(imageSrc) {
 
         sharpened.delete();
 
-        // --- Step 5: Adaptive Thresholding ---
+        // Step 5: Adaptive thresholding for better binarization under uneven lighting
         let thresh = new cv.Mat();
         cv.adaptiveThreshold(
           smoothed,
@@ -174,15 +220,15 @@ export function preprocessWithOpenCV(imageSrc) {
           255,
           cv.ADAPTIVE_THRESH_GAUSSIAN_C,
           cv.THRESH_BINARY,
-          11,
-          2
+          11,  // blockSize, odd number
+          2    // constant subtracted from mean
         );
         showIntermediate(thresh, "Adaptive Threshold");
         await delay(300);
 
         smoothed.delete();
 
-        // --- Step 6: Invert if background is bright ---
+        // Step 6: Invert image if background is bright
         const meanBrightness = cv.mean(thresh)[0];
         if (meanBrightness > 127) {
           let inverted = new cv.Mat();
@@ -193,7 +239,7 @@ export function preprocessWithOpenCV(imageSrc) {
           thresh = inverted;
         }
 
-        // --- Final: Show processed image ---
+        // Final: Show processed image on canvas and resolve as PNG data URL
         cv.imshow(canvas, thresh);
         thresh.delete();
 
@@ -213,10 +259,10 @@ export function preprocessWithOpenCV(imageSrc) {
 export function cleanAndMergeText(rawText) {
   if (!rawText) return "";
 
-  // Replace invisible chars, normalize spaces and trim lines
+  // Replace invisible characters, normalize spaces and trim lines
   return rawText
-    .replace(/\u00A0/g, " ") // non-breaking space to normal space
-    .replace(/[\u200B-\u200D\uFEFF]/g, "") // zero-width chars removed
+    .replace(/\u00A0/g, " ") // non-breaking space to space
+    .replace(/[\u200B-\u200D\uFEFF]/g, "") // zero width chars removed
     .replace(/\t/g, " ")
     .replace(/[ ]{2,}/g, " ")
     .split("\n")
@@ -225,55 +271,47 @@ export function cleanAndMergeText(rawText) {
     .join("\n");
 }
 
-// --- No arbitrary merging - just a pass-through for now (adjust if needed) ---
+// --- Placeholder for merging lines if needed ---
 export function mergeItemLines(rawText) {
   return rawText || "";
 }
 
-// --- Position-aware text extraction from a single PDF page ---
-// Clusters text items by their Y position to reconstruct lines
+// --- Position-aware text extraction from a PDF page ---
+// Cluster text items by Y position to reconstruct lines cleanly
 export async function extractTextLinesFromPDFPage(page) {
   const textContent = await page.getTextContent();
   const items = textContent.items;
 
-  // Map of y position to array of text items belonging to that line
-  // Use a flexible grouping to handle small y variations
   const linesMap = new Map();
+  const yThreshold = 2; // Vertical grouping threshold (PDF units)
 
-  // Vertical grouping threshold in PDF units (tweak if needed)
-  const yThreshold = 2;
-
-  // Helper function to find existing key within threshold or add new
   function findOrAddLineKey(y) {
     for (let key of linesMap.keys()) {
       if (Math.abs(key - y) <= yThreshold) {
         return key;
       }
     }
-    // No existing close key found, add new
     linesMap.set(y, []);
     return y;
   }
 
   items.forEach((item) => {
-    // y coordinate is normally transform[5]
-    const y = item.transform[5];
+    const y = item.transform[5]; // y coordinate
     const key = findOrAddLineKey(y);
     linesMap.get(key).push(item);
   });
 
-  // Sort line Ys from top (largest y) to bottom (smallest y)
+  // Sort keys descending for top-to-bottom lines
   const sortedYs = Array.from(linesMap.keys()).sort((a, b) => b - a);
 
   const finalLines = [];
 
   for (const y of sortedYs) {
     const lineItems = linesMap.get(y);
-    // Sort items left to right by x = transform[4]
+    // Sort left to right by x coordinate
     const sortedItems = lineItems.sort((a, b) => a.transform[4] - b.transform[4]);
 
-    // Join text item strings with a space (adjust glue logic if needed)
-    const lineText = sortedItems.map((item) => item.str).join(" ").trim();
+    const lineText = sortedItems.map(item => item.str).join(" ").trim();
 
     if (lineText) finalLines.push(lineText);
   }
@@ -281,9 +319,7 @@ export async function extractTextLinesFromPDFPage(page) {
   return finalLines.join("\n");
 }
 
-// --- Extract text from a PDF file, process pages via position-aware extraction ---
-
-// Helper to update UI progress bar and status text
+// --- Update UI progress bar and status text ---
 function updateOCRProgressUI(status, progressFraction) {
   const progressBar = document.getElementById("ocr-progress-bar");
   const statusText = document.getElementById("ocr-status-text");
@@ -293,6 +329,7 @@ function updateOCRProgressUI(status, progressFraction) {
   }
 }
 
+// --- Process PDF file: extract text or OCR pages as fallback ---
 export async function processPDF(file, onProgress = () => {}) {
   const reader = new FileReader();
 
@@ -301,18 +338,21 @@ export async function processPDF(file, onProgress = () => {}) {
       try {
         const pdf = await getDocument({ data: reader.result }).promise;
 
+        await initWorker(); // Init Tesseract worker once
+
         let fullText = "";
         const previews = [];
 
         for (let i = 1; i <= pdf.numPages; i++) {
           const page = await pdf.getPage(i);
 
-          // Extract lines with position-aware method
+          // Attempt position-aware text extraction first
           const extractedText = await extractTextLinesFromPDFPage(page);
 
           if (extractedText && extractedText.length > 20) {
             fullText += `\n\n--- Page ${i} ---\n${extractedText}`;
           } else {
+            // Render page as image and OCR
             const viewport = page.getViewport({ scale: 3 });
             const canvas = document.createElement("canvas");
             const context = canvas.getContext("2d");
@@ -327,36 +367,31 @@ export async function processPDF(file, onProgress = () => {}) {
 
             const preprocessed = await preprocessWithOpenCV(image);
 
-            const ocrResult = await Tesseract.recognize(preprocessed, "eng+slv", {
-              logger: (m) => {
-                if (m.status && typeof m.progress === "number") {
-                  const statusMsg = `Page ${i}/${pdf.numPages} - ${m.status}`;
-                  console.log(`OCR Status: ${statusMsg}, Progress: ${(m.progress * 100).toFixed(1)}%`);
-                  updateOCRProgressUI(statusMsg, m.progress);
-                } else {
-                  console.log(m);
-                }
-                onProgress(m);
-              },
-              ...tesseractConfig,
+            const rawText = await recognizeImage(preprocessed, (m) => {
+              if (m.status && typeof m.progress === "number") {
+                const statusMsg = `Page ${i}/${pdf.numPages} - ${m.status}`;
+                updateOCRProgressUI(statusMsg, m.progress);
+                console.log(`OCR Status: ${statusMsg}, Progress: ${(m.progress * 100).toFixed(1)}%`);
+              }
+              onProgress(m);
             });
 
-            const cleanedOCRText = cleanAndMergeText(ocrResult.data.text);
+            const cleanedOCRText = cleanAndMergeText(rawText);
             fullText += `\n\n--- Page ${i} (OCR) ---\n${cleanedOCRText}`;
           }
 
-          // Update page-level progress in UI
           updateOCRProgressUI(`Processing page ${i} of ${pdf.numPages}`, i / pdf.numPages);
-
           onProgress({ status: "page", page: i, totalPages: pdf.numPages, progress: i / pdf.numPages });
         }
 
-        // Final UI update on complete
+        await terminateWorker(); // Terminate after all pages done
+
         updateOCRProgressUI("OCR complete", 1);
         setTimeout(() => updateOCRProgressUI("", 0), 2000);
 
         resolve({ text: fullText.trim(), previews });
       } catch (err) {
+        await terminateWorker();
         reject(err);
       }
     };
@@ -365,28 +400,22 @@ export async function processPDF(file, onProgress = () => {}) {
   });
 }
 
-// --- OCR + preprocessing for direct image files ---
+// --- OCR processing for direct images ---
 export async function processImage(imageSrc, onProgress = () => {}) {
   const preprocessedDataURL = await preprocessWithOpenCV(imageSrc);
 
-  const result = await Tesseract.recognize(preprocessedDataURL, "eng+slv", {
-    logger: (m) => {
-      if (m.status && typeof m.progress === "number") {
-        console.log(`OCR Status: ${m.status}, Progress: ${(m.progress * 100).toFixed(1)}%`);
-        updateOCRProgressUI(m.status, m.progress);
-      } else {
-        console.log(m);
-      }
-      onProgress(m);
-    },
-    ...tesseractConfig,
+  const rawText = await recognizeImage(preprocessedDataURL, (m) => {
+    if (m.status && typeof m.progress === "number") {
+      console.log(`OCR Status: ${m.status}, Progress: ${(m.progress * 100).toFixed(1)}%`);
+      updateOCRProgressUI(m.status, m.progress);
+    }
+    onProgress(m);
   });
 
-  const cleaned = cleanAndMergeText(result.data.text);
-  
-  // Reset UI after OCR done
+  const cleaned = cleanAndMergeText(rawText);
+
   updateOCRProgressUI("OCR complete", 1);
-  setTimeout(() => updateOCRProgressUI("", 0), 2000); // clear after 2s
+  setTimeout(() => updateOCRProgressUI("", 0), 2000);
 
   return cleaned;
 }
