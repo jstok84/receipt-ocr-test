@@ -11,10 +11,7 @@ const tesseractConfig = {
     "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€",
 };
 
-// --- OpenCV.js preprocessing with deskew, unsharp masking, adaptive threshold, and visualization ---
-// Requires OpenCV.js loaded globally as cv
-
-// --- OpenCV.js preprocessing with robust deskew, unsharp masking, adaptive thresholding, and visualizations ---
+// --- OpenCV.js preprocessing with robust deskew, unsharp masking, adaptive thresholding, and visualization ---
 // Requires OpenCV.js loaded globally as cv.
 
 export function preprocessWithOpenCV(imageSrc) {
@@ -23,7 +20,7 @@ export function preprocessWithOpenCV(imageSrc) {
     img.crossOrigin = "Anonymous";
 
     img.onload = async () => {
-      // Container div for intermediate step canvases
+      // Container for visualizing intermediate steps
       const container = document.createElement("div");
       container.style.display = "flex";
       container.style.flexWrap = "wrap";
@@ -34,7 +31,7 @@ export function preprocessWithOpenCV(imageSrc) {
       container.style.background = "#fafafa";
       document.body.appendChild(container);
 
-      // Helper function to display cv.Mat on a labeled canvas inside container
+      // Helper to show a Mat on labeled canvas
       function showIntermediate(mat, label) {
         const wrapper = document.createElement("div");
         wrapper.style.textAlign = "center";
@@ -61,12 +58,12 @@ export function preprocessWithOpenCV(imageSrc) {
         cv.imshow(canvasEl, mat);
       }
 
-      // Awaitable delay helper to yield to browser render cycle
+      // Delay helper for visualization effect
       function delay(ms) {
         return new Promise(resolve => setTimeout(resolve, ms));
       }
 
-      // Load original image into cv.Mat
+      // Load input image into Mat
       const canvas = document.createElement("canvas");
       canvas.width = img.width;
       canvas.height = img.height;
@@ -75,22 +72,20 @@ export function preprocessWithOpenCV(imageSrc) {
       let src = cv.imread(canvas);
 
       try {
-        // --- Deskew Helpers ---
+        // --- Deskew support functions ---
 
-        // Returns skew angle in degrees (positive means clockwise rotation needed)
-        function getSkewAngle(srcMat) {
+        // Get skew angle in degrees
+        function getSkewAngle(mat) {
           let gray = new cv.Mat();
-          if (srcMat.channels() === 4) {
-            cv.cvtColor(srcMat, gray, cv.COLOR_RGBA2GRAY);
+          if (mat.channels() === 4) {
+            cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY);
           } else {
-            srcMat.copyTo(gray);
+            mat.copyTo(gray);
           }
 
-          // Threshold inverted: text pixels become white
           let binary = new cv.Mat();
           cv.threshold(gray, binary, 0, 255, cv.THRESH_BINARY_INV + cv.THRESH_OTSU);
 
-          // Get non-zero (foreground) pixel coordinates efficiently
           let nonZero = new cv.Mat();
           cv.findNonZero(binary, nonZero);
 
@@ -99,35 +94,33 @@ export function preprocessWithOpenCV(imageSrc) {
 
           if (nonZero.rows === 0) {
             nonZero.delete();
-            return 0; // no skew if no foreground pixels
+            return 0; // no text detected
           }
 
           let points = new cv.Mat();
           nonZero.copyTo(points);
           nonZero.delete();
 
-          // Calculate minimum area rotated rectangle
           let rect = cv.minAreaRect(points);
           points.delete();
 
+          // Angle correction
           let angle = rect.angle;
-          // Adjust angle as per OpenCV minAreaRect docs
-          if (angle < -45) {
-            angle += 90;
-          }
+          if (angle < -45) angle += 90;
+
           return angle;
         }
 
-        // Rotate image around center by angle degrees
-        function rotateImage(srcMat, angle) {
-          let center = new cv.Point(srcMat.cols / 2, srcMat.rows / 2);
+        // Rotate image by angle degrees around center
+        function rotateImage(mat, angle) {
+          let center = new cv.Point(mat.cols / 2, mat.rows / 2);
           let M = cv.getRotationMatrix2D(center, angle, 1);
           let rotated = new cv.Mat();
           cv.warpAffine(
-            srcMat,
+            mat,
             rotated,
             M,
-            new cv.Size(srcMat.cols, srcMat.rows),
+            new cv.Size(mat.cols, mat.rows),
             cv.INTER_LINEAR,
             cv.BORDER_REPLICATE
           );
@@ -149,14 +142,14 @@ export function preprocessWithOpenCV(imageSrc) {
         showIntermediate(gray, "Grayscale");
         await delay(300);
 
-        // --- Step 2: Gaussian blur for unsharp masking mask creation ---
+        // --- Step 2: Gaussian Blur (mask for unsharp masking) ---
         let blurred = new cv.Mat();
         cv.GaussianBlur(gray, blurred, new cv.Size(0, 0), 1.0);
         showIntermediate(blurred, "Gaussian Blur");
         await delay(300);
 
-        // --- Step 3: Unsharp Masking for sharpening ---
-        const strength = 1.5; // tune as needed
+        // --- Step 3: Unsharp Masking sharpening ---
+        const strength = 1.5;
         let sharpened = new cv.Mat();
         cv.addWeighted(gray, 1.0 + strength, blurred, -strength, 0, sharpened);
         showIntermediate(sharpened, "Unsharp Masking");
@@ -165,7 +158,7 @@ export function preprocessWithOpenCV(imageSrc) {
         gray.delete();
         blurred.delete();
 
-        // --- Step 4: Mild Gaussian smoothing (slight noise reduction) ---
+        // --- Step 4: Mild Gaussian Smoothing (noise reduction) ---
         let smoothed = new cv.Mat();
         cv.GaussianBlur(sharpened, smoothed, new cv.Size(3, 3), 0.3);
         showIntermediate(smoothed, "Smoothing Blur");
@@ -173,7 +166,7 @@ export function preprocessWithOpenCV(imageSrc) {
 
         sharpened.delete();
 
-        // --- Step 5: Adaptive Thresholding (handles uneven illumination better than Otsu) ---
+        // --- Step 5: Adaptive Thresholding ---
         let thresh = new cv.Mat();
         cv.adaptiveThreshold(
           smoothed,
@@ -181,15 +174,15 @@ export function preprocessWithOpenCV(imageSrc) {
           255,
           cv.ADAPTIVE_THRESH_GAUSSIAN_C,
           cv.THRESH_BINARY,
-          11,  // Block size (odd number, tweak for document size)
-          2    // Constant subtracted from mean (tune for contrast)
+          11,
+          2
         );
         showIntermediate(thresh, "Adaptive Threshold");
         await delay(300);
 
         smoothed.delete();
 
-        // --- Step 6: Invert image if background is bright ---
+        // --- Step 6: Invert if background is bright ---
         const meanBrightness = cv.mean(thresh)[0];
         if (meanBrightness > 127) {
           let inverted = new cv.Mat();
@@ -200,11 +193,10 @@ export function preprocessWithOpenCV(imageSrc) {
           thresh = inverted;
         }
 
-        // --- Final: Show processed image on original canvas ---
+        // --- Final: Show processed image ---
         cv.imshow(canvas, thresh);
         thresh.delete();
 
-        // Return final image as data URL for OCR input
         resolve(canvas.toDataURL("image/png"));
       } catch (error) {
         src.delete();
@@ -216,8 +208,6 @@ export function preprocessWithOpenCV(imageSrc) {
     img.src = typeof imageSrc === "string" ? imageSrc : URL.createObjectURL(imageSrc);
   });
 }
-
-
 
 // --- Clean text by removing invisible chars and normalizing whitespace, preserve lines ---
 export function cleanAndMergeText(rawText) {
