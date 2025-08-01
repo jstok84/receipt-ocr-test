@@ -22,12 +22,6 @@ export function preprocessWithOpenCV(imageSrc) {
     img.crossOrigin = "Anonymous";
 
     img.onload = async () => {
-      if (cv.getBuildInformation === undefined) {
-        await new Promise((res) => {
-          cv['onRuntimeInitialized'] = res;
-        });
-      }
-
       try {
         if (img.width === 0 || img.height === 0) {
           reject(new Error("Image has invalid dimensions (0x0)."));
@@ -82,37 +76,30 @@ export function preprocessWithOpenCV(imageSrc) {
         const ctx = canvas.getContext("2d");
         ctx.drawImage(img, 0, 0);
 
-        const pixel = ctx.getImageData(0, 0, 1, 1).data;
-        console.log("Top-left pixel RGBA:", pixel);
-
         let src, gray, blurred, sharpened, smoothed, thresh;
 
         try {
           src = cv.imread(canvas);
           if (src.empty()) {
-            reject(new Error("cv.imread() returned empty Mat. Image might be tainted or invalid."));
+            reject(new Error("cv.imread() returned an empty image."));
             return;
           }
-
-          console.log("Image size:", src.cols, src.rows);
 
           gray = new cv.Mat();
-          try {
-            cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-          } catch (err) {
-            reject(new Error("cv.cvtColor failed to convert image to grayscale."));
-            return;
-          }
-
-          if (gray.empty()) {
-            reject(new Error("Grayscale image is empty."));
-            return;
-          }
-
+          cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
           showIntermediate(gray, "Grayscale");
           await delay(300);
 
-          // --- Manual replacement for findNonZero ---
+          // Invert gray if background is brighter
+          const meanGray = cv.mean(gray)[0];
+          if (meanGray > 127) {
+            const invertedGray = new cv.Mat();
+            cv.bitwise_not(gray, invertedGray);
+            gray.delete();
+            gray = invertedGray;
+          }
+
+          // --- Deskew: use bounding box angle ---
           const nonZeroPoints = [];
           for (let y = 0; y < gray.rows; y++) {
             for (let x = 0; x < gray.cols; x++) {
@@ -123,15 +110,21 @@ export function preprocessWithOpenCV(imageSrc) {
           }
 
           if (nonZeroPoints.length > 0) {
-            const flatArray = nonZeroPoints.flatMap(p => [p.x, p.y]);
-            const ptsMat = cv.matFromArray(nonZeroPoints.length, 1, cv.CV_32SC2, flatArray);
+            const flat = nonZeroPoints.flatMap(p => [p.x, p.y]);
+            const ptsMat = cv.matFromArray(nonZeroPoints.length, 1, cv.CV_32SC2, flat);
             const rotatedRect = cv.minAreaRect(ptsMat);
-            let angle = rotatedRect.angle;
+            const angle = rotatedRect.angle;
+            const size = rotatedRect.size;
 
-            if (angle < -45) angle += 90;
+            let correctedAngle = angle;
+            if (size.width < size.height) {
+              correctedAngle += 90;
+            }
+
+            if (Math.abs(correctedAngle) > 80) correctedAngle = 0;
 
             const center = new cv.Point(gray.cols / 2, gray.rows / 2);
-            const M = cv.getRotationMatrix2D(center, angle, 1);
+            const M = cv.getRotationMatrix2D(center, correctedAngle, 1);
             const deskewed = new cv.Mat();
             cv.warpAffine(
               gray,
@@ -143,7 +136,7 @@ export function preprocessWithOpenCV(imageSrc) {
               new cv.Scalar()
             );
 
-            showIntermediate(deskewed, `Deskewed (angle: ${angle.toFixed(2)}°)`);
+            showIntermediate(deskewed, `Deskewed (angle: ${correctedAngle.toFixed(2)}°)`);
             await delay(300);
 
             gray.delete();
@@ -183,9 +176,9 @@ export function preprocessWithOpenCV(imageSrc) {
 
           smoothed.delete();
 
-          // --- Inversion ---
-          const meanVal = cv.mean(thresh)[0];
-          if (meanVal > 127) {
+          // --- Inversion (if background still bright) ---
+          const meanThresh = cv.mean(thresh)[0];
+          if (meanThresh > 127) {
             const inverted = new cv.Mat();
             cv.bitwise_not(thresh, inverted);
             showIntermediate(inverted, "Inverted");
@@ -196,12 +189,12 @@ export function preprocessWithOpenCV(imageSrc) {
 
           // --- Final output ---
           cv.imshow(canvas, thresh);
-          const resultDataURL = canvas.toDataURL("image/png");
+          const result = canvas.toDataURL("image/png");
 
           thresh.delete();
           src.delete();
 
-          resolve(resultDataURL);
+          resolve(result);
         } catch (err) {
           if (src) src.delete();
           if (gray) gray.delete();
@@ -228,6 +221,7 @@ export function preprocessWithOpenCV(imageSrc) {
       : URL.createObjectURL(imageSrc);
   });
 }
+
 
 // --- Clean text by removing invisible chars and normalizing whitespace, preserve lines ---
 export function cleanAndMergeText(rawText) {
