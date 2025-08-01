@@ -11,26 +11,7 @@ const tesseractConfig = {
     "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€",
 };
 
-// --- Wait for OpenCV.js to be ready, returns a Promise ---
-function waitForOpenCVReady() {
-  return new Promise((resolve, reject) => {
-    if (typeof cv !== "undefined" && cv && cv.imread) {
-      // Already ready
-      resolve();
-    } else {
-      // Wait for onRuntimeInitialized
-      cv['onRuntimeInitialized'] = () => {
-        console.log("✅ OpenCV.js fully initialized");
-        resolve();
-      };
-    }
-  });
-}
-
-// --- Your preprocessing function, now async and waits for cv ---
-export async function preprocessWithOpenCV(imageSrc) {
-  await waitForOpenCVReady();
-
+export function preprocessWithOpenCV(imageSrc) {
   return new Promise((resolve, reject) => {
     if (typeof cv === "undefined" || !cv.imread) {
       reject(new Error("OpenCV.js (cv) is not loaded or initialized."));
@@ -41,6 +22,7 @@ export async function preprocessWithOpenCV(imageSrc) {
     img.crossOrigin = "Anonymous";
 
     img.onload = async () => {
+      // Debug logs
       console.log("Image loaded:", img.width, img.height);
 
       // Container for intermediate canvases visualization
@@ -86,13 +68,27 @@ export async function preprocessWithOpenCV(imageSrc) {
         return new Promise((res) => setTimeout(res, ms));
       }
 
+      // Manual replacement for cv.findNonZero
+      function findNonZeroManual(mat) {
+        const points = [];
+        for (let y = 0; y < mat.rows; y++) {
+          for (let x = 0; x < mat.cols; x++) {
+            if (mat.ucharPtr(y, x)[0] !== 0) {
+              points.push(new cv.Point(x, y));
+            }
+          }
+        }
+        return points;
+      }
+
+      // Draw image on canvas to create cv.Mat
       const canvas = document.createElement("canvas");
       canvas.width = img.width;
       canvas.height = img.height;
       const ctx = canvas.getContext("2d");
       ctx.drawImage(img, 0, 0);
 
-      let src, gray, coords, blurred, sharpened, smoothed, thresh;
+      let src, gray, blurred, sharpened, smoothed, thresh;
 
       try {
         src = cv.imread(canvas);
@@ -102,29 +98,33 @@ export async function preprocessWithOpenCV(imageSrc) {
         cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
         showIntermediate(gray, "Grayscale");
         await delay(300);
+
+        // Step 1.5: Automatic Deskewing - use manual findNonZero replacement
         try {
-          coords = new cv.Mat();
-          cv.findNonZero(gray, coords);
-          
-          if (coords.rows > 0) {
-            let rotatedRect = cv.minAreaRect(coords);
+          const pointsArray = findNonZeroManual(gray);
+
+          if (pointsArray.length > 0) {
+            let rotatedRect = cv.minAreaRect(pointsArray);
             let angle = rotatedRect.angle;
-          
+
             if (angle < -45) angle += 90;
-          
+
+            // Correct angle and rotation direction
             angle = -angle;
-          
+
             let center = new cv.Point(gray.cols / 2, gray.rows / 2);
             let M = cv.getRotationMatrix2D(center, angle, 1);
-          
+
+            // Calculate bounding size after rotation
             const cos = Math.abs(M.doubleAt(0, 0));
             const sin = Math.abs(M.doubleAt(0, 1));
             const newWidth = Math.floor(gray.rows * sin + gray.cols * cos);
             const newHeight = Math.floor(gray.rows * cos + gray.cols * sin);
-          
+
+            // Adjust rotation matrix for translation
             M.doublePtr(0, 2)[0] += newWidth / 2 - center.x;
             M.doublePtr(1, 2)[0] += newHeight / 2 - center.y;
-          
+
             let deskewed = new cv.Mat();
             cv.warpAffine(
               gray,
@@ -135,20 +135,18 @@ export async function preprocessWithOpenCV(imageSrc) {
               cv.BORDER_CONSTANT,
               new cv.Scalar(255, 255, 255, 255)
             );
-          
             showIntermediate(deskewed, `Deskewed (angle: ${angle.toFixed(2)}°)`);
             await delay(300);
-          
+
             gray.delete();
             gray = deskewed;
             M.delete();
           }
-          coords.delete();
-        } catch (e) {
-          console.error("Error during deskewing:", e);
-          if (coords) coords.delete();
+        } catch (deskewErr) {
+          console.error("Error during deskewing:", deskewErr);
+          // Continue without deskewing
         }
-        
+
         // Step 2: Gaussian blur
         blurred = new cv.Mat();
         cv.GaussianBlur(gray, blurred, new cv.Size(0, 0), 1.0);
@@ -191,6 +189,7 @@ export async function preprocessWithOpenCV(imageSrc) {
           thresh = inverted;
         }
 
+        // Show final processed image in main canvas
         cv.imshow(canvas, thresh);
         const result = canvas.toDataURL("image/png");
 
@@ -201,7 +200,6 @@ export async function preprocessWithOpenCV(imageSrc) {
       } catch (err) {
         if (src) src.delete();
         if (gray) gray.delete();
-        if (coords) coords.delete();
         if (blurred) blurred.delete();
         if (sharpened) sharpened.delete();
         if (smoothed) smoothed.delete();
