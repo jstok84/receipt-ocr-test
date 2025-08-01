@@ -11,208 +11,212 @@ const tesseractConfig = {
     "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-/:$€",
 };
 
-export function preprocessWithOpenCV(imageSrc) {
-  return new Promise((resolve, reject) => {
-    if (typeof cv === "undefined" || !cv.imread) {
-      reject(new Error("OpenCV.js (cv) is not loaded or initialized."));
-      return;
-    }
+// Load OpenCV.js in your HTML:
+// <script async src="https://docs.opencv.org/4.x/opencv.js"></script>
 
-    const img = new Image();
-    img.crossOrigin = "Anonymous";
+// Wait for OpenCV to be fully initialized before running any OpenCV-dependent code
+cv['onRuntimeInitialized'] = () => {
+  console.log("✅ OpenCV.js fully initialized");
 
-    img.onload = async () => {
-      const container = document.createElement("div");
-      container.style.display = "flex";
-      container.style.flexWrap = "wrap";
-      container.style.gap = "10px";
-      container.style.margin = "20px 0";
-      container.style.border = "1px solid #ccc";
-      container.style.padding = "10px";
-      container.style.background = "#fafafa";
-      document.body.appendChild(container);
+  // Now you can safely define and use your preprocessing function
 
-      function showIntermediate(mat, label) {
-        const wrapper = document.createElement("div");
-        wrapper.style.textAlign = "center";
-        wrapper.style.fontFamily = "sans-serif";
-        wrapper.style.fontSize = "12px";
-        wrapper.style.maxWidth = "480px";
-        wrapper.style.marginBottom = "10px";
-
-        const labelEl = document.createElement("div");
-        labelEl.textContent = label;
-        labelEl.style.fontWeight = "bold";
-        labelEl.style.marginBottom = "6px";
-
-        const canvasEl = document.createElement("canvas");
-        canvasEl.width = mat.cols;
-        canvasEl.height = mat.rows;
-        canvasEl.style.width = "480px";
-        canvasEl.style.height = "auto";
-        canvasEl.style.border = "1px solid #eee";
-        canvasEl.style.boxShadow = "0 0 6px rgba(0,0,0,0.12)";
-
-        wrapper.appendChild(labelEl);
-        wrapper.appendChild(canvasEl);
-        container.appendChild(wrapper);
-
-        cv.imshow(canvasEl, mat);
+  export function preprocessWithOpenCV(imageSrc) {
+    return new Promise((resolve, reject) => {
+      if (typeof cv === "undefined" || !cv.imread) {
+        reject(new Error("OpenCV.js (cv) is not loaded or initialized."));
+        return;
       }
 
-      function delay(ms) {
-        return new Promise((res) => setTimeout(res, ms));
-      }
+      const img = new Image();
+      img.crossOrigin = "Anonymous";
 
-      const canvas = document.createElement("canvas");
-      canvas.width = img.width;
-      canvas.height = img.height;
-      const ctx = canvas.getContext("2d");
-      ctx.drawImage(img, 0, 0);
+      img.onload = async () => {
+        // Debug logs
+        console.log("Image loaded:", img.width, img.height);
 
-      let src, gray, coords, blurred, sharpened, smoothed, thresh;
+        // Container for intermediate canvases visualization
+        const container = document.createElement("div");
+        container.style.display = "flex";
+        container.style.flexWrap = "wrap";
+        container.style.gap = "10px";
+        container.style.margin = "20px 0";
+        container.style.border = "1px solid #ccc";
+        container.style.padding = "10px";
+        container.style.background = "#fafafa";
+        document.body.appendChild(container);
 
-      try {
-        src = cv.imread(canvas);
+        function showIntermediate(mat, label) {
+          const wrapper = document.createElement("div");
+          wrapper.style.textAlign = "center";
+          wrapper.style.fontFamily = "sans-serif";
+          wrapper.style.fontSize = "12px";
+          wrapper.style.maxWidth = "480px";
+          wrapper.style.marginBottom = "10px";
 
-        // Grayscale
-        gray = new cv.Mat();
-        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-        showIntermediate(gray, "Grayscale");
-        await delay(300);
+          const labelEl = document.createElement("div");
+          labelEl.textContent = label;
+          labelEl.style.fontWeight = "bold";
+          labelEl.style.marginBottom = "6px";
 
-        // Deskew
-        coords = new cv.Mat();
-        cv.findNonZero(gray, coords);
+          const canvasEl = document.createElement("canvas");
+          canvasEl.width = mat.cols;
+          canvasEl.height = mat.rows;
+          canvasEl.style.width = "480px";
+          canvasEl.style.height = "auto";
+          canvasEl.style.border = "1px solid #eee";
+          canvasEl.style.boxShadow = "0 0 6px rgba(0,0,0,0.12)";
 
-        if (coords.rows > 0) {
-          let rotatedRect = cv.minAreaRect(coords);
-          let angle = rotatedRect.angle;
+          wrapper.appendChild(labelEl);
+          wrapper.appendChild(canvasEl);
+          container.appendChild(wrapper);
 
-          if (angle < -45) angle += 90;
+          cv.imshow(canvasEl, mat);
+        }
 
-          console.log(`Detected deskew angle: ${angle.toFixed(2)}°`);
+        function delay(ms) {
+          return new Promise((res) => setTimeout(res, ms));
+        }
 
-          let center = new cv.Point(gray.cols / 2, gray.rows / 2);
-          let M = cv.getRotationMatrix2D(center, angle, 1);
-          let deskewed = new cv.Mat();
-          cv.warpAffine(
-            gray,
-            deskewed,
-            M,
-            new cv.Size(gray.cols, gray.rows),
-            cv.INTER_LINEAR,
-            cv.BORDER_CONSTANT,
-            new cv.Scalar()
-          );
+        // Draw image on canvas to create cv.Mat
+        const canvas = document.createElement("canvas");
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0);
 
-          showIntermediate(deskewed, `Deskewed (angle: ${angle.toFixed(2)}°)`);
+        let src, gray, coords, blurred, sharpened, smoothed, thresh;
+
+        try {
+          src = cv.imread(canvas);
+
+          // Step 1: Grayscale
+          gray = new cv.Mat();
+          cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+          showIntermediate(gray, "Grayscale");
           await delay(300);
 
-          // --- Orientation fix to preserve portrait layout ---
-          const wasPortrait = img.height > img.width;
-          const nowLandscape = deskewed.cols > deskewed.rows;
+          // Step 1.5: Automatic Deskewing
+          coords = new cv.Mat();
+          cv.findNonZero(gray, coords);
 
-          console.log(`Original image is ${wasPortrait ? "portrait" : "landscape"}`);
-          console.log(`Deskewed image is ${nowLandscape ? "landscape" : "portrait"}`);
+          if (coords.rows > 0) {
+            let rotatedRect = cv.minAreaRect(coords);
+            let angle = rotatedRect.angle;
 
-          if (wasPortrait && nowLandscape) {
-            console.log("Fixing orientation by rotating deskewed image -90 degrees");
+            if (angle < -45) angle += 90;
 
-            const corrected = new cv.Mat();
-            cv.transpose(deskewed, corrected);  // swap cols and rows
-            cv.flip(corrected, corrected, 0);   // rotate 90 CCW (-90 degrees)
-            deskewed.delete();
-            deskewed = corrected;
+            // FIX: Correct angle and rotation direction
+            angle = -angle; // invert angle to rotate properly
 
-            showIntermediate(deskewed, "Restored to Portrait Orientation");
+            let center = new cv.Point(gray.cols / 2, gray.rows / 2);
+            let M = cv.getRotationMatrix2D(center, angle, 1);
+
+            let deskewed = new cv.Mat();
+
+            // To handle rotated size properly, calculate bounding size after rotation
+            const cos = Math.abs(M.doubleAt(0, 0));
+            const sin = Math.abs(M.doubleAt(0, 1));
+            const newWidth = Math.floor(gray.rows * sin + gray.cols * cos);
+            const newHeight = Math.floor(gray.rows * cos + gray.cols * sin);
+
+            // Adjust the rotation matrix to take into account translation
+            M.doublePtr(0, 2)[0] += newWidth / 2 - center.x;
+            M.doublePtr(1, 2)[0] += newHeight / 2 - center.y;
+
+            cv.warpAffine(
+              gray,
+              deskewed,
+              M,
+              new cv.Size(newWidth, newHeight),
+              cv.INTER_LINEAR,
+              cv.BORDER_CONSTANT,
+              new cv.Scalar(255, 255, 255, 255) // white background for padding
+            );
+            showIntermediate(deskewed, `Deskewed (angle: ${angle.toFixed(2)}°)`);
             await delay(300);
+
+            gray.delete();
+            gray = deskewed;
+            M.delete();
           }
-          // -----------------------------------------------------
+          coords.delete();
+
+          // Step 2: Gaussian blur
+          blurred = new cv.Mat();
+          cv.GaussianBlur(gray, blurred, new cv.Size(0, 0), 1.0);
+          showIntermediate(blurred, "Gaussian Blur");
+          await delay(300);
+
+          // Step 3: Unsharp masking sharpening
+          sharpened = new cv.Mat();
+          cv.addWeighted(gray, 2.5, blurred, -1.5, 0, sharpened);
+          showIntermediate(sharpened, "Unsharp Masking");
+          await delay(300);
 
           gray.delete();
-          gray = deskewed;
-          M.delete();
-        }
+          blurred.delete();
 
-        coords.delete();
-
-        // Gaussian blur
-        blurred = new cv.Mat();
-        cv.GaussianBlur(gray, blurred, new cv.Size(0, 0), 1.0);
-        showIntermediate(blurred, "Gaussian Blur");
-        await delay(300);
-
-        // Unsharp masking
-        sharpened = new cv.Mat();
-        cv.addWeighted(gray, 2.5, blurred, -1.5, 0, sharpened);
-        showIntermediate(sharpened, "Unsharp Masking");
-        await delay(300);
-
-        gray.delete();
-        blurred.delete();
-
-        // Optional smoothing
-        smoothed = new cv.Mat();
-        cv.GaussianBlur(sharpened, smoothed, new cv.Size(3, 3), 0);
-        showIntermediate(smoothed, "Smoothing Blur");
-        await delay(300);
-
-        sharpened.delete();
-
-        // Threshold
-        thresh = new cv.Mat();
-        cv.threshold(smoothed, thresh, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
-        showIntermediate(thresh, "Threshold Otsu");
-        await delay(300);
-
-        smoothed.delete();
-
-        // Invert if needed
-        const meanVal = cv.mean(thresh)[0];
-        console.log(`Mean pixel value after threshold: ${meanVal}`);
-
-        if (meanVal > 127) {
-          const inverted = new cv.Mat();
-          cv.bitwise_not(thresh, inverted);
-          showIntermediate(inverted, "Inverted");
+          // Step 4: Optional smoothing blur (Gaussian)
+          smoothed = new cv.Mat();
+          cv.GaussianBlur(sharpened, smoothed, new cv.Size(3, 3), 0);
+          showIntermediate(smoothed, "Smoothing Blur");
           await delay(300);
+
+          sharpened.delete();
+
+          // Step 5: Threshold using Otsu's method
+          thresh = new cv.Mat();
+          cv.threshold(smoothed, thresh, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+          showIntermediate(thresh, "Threshold Otsu");
+          await delay(300);
+
+          smoothed.delete();
+
+          // Step 6: Invert if background brightness is high
+          const meanVal = cv.mean(thresh)[0];
+          if (meanVal > 127) {
+            const inverted = new cv.Mat();
+            cv.bitwise_not(thresh, inverted);
+            showIntermediate(inverted, "Inverted");
+            await delay(300);
+            thresh.delete();
+            thresh = inverted;
+          }
+
+          // Show final processed image in main canvas
+          cv.imshow(canvas, thresh);
+          const result = canvas.toDataURL("image/png");
+
           thresh.delete();
-          thresh = inverted;
+          src.delete();
+
+          resolve(result);
+        } catch (err) {
+          if (src) src.delete();
+          if (gray) gray.delete();
+          if (coords) coords.delete();
+          if (blurred) blurred.delete();
+          if (sharpened) sharpened.delete();
+          if (smoothed) smoothed.delete();
+          if (thresh) thresh.delete();
+          reject(err);
         }
+      };
 
-        // Final output
-        cv.imshow(canvas, thresh);
-        const result = canvas.toDataURL("image/png");
+      img.onerror = (e) => {
+        console.error("Image load error:", e);
+        reject(new Error("Failed to load image"));
+      };
 
-        thresh.delete();
-        src.delete();
+      img.src = typeof imageSrc === "string" ? imageSrc : URL.createObjectURL(imageSrc);
+    });
+  };
 
-        resolve(result);
-      } catch (err) {
-        console.error("Processing error:", err);
-        if (src) src.delete();
-        if (gray) gray.delete();
-        if (coords) coords.delete();
-        if (blurred) blurred.delete();
-        if (sharpened) sharpened.delete();
-        if (smoothed) smoothed.delete();
-        if (thresh) thresh.delete();
-        reject(err);
-      }
-    };
+  // Example usage:
+  // preprocessWithOpenCV('some-image-url-or-file').then(...).catch(console.error);
 
-    img.onerror = (e) => {
-      console.error("Image load error:", e);
-      reject(new Error("Failed to load image."));
-    };
+};
 
-    img.src =
-      typeof imageSrc === "string"
-        ? imageSrc
-        : URL.createObjectURL(imageSrc);
-  });
-}
 
 
 
