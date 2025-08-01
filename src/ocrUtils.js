@@ -22,7 +22,6 @@ export function preprocessWithOpenCV(imageSrc) {
     img.crossOrigin = "Anonymous";
 
     img.onload = async () => {
-      // Debug logs
       console.log("Image loaded:", img.width, img.height);
 
       // Container for intermediate canvases visualization
@@ -68,7 +67,7 @@ export function preprocessWithOpenCV(imageSrc) {
         return new Promise((res) => setTimeout(res, ms));
       }
 
-      // Manual replacement for cv.findNonZero
+      // Manual replacement for cv.findNonZero since it's missing
       function findNonZeroManual(mat) {
         const points = [];
         for (let y = 0; y < mat.rows; y++) {
@@ -79,6 +78,16 @@ export function preprocessWithOpenCV(imageSrc) {
           }
         }
         return points;
+      }
+
+      // Convert array of cv.Point to cv.Mat required by minAreaRect
+      function pointsArrayToMat(points) {
+        const mat = new cv.Mat(points.length, 1, cv.CV_32SC2);
+        for (let i = 0; i < points.length; i++) {
+          mat.intPtr(i, 0)[0] = points[i].x;
+          mat.intPtr(i, 0)[1] = points[i].y;
+        }
+        return mat;
       }
 
       // Draw image on canvas to create cv.Mat
@@ -99,29 +108,32 @@ export function preprocessWithOpenCV(imageSrc) {
         showIntermediate(gray, "Grayscale");
         await delay(300);
 
-        // Step 1.5: Automatic Deskewing - use manual findNonZero replacement
+        // Step 1.5: Automatic Deskewing using manual findNonZero
         try {
           const pointsArray = findNonZeroManual(gray);
+          console.log(`findNonZeroManual found ${pointsArray.length} points`);
 
           if (pointsArray.length > 0) {
-            let rotatedRect = cv.minAreaRect(pointsArray);
+            const pointsMat = pointsArrayToMat(pointsArray);
+            console.log("Converted points array to Mat:", pointsMat.rows, pointsMat.cols, pointsMat.type());
+
+            let rotatedRect = cv.minAreaRect(pointsMat);
+            pointsMat.delete();
+
             let angle = rotatedRect.angle;
+            console.log("Rotated rect angle:", angle);
 
             if (angle < -45) angle += 90;
-
-            // Correct angle and rotation direction
-            angle = -angle;
+            angle = -angle; // invert for correct rotation direction
 
             let center = new cv.Point(gray.cols / 2, gray.rows / 2);
             let M = cv.getRotationMatrix2D(center, angle, 1);
 
-            // Calculate bounding size after rotation
             const cos = Math.abs(M.doubleAt(0, 0));
             const sin = Math.abs(M.doubleAt(0, 1));
             const newWidth = Math.floor(gray.rows * sin + gray.cols * cos);
             const newHeight = Math.floor(gray.rows * cos + gray.cols * sin);
 
-            // Adjust rotation matrix for translation
             M.doublePtr(0, 2)[0] += newWidth / 2 - center.x;
             M.doublePtr(1, 2)[0] += newHeight / 2 - center.y;
 
@@ -133,7 +145,7 @@ export function preprocessWithOpenCV(imageSrc) {
               new cv.Size(newWidth, newHeight),
               cv.INTER_LINEAR,
               cv.BORDER_CONSTANT,
-              new cv.Scalar(255, 255, 255, 255)
+              new cv.Scalar(255, 255, 255, 255) // white background
             );
             showIntermediate(deskewed, `Deskewed (angle: ${angle.toFixed(2)}°)`);
             await delay(300);
@@ -144,7 +156,6 @@ export function preprocessWithOpenCV(imageSrc) {
           }
         } catch (deskewErr) {
           console.error("Error during deskewing:", deskewErr);
-          // Continue without deskewing
         }
 
         // Step 2: Gaussian blur
@@ -180,6 +191,8 @@ export function preprocessWithOpenCV(imageSrc) {
 
         // Step 6: Invert if background brightness is high
         const meanVal = cv.mean(thresh)[0];
+        console.log("Threshold mean value:", meanVal);
+
         if (meanVal > 127) {
           const inverted = new cv.Mat();
           cv.bitwise_not(thresh, inverted);
@@ -198,6 +211,7 @@ export function preprocessWithOpenCV(imageSrc) {
 
         resolve(result);
       } catch (err) {
+        console.error("Error in preprocessing:", err);
         if (src) src.delete();
         if (gray) gray.delete();
         if (blurred) blurred.delete();
