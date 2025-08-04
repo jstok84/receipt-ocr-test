@@ -266,56 +266,40 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
         }
 
         if (adaptiveThresholding) {
-          // Check if gray is a valid cv.Mat object
-          if (!(gray instanceof cv.Mat)) {
-            console.error("Error: gray is not a valid cv.Mat instance.");
-            return;
+          // Calculate median intensity using OpenCV's sort and row/col access
+          let pixels = [];
+          for (let i = 0; i < gray.rows; i++) {
+            for (let j = 0; j < gray.cols; j++) {
+              pixels.push(gray.ucharPtr(i, j)[0]);
+            }
           }
+          pixels.sort((a, b) => a - b);
+          const medianIntensity = pixels[Math.floor(pixels.length / 2)];
 
-          try {
-            // Flatten gray image to 1D array using OpenCV Mat reshaping
-            const flat = gray.reshape(0, gray.rows * gray.cols);
-            const sorted = new cv.Mat();
-            cv.sort(flat, sorted, cv.SORT_ASCENDING);
+          // Dynamic block size: odd number, based on image size
+          let blockSize = Math.floor(Math.min(gray.cols, gray.rows) / 20);
+          if (blockSize % 2 === 0) blockSize += 1; // make odd
 
-            // Median intensity
-            const medianIntensity = sorted.ucharAt(Math.floor(sorted.rows / 2), 0);
+          // Dynamic C based on median intensity
+          let C = medianIntensity > 127 ? 10 : 5;
 
-            sorted.delete();
-            flat.delete();
+          // Apply adaptive threshold
+          const adaptive = new cv.Mat();
+          cv.adaptiveThreshold(
+            gray,
+            adaptive,
+            255,
+            cv.ADAPTIVE_THRESH_MEAN_C,
+            cv.THRESH_BINARY,
+            blockSize,
+            C
+          );
 
-            // Dynamic block size: odd number, based on image size
-            let blockSize = Math.floor(Math.min(gray.cols, gray.rows) / 20);
-            if (blockSize % 2 === 0) blockSize += 1;
-            if (blockSize < 3) blockSize = 3;  // minimal valid block size
-
-            // Dynamic C based on median intensity
-            let C = medianIntensity > 127 ? 10 : 5;
-
-            // Apply adaptive threshold
-            const adaptive = new cv.Mat();
-            cv.adaptiveThreshold(
-              gray,
-              adaptive,
-              255,
-              cv.ADAPTIVE_THRESH_MEAN_C,
-              cv.THRESH_BINARY,
-              blockSize,
-              C
-            );
-
-            showIntermediate(adaptive, `Adaptive Threshold (blockSize: ${blockSize}, C: ${C})`);
-
-            // Delete old gray Mat to avoid memory leaks
-            gray.delete();
-            gray = adaptive;
-
-            await delay(300);
-          } catch (err) {
-            console.error("Error during adaptive thresholding:", err);
-          }
+          showIntermediate(adaptive, `Adaptive Threshold (blockSize: ${blockSize}, C: ${C})`);
+          gray.delete();
+          gray = adaptive;
+          await delay(300);
         }
-
 
         // Denoising (median blur)
         if (denoise) {
