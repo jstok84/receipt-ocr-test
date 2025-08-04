@@ -267,6 +267,25 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
 
         // Adaptive thresholding tuned
         if (adaptiveThresholding) {
+          // Flatten gray image to 1D array using OpenCV Mat reshaping
+          const flat = gray.reshape(0, gray.rows * gray.cols);
+          const sorted = new cv.Mat();
+          cv.sort(flat, sorted, cv.SORT_ASCENDING);
+
+          // Median intensity
+          const medianIntensity = sorted.ucharAt(Math.floor(sorted.rows / 2), 0);
+
+          sorted.delete();
+          flat.delete();
+
+          // Dynamic block size: odd number, based on image size
+          let blockSize = Math.floor(Math.min(gray.cols, gray.rows) / 20);
+          if (blockSize % 2 === 0) blockSize += 1;
+
+          // Dynamic C based on median intensity
+          let C = medianIntensity > 127 ? 10 : 5;
+
+          // Apply adaptive threshold
           const adaptive = new cv.Mat();
           cv.adaptiveThreshold(
             gray,
@@ -274,14 +293,16 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
             255,
             cv.ADAPTIVE_THRESH_MEAN_C,
             cv.THRESH_BINARY,
-            35,
-            10
+            blockSize,
+            C
           );
-          showIntermediate(adaptive, "Adaptive Threshold");
+
+          showIntermediate(adaptive, `Adaptive Threshold (blockSize: ${blockSize}, C: ${C})`);
           gray.delete();
           gray = adaptive;
           await delay(300);
         }
+
 
         // Denoising (median blur)
         if (denoise) {
@@ -315,6 +336,7 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
           await delay(300);
         }
 
+        if (morph) {
         // Morphological closing to consolidate characters
         const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
         const closed = new cv.Mat();
@@ -323,6 +345,7 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
         gray.delete();
         gray = closed;
         await delay(300);
+        }
 
         // Final canvas output
         const finalCanvas = document.createElement("canvas");
