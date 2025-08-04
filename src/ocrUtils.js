@@ -296,10 +296,10 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
 
         // Step 5: Denoising
         if (denoise) {
-          console.log("🧼 Step 5: Denoising with Non-local Means");
+          console.log("🧼 Step 5: Denoising with Bilateral Filter");
           const denoised = new cv.Mat();
-          cv.fastNlMeansDenoising(gray, denoised, 10, 7, 21); // parameters can be tuned
-          showIntermediate(denoised, "Denoised");
+          cv.bilateralFilter(gray, denoised, 9, 75, 75, cv.BORDER_DEFAULT); 
+          showIntermediate(denoised, "Denoised (Bilateral Filter)");
           await delay(300);
           gray.delete();
           gray = denoised;
