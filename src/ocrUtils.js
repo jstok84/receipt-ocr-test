@@ -346,8 +346,8 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
             255,
             cv.ADAPTIVE_THRESH_GAUSSIAN_C,
             cv.THRESH_BINARY,
-            35,  // blockSize — tune as needed, must be odd, >=3
-            2   // C value — tune as needed
+            15,  // blockSize — tune as needed, must be odd, >=3
+            3   // C value — tune as needed
           );
           showIntermediate(thresh, "Adaptive Threshold");
           await delay(300);
