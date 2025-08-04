@@ -21,10 +21,13 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
     const {
       grayscale = true,
       deskew = true,
-      perspectiveCorrection = true, // New option for perspective correction
+      perspectiveCorrection = true,
       unsharpMask = true,
       smoothing = false,
-      thresholding = false,
+      thresholding = true,
+      adaptiveThresholding = true,  // New option to toggle adaptive thresholding
+      denoise = true,               // New option to toggle denoising
+      clahe = true,                 // New option to toggle CLAHE contrast enhancement
       invert = true,
     } = options;
 
@@ -176,10 +179,7 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
         if (perspectiveCorrection) {
           console.log("🔄 Step 3: Perspective correction started");
 
-          // Prepare binary image for contour detection
           const binaryForPerspective = new cv.Mat();
-
-          // Threshold image for contours
           cv.threshold(gray, binaryForPerspective, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
 
           const contours = new cv.MatVector();
@@ -188,8 +188,6 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
 
           let maxContour = null;
           let maxArea = 0;
-
-          // Find largest contour
           for (let i = 0; i < contours.size(); i++) {
             const contour = contours.get(i);
             const area = cv.contourArea(contour);
@@ -205,13 +203,11 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
             cv.approxPolyDP(maxContour, approx, 0.02 * perimeter, true);
 
             if (approx.rows === 4) {
-              // Extract points
               const srcPts = [];
               for (let i = 0; i < 4; i++) {
                 srcPts.push({ x: approx.intPtr(i, 0)[0], y: approx.intPtr(i, 0)[1] });
               }
 
-              // Sort points: top-left, top-right, bottom-right, bottom-left
               function sortPoints(pts) {
                 pts.sort((a, b) => a.y - b.y);
                 const top = pts.slice(0, 2).sort((a, b) => a.x - b.x);
@@ -253,7 +249,15 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
               const M = cv.getPerspectiveTransform(srcTri, dstTri);
               const warped = new cv.Mat();
 
-              cv.warpPerspective(gray, warped, M, new cv.Size(maxWidth, maxHeight), cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar(255,255,255,255));
+              cv.warpPerspective(
+                gray,
+                warped,
+                M,
+                new cv.Size(maxWidth, maxHeight),
+                cv.INTER_LINEAR,
+                cv.BORDER_CONSTANT,
+                new cv.Scalar(255, 255, 255, 255)
+              );
 
               showIntermediate(warped, "Perspective Corrected");
               await delay(300);
@@ -277,9 +281,33 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
           contours.delete();
         }
 
-        // Step 4: Unsharp Mask
+        // New Step: CLAHE Contrast Enhancement
+        if (clahe) {
+          console.log("✨ Step 4: CLAHE contrast enhancement");
+          const claheObj = new cv.CLAHE(2.0, new cv.Size(8, 8));
+          const claheResult = new cv.Mat();
+          claheObj.apply(gray, claheResult);
+          showIntermediate(claheResult, "CLAHE Contrast");
+          await delay(300);
+          gray.delete();
+          gray = claheResult;
+          claheObj.delete();
+        }
+
+        // Step 5: Denoising
+        if (denoise) {
+          console.log("🧼 Step 5: Denoising with Non-local Means");
+          const denoised = new cv.Mat();
+          cv.fastNlMeansDenoising(gray, denoised, 10, 7, 21); // parameters can be tuned
+          showIntermediate(denoised, "Denoised");
+          await delay(300);
+          gray.delete();
+          gray = denoised;
+        }
+
+        // Step 6: Unsharp Mask
         if (unsharpMask) {
-          console.log("🔧 Step 4: Unsharp masking");
+          console.log("🔧 Step 6: Unsharp masking");
           blurred = new cv.Mat();
           cv.GaussianBlur(gray, blurred, new cv.Size(0, 0), 1.0);
           showIntermediate(blurred, "Gaussian Blur");
@@ -296,9 +324,9 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
           sharpened = gray.clone();
         }
 
-        // Step 5: Optional smoothing
+        // Step 7: Optional smoothing
         if (smoothing) {
-          console.log("🫧 Step 5: Smoothing blur");
+          console.log("🫧 Step 7: Smoothing blur");
           smoothed = new cv.Mat();
           cv.GaussianBlur(sharpened, smoothed, new cv.Size(3, 3), 0);
           showIntermediate(smoothed, "Smoothing Blur");
@@ -308,9 +336,24 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
           smoothed = sharpened.clone();
         }
 
-        // Step 6: Thresholding
-        if (thresholding) {
-          console.log("📊 Step 6: Thresholding (Otsu)");
+        // Step 8: Thresholding
+        if (adaptiveThresholding) {
+          console.log("📊 Step 8: Adaptive Thresholding");
+          thresh = new cv.Mat();
+          cv.adaptiveThreshold(
+            smoothed,
+            thresh,
+            255,
+            cv.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv.THRESH_BINARY,
+            15,  // blockSize — tune as needed, must be odd, >=3
+            10   // C value — tune as needed
+          );
+          showIntermediate(thresh, "Adaptive Threshold");
+          await delay(300);
+          smoothed.delete();
+        } else if (thresholding) {
+          console.log("📊 Step 8: Thresholding (Otsu)");
           thresh = new cv.Mat();
           cv.threshold(smoothed, thresh, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
           showIntermediate(thresh, "Threshold Otsu");
@@ -320,10 +363,10 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
           thresh = smoothed.clone();
         }
 
-        // Step 7: Invert if necessary
+        // Step 9: Invert if necessary
         if (invert) {
           const meanVal = cv.mean(thresh)[0];
-          console.log("🌓 Step 7: Mean intensity =", meanVal.toFixed(2));
+          console.log("🌓 Step 9: Mean intensity =", meanVal.toFixed(2));
           if (meanVal > 127) {
             const inverted = new cv.Mat();
             cv.bitwise_not(thresh, inverted);
