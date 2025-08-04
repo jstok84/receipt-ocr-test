@@ -266,40 +266,56 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
         }
 
         if (adaptiveThresholding) {
-          // Calculate median intensity using OpenCV's sort and row/col access
-          let pixels = [];
-          for (let i = 0; i < gray.rows; i++) {
-            for (let j = 0; j < gray.cols; j++) {
-              pixels.push(gray.ucharPtr(i, j)[0]);
-            }
-          }
-          pixels.sort((a, b) => a - b);
-          const medianIntensity = pixels[Math.floor(pixels.length / 2)];
+          console.log("📊 Step 8: Adaptive Thresholding");
 
-          // Dynamic block size: odd number, based on image size
-          let blockSize = Math.floor(Math.min(gray.cols, gray.rows) / 20);
-          if (blockSize % 2 === 0) blockSize += 1; // make odd
+          // Extract and sort pixel data to get median intensity
+          const pixelArray = Array.from(smoothed.data);
+          pixelArray.sort((a, b) => a - b);
+          const medianIntensity = pixelArray[Math.floor(pixelArray.length / 2)];
 
-          // Dynamic C based on median intensity
+          // Dynamic block size (odd and >= 3, based on image size)
+          let blockSize = Math.floor(Math.min(smoothed.cols, smoothed.rows) / 20);
+          if (blockSize % 2 === 0) blockSize += 1;
+          if (blockSize < 3) blockSize = 3;
+
+          // Dynamic C value based on median intensity
           let C = medianIntensity > 127 ? 10 : 5;
 
-          // Apply adaptive threshold
-          const adaptive = new cv.Mat();
+          thresh = new cv.Mat();
           cv.adaptiveThreshold(
-            gray,
-            adaptive,
+            smoothed,
+            thresh,
             255,
-            cv.ADAPTIVE_THRESH_MEAN_C,
+            cv.ADAPTIVE_THRESH_GAUSSIAN_C,
             cv.THRESH_BINARY,
             blockSize,
             C
           );
 
-          showIntermediate(adaptive, `Adaptive Threshold (blockSize: ${blockSize}, C: ${C})`);
-          gray.delete();
-          gray = adaptive;
+          showIntermediate(thresh, `Adaptive Threshold (blockSize: ${blockSize}, C: ${C})`);
           await delay(300);
+          smoothed.delete();
+
+        } else if (thresholding) {
+          console.log("📊 Step 8: Thresholding (Otsu)");
+
+          thresh = new cv.Mat();
+          cv.threshold(
+            smoothed,
+            thresh,
+            0,
+            255,
+            cv.THRESH_BINARY + cv.THRESH_OTSU
+          );
+
+          showIntermediate(thresh, "Threshold Otsu");
+          await delay(300);
+          smoothed.delete();
+
+        } else {
+          thresh = smoothed.clone();
         }
+
 
         // Denoising (median blur)
         if (denoise) {
