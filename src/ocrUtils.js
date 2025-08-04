@@ -256,69 +256,53 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
         }
 
         // Thresholding
-        if (adaptiveThresholding) {
-          console.log("📊 Step 8: Adaptive Thresholding");
-
-          if (!smoothed || !(smoothed instanceof cv.Mat)) {
-            console.error("Error: 'smoothed' is not a valid cv.Mat instance.");
-            return;
-          }
-
-          // Extract pixel intensity for median
-          const pixelArray = Array.from(smoothed.data);
-          pixelArray.sort((a, b) => a - b);
-          const medianIntensity = pixelArray[Math.floor(pixelArray.length / 2)];
-
-          let blockSize = Math.floor(Math.min(smoothed.cols, smoothed.rows) / 20);
-          if (blockSize % 2 === 0) blockSize += 1;
-          if (blockSize < 3) blockSize = 3;
-
-          let C = medianIntensity > 127 ? 10 : 5;
-
+        if (thresholding) {
           thresh = new cv.Mat();
+          cv.threshold(gray, thresh, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+          showIntermediate(thresh, "Thresholded (Otsu)");
+          gray.delete();
+          gray = thresh;
+          await delay(300);
+        }
+
+        // Adaptive thresholding tuned
+        if (adaptiveThresholding) {
+          const adaptive = new cv.Mat();
+
+          // Get image dimensions
+          const rows = gray.rows;
+          const cols = gray.cols;
+
+          // Calculate blockSize dynamically (odd number, e.g. ~5% of smaller dimension)
+          let blockSize = Math.floor(Math.min(rows, cols) * 0.05);
+          if (blockSize % 2 === 0) {
+            blockSize += 1; // Ensure block size is odd
+          }
+          blockSize = Math.max(blockSize, 3); // Minimum block size should be 3
+
+          // Calculate mean intensity of the input grayscale image
+          const meanScalar = cv.mean(gray);
+          const meanIntensity = meanScalar[0];
+
+          // Set C dynamically based on mean intensity (example heuristic)
+          // Higher mean intensity --> slightly larger C to make threshold stricter
+          let C = meanIntensity > 127 ? 10 : 5;
+
           cv.adaptiveThreshold(
-            smoothed,
-            thresh,
+            gray,
+            adaptive,
             255,
-            cv.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv.ADAPTIVE_THRESH_MEAN_C,
             cv.THRESH_BINARY,
             blockSize,
             C
           );
 
-          showIntermediate(thresh, `Adaptive Threshold (blockSize: ${blockSize}, C: ${C})`);
+          showIntermediate(adaptive, "Adaptive Threshold");
+          gray.delete();
+          gray = adaptive;
           await delay(300);
-
-          // Safe delete smoothed now after all use
-          smoothed.delete();
-
-        } else if (thresholding) {
-          // similar validation and delete control for smoothed
-
-          console.log("📊 Step 8: Thresholding (Otsu)");
-
-          if (!smoothed || !(smoothed instanceof cv.Mat)) {
-            console.error("Error: 'smoothed' is not a valid cv.Mat instance.");
-            return;
-          }
-
-          thresh = new cv.Mat();
-          cv.threshold(
-            smoothed,
-            thresh,
-            0,
-            255,
-            cv.THRESH_BINARY + cv.THRESH_OTSU
-          );
-
-          showIntermediate(thresh, "Threshold Otsu");
-          await delay(300);
-
-          smoothed.delete();
-        } else {
-          thresh = smoothed.clone();
         }
-
 
 
         // Denoising (median blur)
