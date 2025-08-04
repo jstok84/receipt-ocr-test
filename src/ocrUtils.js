@@ -256,29 +256,23 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
         }
 
         // Thresholding
-        if (thresholding) {
-          thresh = new cv.Mat();
-          cv.threshold(gray, thresh, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
-          showIntermediate(thresh, "Thresholded (Otsu)");
-          gray.delete();
-          gray = thresh;
-          await delay(300);
-        }
-
         if (adaptiveThresholding) {
           console.log("📊 Step 8: Adaptive Thresholding");
 
-          // Extract and sort pixel data to get median intensity
+          if (!smoothed || !(smoothed instanceof cv.Mat)) {
+            console.error("Error: 'smoothed' is not a valid cv.Mat instance.");
+            return;
+          }
+
+          // Extract pixel intensity for median
           const pixelArray = Array.from(smoothed.data);
           pixelArray.sort((a, b) => a - b);
           const medianIntensity = pixelArray[Math.floor(pixelArray.length / 2)];
 
-          // Dynamic block size (odd and >= 3, based on image size)
           let blockSize = Math.floor(Math.min(smoothed.cols, smoothed.rows) / 20);
           if (blockSize % 2 === 0) blockSize += 1;
           if (blockSize < 3) blockSize = 3;
 
-          // Dynamic C value based on median intensity
           let C = medianIntensity > 127 ? 10 : 5;
 
           thresh = new cv.Mat();
@@ -294,10 +288,19 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
 
           showIntermediate(thresh, `Adaptive Threshold (blockSize: ${blockSize}, C: ${C})`);
           await delay(300);
+
+          // Safe delete smoothed now after all use
           smoothed.delete();
 
         } else if (thresholding) {
+          // similar validation and delete control for smoothed
+
           console.log("📊 Step 8: Thresholding (Otsu)");
+
+          if (!smoothed || !(smoothed instanceof cv.Mat)) {
+            console.error("Error: 'smoothed' is not a valid cv.Mat instance.");
+            return;
+          }
 
           thresh = new cv.Mat();
           cv.threshold(
@@ -310,11 +313,12 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
 
           showIntermediate(thresh, "Threshold Otsu");
           await delay(300);
-          smoothed.delete();
 
+          smoothed.delete();
         } else {
           thresh = smoothed.clone();
         }
+
 
 
         // Denoising (median blur)
