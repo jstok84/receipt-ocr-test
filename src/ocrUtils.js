@@ -21,6 +21,7 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
     const {
       grayscale = true,
       deskew = true,
+      perspectiveCorrection = true, // New option for perspective correction
       unsharpMask = true,
       smoothing = false,
       thresholding = false,
@@ -171,9 +172,114 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
           contours.delete();
         }
 
-        // Step 3: Unsharp Mask
+        // Step 3: Perspective Correction
+        if (perspectiveCorrection) {
+          console.log("🔄 Step 3: Perspective correction started");
+
+          // Prepare binary image for contour detection
+          const binaryForPerspective = new cv.Mat();
+
+          // Threshold image for contours
+          cv.threshold(gray, binaryForPerspective, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+
+          const contours = new cv.MatVector();
+          const hierarchy = new cv.Mat();
+          cv.findContours(binaryForPerspective, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+          let maxContour = null;
+          let maxArea = 0;
+
+          // Find largest contour
+          for (let i = 0; i < contours.size(); i++) {
+            const contour = contours.get(i);
+            const area = cv.contourArea(contour);
+            if (area > maxArea) {
+              maxArea = area;
+              maxContour = contour;
+            }
+          }
+
+          if (maxContour) {
+            const approx = new cv.Mat();
+            const perimeter = cv.arcLength(maxContour, true);
+            cv.approxPolyDP(maxContour, approx, 0.02 * perimeter, true);
+
+            if (approx.rows === 4) {
+              // Extract points
+              const srcPts = [];
+              for (let i = 0; i < 4; i++) {
+                srcPts.push({ x: approx.intPtr(i, 0)[0], y: approx.intPtr(i, 0)[1] });
+              }
+
+              // Sort points: top-left, top-right, bottom-right, bottom-left
+              function sortPoints(pts) {
+                pts.sort((a, b) => a.y - b.y);
+                const top = pts.slice(0, 2).sort((a, b) => a.x - b.x);
+                const bottom = pts.slice(2, 4).sort((a, b) => a.x - b.x);
+                return [top[0], top[1], bottom[1], bottom[0]];
+              }
+
+              const orderedSrcPts = sortPoints(srcPts);
+
+              const widthTop = Math.hypot(orderedSrcPts[1].x - orderedSrcPts[0].x, orderedSrcPts[1].y - orderedSrcPts[0].y);
+              const widthBottom = Math.hypot(orderedSrcPts[2].x - orderedSrcPts[3].x, orderedSrcPts[2].y - orderedSrcPts[3].y);
+              const maxWidth = Math.max(widthTop, widthBottom);
+
+              const heightLeft = Math.hypot(orderedSrcPts[3].x - orderedSrcPts[0].x, orderedSrcPts[3].y - orderedSrcPts[0].y);
+              const heightRight = Math.hypot(orderedSrcPts[2].x - orderedSrcPts[1].x, orderedSrcPts[2].y - orderedSrcPts[1].y);
+              const maxHeight = Math.max(heightLeft, heightRight);
+
+              const dstPts = [
+                { x: 0, y: 0 },
+                { x: maxWidth - 1, y: 0 },
+                { x: maxWidth - 1, y: maxHeight - 1 },
+                { x: 0, y: maxHeight - 1 },
+              ];
+
+              const srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
+                orderedSrcPts[0].x, orderedSrcPts[0].y,
+                orderedSrcPts[1].x, orderedSrcPts[1].y,
+                orderedSrcPts[2].x, orderedSrcPts[2].y,
+                orderedSrcPts[3].x, orderedSrcPts[3].y,
+              ]);
+
+              const dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
+                dstPts[0].x, dstPts[0].y,
+                dstPts[1].x, dstPts[1].y,
+                dstPts[2].x, dstPts[2].y,
+                dstPts[3].x, dstPts[3].y,
+              ]);
+
+              const M = cv.getPerspectiveTransform(srcTri, dstTri);
+              const warped = new cv.Mat();
+
+              cv.warpPerspective(gray, warped, M, new cv.Size(maxWidth, maxHeight), cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar(255,255,255,255));
+
+              showIntermediate(warped, "Perspective Corrected");
+              await delay(300);
+
+              gray.delete();
+              gray = warped;
+
+              srcTri.delete();
+              dstTri.delete();
+              M.delete();
+            } else {
+              console.log("⚠️ Perspective correction skipped: polygon approx != 4 points");
+            }
+            approx.delete();
+          } else {
+            console.log("⚠️ Perspective correction skipped: no max contour found");
+          }
+
+          binaryForPerspective.delete();
+          hierarchy.delete();
+          contours.delete();
+        }
+
+        // Step 4: Unsharp Mask
         if (unsharpMask) {
-          console.log("🔧 Step 3: Unsharp masking");
+          console.log("🔧 Step 4: Unsharp masking");
           blurred = new cv.Mat();
           cv.GaussianBlur(gray, blurred, new cv.Size(0, 0), 1.0);
           showIntermediate(blurred, "Gaussian Blur");
@@ -190,9 +296,9 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
           sharpened = gray.clone();
         }
 
-        // Step 4: Optional smoothing
+        // Step 5: Optional smoothing
         if (smoothing) {
-          console.log("🫧 Step 4: Smoothing blur");
+          console.log("🫧 Step 5: Smoothing blur");
           smoothed = new cv.Mat();
           cv.GaussianBlur(sharpened, smoothed, new cv.Size(3, 3), 0);
           showIntermediate(smoothed, "Smoothing Blur");
@@ -202,9 +308,9 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
           smoothed = sharpened.clone();
         }
 
-        // Step 5: Thresholding
+        // Step 6: Thresholding
         if (thresholding) {
-          console.log("📊 Step 5: Thresholding (Otsu)");
+          console.log("📊 Step 6: Thresholding (Otsu)");
           thresh = new cv.Mat();
           cv.threshold(smoothed, thresh, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
           showIntermediate(thresh, "Threshold Otsu");
@@ -214,10 +320,10 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
           thresh = smoothed.clone();
         }
 
-        // Step 6: Invert if necessary
+        // Step 7: Invert if necessary
         if (invert) {
           const meanVal = cv.mean(thresh)[0];
-          console.log("🌓 Step 6: Mean intensity =", meanVal.toFixed(2));
+          console.log("🌓 Step 7: Mean intensity =", meanVal.toFixed(2));
           if (meanVal > 127) {
             const inverted = new cv.Mat();
             cv.bitwise_not(thresh, inverted);
@@ -256,6 +362,7 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
     img.src = typeof imageSrc === "string" ? imageSrc : URL.createObjectURL(imageSrc);
   });
 }
+
 
 // --- Clean text by removing invisible chars and normalizing whitespace, preserve lines ---
 export function cleanAndMergeText(rawText) {
