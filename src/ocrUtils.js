@@ -27,6 +27,7 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
       smoothing = false,
       thresholding = false,
       adaptiveThresholding = true,
+      morph = false,
       denoise = true,
       clahe = true,
       invert = true,
