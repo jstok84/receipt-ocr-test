@@ -346,6 +346,7 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
         showIntermediate(closed, "Morphological Closing");
         gray.delete();
         gray = closed;
+        kernel.delete();
         await delay(300);
         }
 
@@ -359,12 +360,12 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
 
         gray.delete();
         src.delete();
-        kernel.delete();
 
         resolve(finalCanvas.toDataURL("image/png"));
       } catch (err) {
         console.error("❌ Error during preprocessing:", err);
         if (src) src.delete();
+        if (kernel) kernel.delete();
         if (gray) gray.delete();
         if (blurred) blurred && blurred.delete();
         if (sharpened) sharpened && sharpened.delete();
