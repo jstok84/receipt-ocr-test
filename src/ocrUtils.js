@@ -307,14 +307,22 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
 
         // Step 6: Unsharp Mask
         if (unsharpMask) {
-          console.log("🔧 Step 6: Unsharp masking");
+          console.log("🔧 Step 6: Unsharp masking with Median Blur instead of Gaussian");
+
           blurred = new cv.Mat();
-          cv.GaussianBlur(gray, blurred, new cv.Size(0, 0), 1.0);
-          showIntermediate(blurred, "Gaussian Blur");
+
+          // Median blur radius must be odd and >1 (e.g. 3 or 5)
+          cv.medianBlur(gray, blurred, 3);
+
+          showIntermediate(blurred, "Median Blur");
           await delay(300);
 
           sharpened = new cv.Mat();
+
+          // addWeighted formula: sharpened = (1 + amount)*gray  - amount*blurred
+          // Your original had 2.5 and -1.5 weights, tune as needed
           cv.addWeighted(gray, 2.5, blurred, -1.5, 0, sharpened);
+
           showIntermediate(sharpened, "Unsharp Masking");
           await delay(300);
 
@@ -323,7 +331,6 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
         } else {
           sharpened = gray.clone();
         }
-
         // Step 7: Optional smoothing
         if (smoothing) {
           console.log("🫧 Step 7: Smoothing blur");
