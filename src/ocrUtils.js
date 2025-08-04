@@ -25,9 +25,9 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
       unsharpMask = true,
       smoothing = false,
       thresholding = false,
-      adaptiveThresholding = true,  // New option to toggle adaptive thresholding
-      denoise = true,               // New option to toggle denoising
-      clahe = true,                 // New option to toggle CLAHE contrast enhancement
+      adaptiveThresholding = true,
+      denoise = true,
+      clahe = true,
       invert = true,
     } = options;
 
@@ -128,7 +128,7 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
             let angle = rotatedRect.angle;
 
             if (rotatedRect.size.width < rotatedRect.size.height) {
-              // portrait - keep as is
+              // portrait - keep angle as is
             } else {
               angle += 90;
             }
@@ -260,20 +260,21 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
               );
 
               showIntermediate(warped, "Perspective Corrected");
-              await delay(300);
-
               gray.delete();
               gray = warped;
 
               srcTri.delete();
               dstTri.delete();
               M.delete();
+
+              await delay(300);
             } else {
-              console.log("⚠️ Perspective correction skipped: polygon approx != 4 points");
+              console.log("⚠️ Contour approximation did not find 4 points - skipping perspective correction");
             }
+
             approx.delete();
           } else {
-            console.log("⚠️ Perspective correction skipped: no max contour found");
+            console.log("⚠️ No contour found for perspective correction");
           }
 
           binaryForPerspective.delete();
@@ -281,130 +282,114 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
           contours.delete();
         }
 
-        // New Step: CLAHE Contrast Enhancement
+        // Step 4: CLAHE (Contrast Limited Adaptive Histogram Equalization)
         if (clahe) {
-          console.log("✨ Step 4: CLAHE contrast enhancement");
-          const claheObj = new cv.CLAHE(2.0, new cv.Size(8, 8));
-          const claheResult = new cv.Mat();
-          claheObj.apply(gray, claheResult);
-          showIntermediate(claheResult, "CLAHE Contrast");
-          await delay(300);
+          console.log("✨ Step 4: Applying CLAHE");
+          const clahe = new cv.CLAHE(2.0, new cv.Size(8, 8));
+          const claheDst = new cv.Mat();
+          clahe.apply(gray, claheDst);
+          showIntermediate(claheDst, "CLAHE Applied");
           gray.delete();
-          gray = claheResult;
-          claheObj.delete();
+          gray = claheDst;
+          clahe.delete();
+          await delay(300);
         }
 
         // Step 5: Denoising
         if (denoise) {
-          console.log("🧼 Step 5: Denoising with Bilateral Filter");
+          console.log("✨ Step 5: Applying bilateralFilter for denoising");
           const denoised = new cv.Mat();
-          cv.bilateralFilter(gray, denoised, 9, 75, 75, cv.BORDER_DEFAULT); 
-          showIntermediate(denoised, "Denoised (Bilateral Filter)");
-          await delay(300);
+          // Parameters: src, dst, diameter, sigmaColor, sigmaSpace
+          cv.bilateralFilter(gray, denoised, 9, 75, 75, cv.BORDER_DEFAULT);
+          showIntermediate(denoised, "Denoised with bilateralFilter");
           gray.delete();
           gray = denoised;
+          await delay(300);
         }
 
-        // Step 6: Unsharp Mask
+        // Step 6: Unsharp Mask (Sharpening)
         if (unsharpMask) {
-          console.log("🔧 Step 6: Unsharp masking");
-          blurred = new cv.Mat();
-          cv.GaussianBlur(gray, blurred, new cv.Size(0, 0), 0.5);
-          showIntermediate(blurred, "Gaussian Blur");
-          await delay(300);
+          console.log("✨ Step 6: Applying unsharp mask");
 
-          sharpened = new cv.Mat();
-          cv.addWeighted(gray, 2.5, blurred, -1.5, 0, sharpened);
-          showIntermediate(sharpened, "Unsharp Masking");
-          await delay(300);
+          const blurred = new cv.Mat();
+          const sharpened = new cv.Mat();
+
+          cv.GaussianBlur(gray, blurred, new cv.Size(0, 0), 3);
+          // sharpened = 1.5*gray - 0.5*blurred
+          cv.addWeighted(gray, 1.5, blurred, -0.5, 0, sharpened);
+
+          showIntermediate(sharpened, "Unsharp Mask Applied");
 
           gray.delete();
           blurred.delete();
-        } else {
-          sharpened = gray.clone();
-        }
-
-        // Step 7: Optional smoothing
-        if (smoothing) {
-          console.log("🫧 Step 7: Smoothing blur");
-          smoothed = new cv.Mat();
-          cv.GaussianBlur(sharpened, smoothed, new cv.Size(3, 3), 0);
-          showIntermediate(smoothed, "Smoothing Blur");
+          gray = sharpened;
           await delay(300);
-          sharpened.delete();
-        } else {
-          smoothed = sharpened.clone();
         }
 
-        // Step 8: Thresholding
-        if (adaptiveThresholding) {
-          console.log("📊 Step 8: Adaptive Thresholding");
+        // Step 7: Thresholding (Global or Adaptive)
+        if (thresholding || adaptiveThresholding) {
           thresh = new cv.Mat();
-          cv.adaptiveThreshold(
-            smoothed,
-            thresh,
-            255,
-            cv.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv.THRESH_BINARY,
-            15,  // blockSize — tune as needed, must be odd, >=3
-            3   // C value — tune as needed
-          );
-          showIntermediate(thresh, "Adaptive Threshold");
-          await delay(300);
-          smoothed.delete();
-        } else if (thresholding) {
-          console.log("📊 Step 8: Thresholding (Otsu)");
-          thresh = new cv.Mat();
-          cv.threshold(smoothed, thresh, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
-          showIntermediate(thresh, "Threshold Otsu");
-          await delay(300);
-          smoothed.delete();
-        } else {
-          thresh = smoothed.clone();
-        }
 
-        // Step 9: Invert if necessary
-        if (invert) {
-          const meanVal = cv.mean(thresh)[0];
-          console.log("🌓 Step 9: Mean intensity =", meanVal.toFixed(2));
-          if (meanVal > 127) {
-            const inverted = new cv.Mat();
-            cv.bitwise_not(thresh, inverted);
-            showIntermediate(inverted, "Inverted");
-            await delay(300);
-            thresh.delete();
-            thresh = inverted;
-            console.log("↩️ Image inverted (white background)");
+          if (adaptiveThresholding) {
+            cv.adaptiveThreshold(
+              gray,
+              thresh,
+              255,
+              cv.ADAPTIVE_THRESH_GAUSSIAN_C,
+              cv.THRESH_BINARY,
+              15,
+              15
+            );
+            showIntermediate(thresh, "Adaptive Thresholding");
+            console.log("✨ Step 7: Adaptive Thresholding applied");
           } else {
-            console.log("✅ Inversion skipped (background already dark)");
+            cv.threshold(gray, thresh, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+            showIntermediate(thresh, "Global Thresholding");
+            console.log("✨ Step 7: Global Thresholding applied");
           }
+
+          gray.delete();
+          gray = thresh;
+          await delay(300);
         }
 
-        // Final result
-        cv.imshow(canvas, thresh);
-        const result = canvas.toDataURL("image/png");
+        // Step 8: Invert if needed
+        if (invert) {
+          const inverted = new cv.Mat();
+          cv.bitwise_not(gray, inverted);
+          showIntermediate(inverted, "Inverted Colors");
+          gray.delete();
+          gray = inverted;
+          await delay(300);
+        }
 
-        // Cleanup
-        thresh.delete();
+        // Final cleanup and return the preprocessed image
+        showIntermediate(gray, "Final Preprocessed Image");
+
+        // Convert back to canvas for OCR
+        const outCanvas = document.createElement("canvas");
+        outCanvas.width = gray.cols;
+        outCanvas.height = gray.rows;
+        cv.imshow(outCanvas, gray);
+
+        // Cleanup mats
         src.delete();
+        gray.delete();
 
-        resolve(result);
+        resolve(outCanvas);
       } catch (err) {
-        console.error("❌ Error during preprocessing:", err);
-        if (src) src.delete();
-        if (gray) gray.delete();
-        if (blurred) blurred.delete();
-        if (sharpened) sharpened.delete();
-        if (smoothed) smoothed.delete();
-        if (thresh) thresh.delete();
         reject(err);
       }
     };
 
-    img.onerror = reject;
-    img.src = typeof imageSrc === "string" ? imageSrc : URL.createObjectURL(imageSrc);
+    img.onerror = () => {
+      reject(new Error("Failed to load image."));
+    };
+
+    img.src = imageSrc;
   });
 }
+
 
 
 // --- Clean text by removing invisible chars and normalizing whitespace, preserve lines ---
