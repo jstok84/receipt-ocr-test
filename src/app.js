@@ -14,221 +14,162 @@ export default function App() {
   const [capturedImage, setCapturedImage] = useState(null);
   const [uploadedPreview, setUploadedPreview] = useState(null);
   const [pdfPreviews, setPdfPreviews] = useState([]);
-
-  const [useFlatMode, setUseFlatMode] = useState(false); // 🆕 NEW toggle state
+  const [useFlatMode, setUseFlatMode] = useState(false);
 
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
 
   useEffect(() => {
-    navigator.mediaDevices?.enumerateDevices().then((devices) => {
-      const hasVideoInput = devices.some((d) => d.kind === "videoinput");
-      setCameraAvailable(hasVideoInput);
+    navigator.mediaDevices?.enumerateDevices().then(devices => {
+      setCameraAvailable(devices.some(d => d.kind === "videoinput"));
     });
   }, []);
 
   useEffect(() => {
     if (!useCamera) return;
-
-    const constraints = {
-      video: { facingMode: { ideal: "environment" }, focusMode: "continuous" },
-    };
-
-    navigator.mediaDevices
-      .getUserMedia(constraints)
-      .then((stream) => {
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-        }
-      })
-      .catch((err) => {
+    const constraints = { video: { facingMode: "environment", focusMode: "continuous" } };
+    navigator.mediaDevices.getUserMedia(constraints)
+      .then(stream => videoRef.current && (videoRef.current.srcObject = stream))
+      .catch(err => {
         console.warn("Camera error:", err);
         setUseCamera(false);
       });
-
     return () => {
-      videoRef.current?.srcObject?.getTracks().forEach((track) => track.stop());
+      videoRef.current?.srcObject?.getTracks()?.forEach(t => t.stop());
     };
   }, [useCamera]);
 
-  // 🆕 Updated runParsing to preprocess text before parsing
-  const runParsing = (rawText) => {
-    let preparedText = rawText;
-
+  const runParsing = rawText => {
+    let prepared = rawText;
     if (!useFlatMode) {
-      // Clean and merge lines for best parser results
       const cleaned = cleanAndMergeText(rawText);
-      preparedText = mergeItemLines(cleaned);
+      prepared = mergeItemLines(cleaned);
     } else {
-      // In flat mode, simply flatten line breaks to spaces
-      preparedText = rawText.replace(/\n/g, " ");
+      prepared = rawText.replace(/\n/g, " ");
     }
-
-    setParsed(parseReceipt(preparedText));
+    setParsed(parseReceipt(prepared));
   };
 
-  const handleCapture = async () => {
-    if (!videoRef.current || !canvasRef.current) return;
+  function dataURLtoFile(dataurl, filename) {
+    const [header, base64] = dataurl.split(",");
+    const mime = header.match(/:(.*?);/)[1];
+    const bstr = atob(base64);
+    let n = bstr.length;
+    const u8 = new Uint8Array(n);
+    while (n--) u8[n] = bstr.charCodeAt(n);
+    return new File([u8], filename, { type: mime });
+  }
 
+  const handleCapture = async () => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
+    if (!video || !canvas) return;
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     const ctx = canvas.getContext("2d");
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    const dataUrl = canvas.toDataURL("image/jpeg");
+    const dataUrl = canvas.toDataURL("image/png"); // use lossless PNG
     setCapturedImage(dataUrl);
 
-    setLoading(true);
-    setProgress(0);
-    setText("Processing captured image...");
-    setParsed(null);
-    setUploadedPreview(null);
-    setPdfPreviews([]);
-
-    // Process image and run the parsing pipeline
-    const result = await processImage(dataUrl, (p) => setProgress(p));
-    setText(result);
-    runParsing(result);
-    setLoading(false);
+    const file = dataURLtoFile(dataUrl, "capture.png");
+    await processGenericFile(file, dataUrl);
   };
 
-  const handleFileUpload = async (e) => {
-    const file = e.target.files[0];
+  const handleFileUpload = async e => {
+    const file = e.target.files?.[0];
     if (!file) return;
-
+    const isImage = file.type.startsWith("image/");
+    const isPDF = file.type === "application/pdf";
+    let preview = null;
+    if (isImage) preview = URL.createObjectURL(file);
+    setCapturedImage(null);
+    setText(isImage ? "Processing image file..." : isPDF ? "Processing PDF..." : "");
+    setUploadedPreview(isImage ? preview : null);
+    setPdfPreviews([]);
+    setParsed(null);
     setLoading(true);
     setProgress(0);
-    setText("Processing file...");
-    setParsed(null);
-    setCapturedImage(null);
-    setPdfPreviews([]);
-    setUploadedPreview(null);
 
-    if (file.type.startsWith("image/")) {
-      const imgUrl = URL.createObjectURL(file);
-      setUploadedPreview(imgUrl);
-
-      const result = await processImage(file, (p) => setProgress(p));
-      setText(result);
-      runParsing(result);
-    } else if (file.type === "application/pdf") {
-      const { text: pdfText, previews } = await processPDF(file, (p) => setProgress(p));
+    if (isImage) {
+      await processGenericFile(file, preview);
+    } else if (isPDF) {
+      const { text: pdfText, previews } = await processPDF(file, p => setProgress(p));
       setText(pdfText);
       runParsing(pdfText);
       setPdfPreviews(previews);
+      setLoading(false);
     } else {
       setText("Unsupported file type");
+      setLoading(false);
     }
+  };
 
+  const processGenericFile = async (file, previewDataUrl = null) => {
+    setParsed(null);
+    setText("Processing OCR...");
+    setLoading(true);
+    setProgress(0);
+    if (previewDataUrl) setUploadedPreview(previewDataUrl);
+    try {
+      const result = await processImage(file, p => setProgress(p));
+      setText(result);
+      runParsing(result);
+    } catch (err) {
+      console.error(err);
+      setText("Error processing image");
+    }
     setLoading(false);
   };
 
   return (
     <div style={styles.container}>
       <h1 style={styles.header}>🧾 Receipt OCR Scanner</h1>
-
       <div style={styles.controls}>
-        <input
-          type="file"
-          accept="image/*,.pdf"
-          onChange={handleFileUpload}
-          style={styles.input}
-        />
-        {cameraAvailable && (
-          <button onClick={() => setUseCamera(!useCamera)} style={styles.button}>
-            {useCamera ? "Stop Camera" : "Use Camera"}
-          </button>
-        )}
-        {/* 🆕 Toggle Mode Button */}
+        <input type="file" accept="image/*,.pdf" onChange={handleFileUpload} style={styles.input} />
+        {cameraAvailable && <button onClick={() => setUseCamera(!useCamera)} style={styles.button}>
+          {useCamera ? "Stop Camera" : "Use Camera"}
+        </button>}
         <button onClick={() => setUseFlatMode(!useFlatMode)} style={styles.button}>
           {useFlatMode ? "Switch to Line Mode" : "Switch to Flat Mode"}
         </button>
       </div>
-
       <p style={{ marginTop: 5, fontStyle: "italic", color: "#444" }}>
         Mode: <strong>{useFlatMode ? "Flat (no line breaks)" : "Line-based OCR"}</strong>
       </p>
 
-      {useCamera && (
-        <>
-          <video ref={videoRef} autoPlay playsInline style={styles.videoPreview} />
-          <canvas ref={canvasRef} style={{ display: "none" }} />
-          <button onClick={handleCapture} style={styles.button}>
-            Capture & OCR
-          </button>
-          {capturedImage && (
-            <img
-              src={capturedImage}
-              alt="Captured preview"
-              style={{ width: "200px", marginTop: 10, border: "1px solid #ccc" }}
-            />
-          )}
-        </>
-      )}
+      {useCamera && <>
+        <video ref={videoRef} autoPlay playsInline style={styles.videoPreview} />
+        <canvas ref={canvasRef} style={{ display: "none" }} />
+        <button onClick={handleCapture} style={styles.button}>Capture & OCR</button>
+        {capturedImage && <img src={capturedImage} alt="Captured preview" style={{ width: 200, marginTop: 10, border: "1px solid #ccc" }} />}
+      </>}
 
-      {uploadedPreview && (
-        <img
-          src={uploadedPreview}
-          alt="Uploaded file preview"
-          style={{ width: "200px", marginTop: 10, border: "1px solid #ccc" }}
-        />
-      )}
+      {uploadedPreview && <img src={uploadedPreview} alt="Uploaded or captured preview" style={{ width: 200, marginTop: 10, border: "1px solid #ccc" }} />}
 
-      {pdfPreviews.length > 0 && (
-        <div style={{ marginTop: 20 }}>
-          <h3>PDF Page Previews</h3>
-          <div style={{ display: "flex", gap: 10, overflowX: "auto" }}>
-            {pdfPreviews.map((src, idx) => (
-              <img
-                key={idx}
-                src={src}
-                alt={`PDF page ${idx + 1}`}
-                style={{ height: "150px", border: "1px solid #ccc" }}
-              />
-            ))}
-          </div>
+      {pdfPreviews.length > 0 && <div style={{ marginTop: 20 }}>
+        <h3>PDF Page Previews</h3>
+        <div style={{ display: "flex", gap: 10, overflowX: "auto" }}>
+          {pdfPreviews.map((src, i) => <img key={i} src={src} alt={`Page ${i+1}`} style={{ height: 150, border: "1px solid #ccc" }} />)}
         </div>
-      )}
+      </div>}
 
-      {loading && (
-        <>
-          <p>🔄 Processing OCR... {Math.round(progress * 100)}%</p>
-          <progress value={progress} max={1} style={{ width: "100%" }} />
-        </>
-      )}
+      {loading && <>
+        <p>🔄 Processing OCR... {Math.round(progress * 100)}%</p>
+        <progress value={progress} max={1} style={{ width: "100%" }} />
+      </>}
 
-      <textarea
-        value={text}
-        readOnly
-        placeholder="OCR result will appear here..."
-        style={styles.textarea}
-      />
+      <textarea readOnly value={text} placeholder="OCR result will appear here..." style={styles.textarea} />
 
-      {parsed && (
-        <div style={styles.parsedSection}>
-          <h2>Parsed Data</h2>
-          <p>
-            <strong>Date:</strong> {parsed.date || "Not found"}
-          </p>
-          <p>
-            <strong>Total:</strong> {parsed.total || "Not found"}
-          </p>
-          <h3>Items:</h3>
-          {parsed.items.length ? (
-            <ul>
-              {parsed.items.map((item, i) => (
-                <li key={i}>
-                  {item.name} — {item.price}
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p>No items detected</p>
-          )}
-        </div>
-      )}
+      {parsed && <div style={styles.parsedSection}>
+        <h2>Parsed Data</h2>
+        <p><strong>Date:</strong> {parsed.date || "Not found"}</p>
+        <p><strong>Total:</strong> {parsed.total || "Not found"}</p>
+        <h3>Items:</h3>
+        {parsed.items.length ? <ul>
+          {parsed.items.map((item, i) => <li key={i}>{item.name} — {item.price}</li>)}
+        </ul> : <p>No items detected</p>}
+      </div>}
     </div>
   );
 }
