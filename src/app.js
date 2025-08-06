@@ -61,20 +61,73 @@ export default function App() {
   }
 
   const handleCapture = async () => {
+    if (!videoRef.current || !canvasRef.current) return;
+
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    if (!video || !canvas) return;
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const ctx = canvas.getContext("2d");
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const stream = video.srcObject;
 
-    const dataUrl = canvas.toDataURL("image/png"); // use lossless PNG
-    setCapturedImage(dataUrl);
+    setLoading(true);
+    setProgress(0);
+    setText("Processing captured image...");
+    setParsed(null);
+    setUploadedPreview(null);
+    setPdfPreviews([]);
 
-    const file = dataURLtoFile(dataUrl, "capture.png");
-    await processGenericFile(file, dataUrl);
+    try {
+      const [track] = stream.getVideoTracks();
+      let blob;
+
+      // ✅ Try using ImageCapture API
+      if ("ImageCapture" in window) {
+        try {
+          const imageCapture = new ImageCapture(track);
+          blob = await imageCapture.takePhoto(); // high-quality still image
+          console.log("📸 Captured photo using ImageCapture API");
+        } catch (err) {
+          console.warn("⚠️ ImageCapture failed, falling back to canvas:", err);
+        }
+      }
+
+      // 🔁 Fallback to canvas capture if ImageCapture failed or not supported
+      if (!blob) {
+        // Let camera autofocus for a moment (simple UX improvement)
+        await new Promise(res => setTimeout(res, 2000));
+
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        const dataUrl = canvas.toDataURL("image/jpeg");
+        setCapturedImage(dataUrl);
+
+        const result = await processImage(dataUrl, (p) => setProgress(p));
+        setText(result);
+        runParsing(result);
+        setLoading(false);
+        return;
+      }
+
+      // 📷 Convert blob (from ImageCapture) to DataURL for processing
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const dataUrl = reader.result;
+        setCapturedImage(dataUrl);
+
+        const result = await processImage(dataUrl, (p) => setProgress(p));
+        setText(result);
+        runParsing(result);
+        setLoading(false);
+      };
+      reader.readAsDataURL(blob);
+    } catch (err) {
+      console.error("❌ Error during capture:", err);
+      setText("Capture failed");
+      setLoading(false);
+    }
   };
+
 
   const handleFileUpload = async e => {
     const file = e.target.files?.[0];
