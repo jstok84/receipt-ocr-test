@@ -28,8 +28,8 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
       thresholding = false,
       adaptiveThresholding = true,
       morph = false,
-      denoise = true,
-      clahe = true,
+      denoise = false,
+      clahe = false,
       invert = true,
     } = options;
 
