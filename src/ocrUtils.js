@@ -29,7 +29,7 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
       adaptiveThresholding = true,
       morph = false,
       denoise = false,
-      clahe = false,
+      clahe = true,
       invert = true,
     } = options;
 
