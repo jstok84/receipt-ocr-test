@@ -18,7 +18,6 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
       reject(new Error("OpenCV.js (cv) is not loaded or initialized."));
       return;
     }
-
     const {
       grayscale = true,
       deskew = true,
@@ -31,14 +30,12 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
       denoise = false,
       clahe = true,
       invert = true,
+      autoCrop = true, // New option to enable automatic border cropping
     } = options;
-
     const img = new Image();
     img.crossOrigin = "Anonymous";
-
     img.onload = async () => {
       console.log("🖼️ Image loaded:", img.width, "x", img.height);
-
       const container = document.createElement("div");
       container.style.display = "flex";
       container.style.flexWrap = "wrap";
@@ -48,7 +45,6 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
       container.style.padding = "10px";
       container.style.background = "#fafafa";
       document.body.appendChild(container);
-
       function showIntermediate(mat, label) {
         const wrapper = document.createElement("div");
         wrapper.style.textAlign = "center";
@@ -72,9 +68,44 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
         container.appendChild(wrapper);
         cv.imshow(canvasEl, mat);
       }
-
       function delay(ms) {
         return new Promise((res) => setTimeout(res, ms));
+      }
+
+      function cropToContent(mat) {
+        const binary = new cv.Mat();
+        cv.threshold(mat, binary, 240, 255, cv.THRESH_BINARY_INV);
+        const contours = new cv.MatVector();
+        const hierarchy = new cv.Mat();
+        cv.findContours(binary, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+        let maxContour = null;
+        let maxArea = 0;
+        for (let i = 0; i < contours.size(); i++) {
+          const contour = contours.get(i);
+          const area = cv.contourArea(contour);
+          if (area > maxArea) {
+            maxArea = area;
+            if (maxContour) maxContour.delete();
+            maxContour = contour;
+          } else {
+            contour.delete();
+          }
+        }
+        if (maxContour) {
+          const rect = cv.boundingRect(maxContour);
+          const cropped = mat.roi(rect);
+          const croppedClone = cropped.clone();
+          cropped.delete();
+          maxContour.delete();
+          contours.delete();
+          hierarchy.delete();
+          binary.delete();
+          return croppedClone;
+        }
+        contours.delete();
+        hierarchy.delete();
+        binary.delete();
+        return mat;
       }
 
       const canvas = document.createElement("canvas");
@@ -87,13 +118,10 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
       const ctx = canvas.getContext("2d");
       ctx.scale(scaleFactor, scaleFactor);
       ctx.drawImage(img, 0, 0);
-
-      let src, gray, blurred, sharpened, smoothed, thresh;
-
+      let src, gray, sharpened, smoothed, thresh, kernel;
       try {
         src = cv.imread(canvas);
         console.log("📥 Step 0: Image read into OpenCV");
-
         // Step 1: Grayscale
         if (grayscale) {
           gray = new cv.Mat();
@@ -103,7 +131,6 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
         } else {
           gray = src.clone();
         }
-
         // Step 2: Deskew
         if (deskew) {
           console.log("🧭 Step 2: Deskewing started");
@@ -157,7 +184,6 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
           hierarchy.delete();
           contours.delete();
         }
-
         // Step 3: Perspective Correction
         if (perspectiveCorrection) {
           console.log("🔄 Step 3: Perspective correction started");
@@ -232,7 +258,6 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
           contours.delete();
           hierarchy.delete();
         }
-
         // Unsharp Mask step retained
         if (unsharpMask) {
           const blurredUM = new cv.Mat();
@@ -245,7 +270,6 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
           blurredUM.delete();
           await delay(300);
         }
-
         // Optional smoothing
         if (smoothing) {
           smoothed = new cv.Mat();
@@ -255,7 +279,6 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
           gray = smoothed;
           await delay(300);
         }
-
         // Thresholding
         if (thresholding) {
           thresh = new cv.Mat();
@@ -265,30 +288,19 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
           gray = thresh;
           await delay(300);
         }
-
         // Adaptive thresholding tuned
         if (adaptiveThresholding) {
           const adaptive = new cv.Mat();
-
-          // Get image dimensions
           const rows = gray.rows;
           const cols = gray.cols;
-
-          // Calculate blockSize dynamically (odd number, e.g. ~5% of smaller dimension)
           let blockSize = Math.floor(Math.min(rows, cols) * 0.05);
           if (blockSize % 2 === 0) {
-            blockSize += 1; // Ensure block size is odd
+            blockSize += 1;
           }
-          blockSize = Math.max(blockSize, 3); // Minimum block size should be 3
-
-          // Calculate mean intensity of the input grayscale image
+          blockSize = Math.max(blockSize, 3);
           const meanScalar = cv.mean(gray);
           const meanIntensity = meanScalar[0];
-
-          // Set C dynamically based on mean intensity (example heuristic)
-          // Higher mean intensity --> slightly larger C to make threshold stricter
-          let C = meanIntensity > 127 ? 10 : 5;
-
+          const C = meanIntensity > 127 ? 10 : 5;
           cv.adaptiveThreshold(
             gray,
             adaptive,
@@ -298,14 +310,11 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
             blockSize,
             C
           );
-
           showIntermediate(adaptive, "Adaptive Threshold");
           gray.delete();
           gray = adaptive;
           await delay(300);
         }
-
-
         // Denoising (median blur)
         if (denoise) {
           const denoised = new cv.Mat();
@@ -315,7 +324,6 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
           gray = denoised;
           await delay(300);
         }
-
         // CLAHE enhancement
         if (clahe) {
           const claheInstance = new cv.CLAHE(2.0, new cv.Size(8, 8));
@@ -327,7 +335,6 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
           claheInstance.delete();
           await delay(300);
         }
-
         // Invert if needed
         if (invert) {
           const inverted = new cv.Mat();
@@ -337,17 +344,24 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
           gray = inverted;
           await delay(300);
         }
-
         if (morph) {
-        // Morphological closing to consolidate characters
-        const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
-        const closed = new cv.Mat();
-        cv.morphologyEx(gray, closed, cv.MORPH_CLOSE, kernel);
-        showIntermediate(closed, "Morphological Closing");
-        gray.delete();
-        gray = closed;
-        kernel.delete();
-        await delay(300);
+          const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+          const closed = new cv.Mat();
+          cv.morphologyEx(gray, closed, cv.MORPH_CLOSE, kernel);
+          showIntermediate(closed, "Morphological Closing");
+          gray.delete();
+          gray = closed;
+          kernel.delete();
+          await delay(300);
+        }
+
+        // Auto crop borders if enabled
+        if (autoCrop) {
+          const croppedGray = cropToContent(gray);
+          gray.delete();
+          gray = croppedGray;
+          showIntermediate(gray, "Auto Cropped");
+          await delay(300);
         }
 
         // Final canvas output
@@ -357,28 +371,22 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
         const ctxFinal = finalCanvas.getContext("2d");
         ctxFinal.clearRect(0, 0, finalCanvas.width, finalCanvas.height);
         cv.imshow(finalCanvas, gray);
-
         gray.delete();
         src.delete();
-
         resolve(finalCanvas.toDataURL("image/png"));
       } catch (err) {
         console.error("❌ Error during preprocessing:", err);
         if (src) src.delete();
         if (kernel) kernel.delete();
         if (gray) gray.delete();
-        if (blurred) blurred && blurred.delete();
-        if (sharpened) sharpened && sharpened.delete();
-        if (smoothed) smoothed && smoothed.delete();
-        if (thresh) thresh.delete();
         reject(err);
       }
     };
-
     img.onerror = (e) => reject(new Error("Failed to load image: " + e.message));
     img.src = typeof imageSrc === "string" ? imageSrc : URL.createObjectURL(imageSrc);
   });
 }
+
 
 // --- Clean text by removing invisible chars and normalizing whitespace, preserve lines ---
 export function cleanAndMergeText(rawText) {
