@@ -27,7 +27,7 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
       smoothing = false,
       thresholding = false,
       adaptiveThresholding = true,
-      morph = false,
+      morph = true,
       denoise = false,
       clahe = true,
       invert = true,
@@ -39,6 +39,7 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
     img.onload = async () => {
       console.log("🖼️ Image loaded:", img.width, "x", img.height);
 
+      // Container for visualization
       const container = document.createElement("div");
       container.style.display = "flex";
       container.style.flexWrap = "wrap";
@@ -78,17 +79,19 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
       }
 
       const canvas = document.createElement("canvas");
+
       let scaleFactor = 1;
       if (img.width < 1000) {
         scaleFactor = 2.0;
       }
       canvas.width = img.width * scaleFactor;
       canvas.height = img.height * scaleFactor;
+
       const ctx = canvas.getContext("2d");
       ctx.scale(scaleFactor, scaleFactor);
       ctx.drawImage(img, 0, 0);
 
-      let src, gray, blurred, sharpened, smoothed, thresh;
+      let src, gray, sharpened, smoothed, thresh, kernel;
 
       try {
         src = cv.imread(canvas);
@@ -104,7 +107,37 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
           gray = src.clone();
         }
 
-        // Step 2: Deskew
+        // Step 1.5: Rotate image using Tesseract.detect for OCR-based angle correction
+        try {
+          const dataURL = canvas.toDataURL("image/jpeg");
+          const orientation = await Tesseract.detect(dataURL);
+          const detectedAngle = orientation.data?.orientation?.angle || 0;
+          console.log(`📐 Tesseract.detect → angle: ${detectedAngle}°`);
+          if (detectedAngle !== 0) {
+            const center = new cv.Point(gray.cols / 2, gray.rows / 2);
+            const M = cv.getRotationMatrix2D(center, -detectedAngle, 1.0);
+            const rotated = new cv.Mat();
+            cv.warpAffine(
+              gray,
+              rotated,
+              M,
+              new cv.Size(gray.cols, gray.rows),
+              cv.INTER_LINEAR,
+              cv.BORDER_CONSTANT,
+              new cv.Scalar(255, 255, 255, 255)
+            );
+            showIntermediate(rotated, `Rotated by Tesseract angle ${-detectedAngle}°`);
+            gray.delete();
+            gray = rotated;
+            M.delete();
+            center.delete();
+            await delay(300);
+          }
+        } catch (err) {
+          console.warn("⚠️ Tesseract.detect failed:", err);
+        }
+
+        // Step 2: Deskew (fine rotation correction)
         if (deskew) {
           console.log("🧭 Step 2: Deskewing started");
           const binary = new cv.Mat();
@@ -117,20 +150,23 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
           for (let i = 0; i < contours.size(); i++) {
             const contour = contours.get(i);
             const area = cv.contourArea(contour);
-            if (area > maxArea) {
+            if (area > maxArea && area > 5000) {
+              if (maxContour) maxContour.delete();
               maxArea = area;
               maxContour = contour;
+            } else {
+              contour.delete();
             }
           }
           if (maxContour && maxContour.rows >= 5) {
             const rotatedRect = cv.minAreaRect(maxContour);
             let angle = rotatedRect.angle;
             if (rotatedRect.size.width < rotatedRect.size.height) {
-            } else {
               angle += 90;
             }
             if (angle < -45) angle += 180;
             if (angle > 45) angle -= 180;
+            console.log(`🧭 Detected fine skew angle: ${angle.toFixed(2)}°`);
             if (Math.abs(angle) > 1.0) {
               const center = new cv.Point(gray.cols / 2, gray.rows / 2);
               const M = cv.getRotationMatrix2D(center, angle, 1.0);
@@ -148,14 +184,18 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
               gray.delete();
               gray = rotated;
               M.delete();
+              center.delete();
               await delay(300);
             } else {
               console.log("✅ Angle too small, skipping rotation");
             }
+            rotatedRect.center.delete();
+            rotatedRect.size.delete();
           }
           binary.delete();
           hierarchy.delete();
           contours.delete();
+          if (maxContour) maxContour.delete();
         }
 
         // Step 3: Perspective Correction
@@ -171,12 +211,15 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
           for (let i = 0; i < contours.size(); i++) {
             const contour = contours.get(i);
             const area = cv.contourArea(contour);
-            if (area > maxArea) {
+            if (area > maxArea && area > 5000) {
+              if (maxContour) maxContour.delete();
               maxArea = area;
               maxContour = contour;
+            } else {
+              contour.delete();
             }
           }
-          if (maxContour) {
+          if (maxContour && maxContour.rows >= 4) {
             const approx = new cv.Mat();
             const perimeter = cv.arcLength(maxContour, true);
             cv.approxPolyDP(maxContour, approx, 0.02 * perimeter, true);
@@ -218,7 +261,7 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
               ]);
               const M = cv.getPerspectiveTransform(srcTri, dstTri);
               const warped = new cv.Mat();
-              cv.warpPerspective(gray, warped, M, new cv.Size(maxWidth, maxHeight));
+              cv.warpPerspective(gray, warped, M, new cv.Size(maxWidth, maxHeight), cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar(255, 255, 255, 255));
               showIntermediate(warped, "Perspective Corrected");
               gray.delete();
               gray = warped;
@@ -231,9 +274,10 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
           binaryForPerspective.delete();
           contours.delete();
           hierarchy.delete();
+          if (maxContour) maxContour.delete();
         }
 
-        // Unsharp Mask step retained
+        // Unsharp Mask
         if (unsharpMask) {
           const blurredUM = new cv.Mat();
           cv.GaussianBlur(gray, blurredUM, new cv.Size(5, 5), 1.5);
@@ -256,7 +300,7 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
           await delay(300);
         }
 
-        // Thresholding
+        // Thresholding (Otsu)
         if (thresholding) {
           thresh = new cv.Mat();
           cv.threshold(gray, thresh, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
@@ -266,29 +310,19 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
           await delay(300);
         }
 
-        // Adaptive thresholding tuned
+        // Adaptive thresholding
         if (adaptiveThresholding) {
           const adaptive = new cv.Mat();
-
-          // Get image dimensions
           const rows = gray.rows;
           const cols = gray.cols;
-
-          // Calculate blockSize dynamically (odd number, e.g. ~5% of smaller dimension)
           let blockSize = Math.floor(Math.min(rows, cols) * 0.05);
           if (blockSize % 2 === 0) {
-            blockSize += 1; // Ensure block size is odd
+            blockSize += 1;
           }
-          blockSize = Math.max(blockSize, 3); // Minimum block size should be 3
-
-          // Calculate mean intensity of the input grayscale image
+          blockSize = Math.max(blockSize, 3);
           const meanScalar = cv.mean(gray);
           const meanIntensity = meanScalar[0];
-
-          // Set C dynamically based on mean intensity (example heuristic)
-          // Higher mean intensity --> slightly larger C to make threshold stricter
-          let C = meanIntensity > 127 ? 10 : 5;
-
+          const C = meanIntensity > 127 ? 10 : 5;
           cv.adaptiveThreshold(
             gray,
             adaptive,
@@ -298,15 +332,13 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
             blockSize,
             C
           );
-
           showIntermediate(adaptive, "Adaptive Threshold");
           gray.delete();
           gray = adaptive;
           await delay(300);
         }
 
-
-        // Denoising (median blur)
+        // Denoising (Median Blur)
         if (denoise) {
           const denoised = new cv.Mat();
           cv.medianBlur(gray, denoised, 3);
@@ -316,7 +348,7 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
           await delay(300);
         }
 
-        // CLAHE enhancement
+        // CLAHE Enhancement
         if (clahe) {
           const claheInstance = new cv.CLAHE(2.0, new cv.Size(8, 8));
           const equalized = new cv.Mat();
@@ -328,7 +360,7 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
           await delay(300);
         }
 
-        // Invert if needed
+        // Invert image colors
         if (invert) {
           const inverted = new cv.Mat();
           cv.bitwise_not(gray, inverted);
@@ -338,16 +370,16 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
           await delay(300);
         }
 
+        // Morphological Closing (to consolidate characters)
         if (morph) {
-        // Morphological closing to consolidate characters
-        const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
-        const closed = new cv.Mat();
-        cv.morphologyEx(gray, closed, cv.MORPH_CLOSE, kernel);
-        showIntermediate(closed, "Morphological Closing");
-        gray.delete();
-        gray = closed;
-        kernel.delete();
-        await delay(300);
+          kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+          const closed = new cv.Mat();
+          cv.morphologyEx(gray, closed, cv.MORPH_CLOSE, kernel);
+          showIntermediate(closed, "Morphological Closing");
+          gray.delete();
+          gray = closed;
+          kernel.delete();
+          await delay(300);
         }
 
         // Final canvas output
@@ -367,7 +399,6 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
         if (src) src.delete();
         if (kernel) kernel.delete();
         if (gray) gray.delete();
-        if (blurred) blurred && blurred.delete();
         if (sharpened) sharpened && sharpened.delete();
         if (smoothed) smoothed && smoothed.delete();
         if (thresh) thresh.delete();
@@ -376,9 +407,11 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
     };
 
     img.onerror = (e) => reject(new Error("Failed to load image: " + e.message));
+
     img.src = typeof imageSrc === "string" ? imageSrc : URL.createObjectURL(imageSrc);
   });
 }
+
 
 // --- Clean text by removing invisible chars and normalizing whitespace, preserve lines ---
 export function cleanAndMergeText(rawText) {
