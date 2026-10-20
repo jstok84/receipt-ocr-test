@@ -1,0 +1,10 @@
+node_modules
+docs
+.cache
+dist
+.parcel-cache
+*.bak
+*.bak.*
+samples
+*.png
+*.traineddata

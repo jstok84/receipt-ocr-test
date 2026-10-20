@@ -1,6 +1,9 @@
 export function parseReceipt(text) {
   const PARSER_VERSION = "v1.6.1";
-  console.log("🧾 Receipt parser version:", PARSER_VERSION);
+  // Set window.__OCR_DEBUG = true to restore verbose parser diagnostics.
+  const DEBUG = typeof window !== "undefined" && window.__OCR_DEBUG === true;
+  const log = (...args) => { if (DEBUG) console.log(...args); };
+  log("Receipt parser version:", PARSER_VERSION);
 
   /** Normalize amount string for parseFloat, handling Slovenian or non-Slovenian formats */
   function normalizeAmount(value, isSlovenian) {
@@ -12,6 +15,11 @@ export function parseReceipt(text) {
         return dotCount <= 1 ? value : value.replace(/\./g, "");
       }
     } else {
+      // If no dot is present, the comma is the decimal separator (e.g. "2,10" -> 2.10).
+      // Only strip commas as thousands separators when a dot anchor exists ("1,234.56").
+      if (!value.includes(".")) {
+        return value.replace(",", ".");
+      }
       return value.replace(/,/g, "");
     }
   }
@@ -96,7 +104,7 @@ export function parseReceipt(text) {
         currency = match[2]?.toUpperCase() || currency;
         if (!isNaN(net) && !isNaN(vat)) {
           const total = parseFloat((net + vat).toFixed(2));
-          console.log(`💡 Fallback from VAT summary: ${net} + ${vat} = ${total}`);
+          log(`💡 Fallback from VAT summary: ${net} + ${vat} = ${total}`);
           return { value: total, currency };
         }
       }
@@ -129,6 +137,7 @@ export function parseReceipt(text) {
 
       // NEW: Matches space-separated numeric dates like "25 8 2024"
       /\b(0?[1-9]|[12][0-9]|3[01])\s+(0?[1-9]|1[0-2])\s+(\d{4})\b/,
+          /\b(0?[1-9]|[12][0-9]|3[01])\s*[.,]\s*(0?[1-9]|1[0-2])\s*[.,]\s*(\d{4})\b/,
     ];
 
     for (const line of lines) {
@@ -182,6 +191,7 @@ export function parseReceipt(text) {
         "datum",
         "račun",
         "osnovni kapital",
+        "bruto",
         "ponudbe",
         "rekapitulacija",
         "osnova",
@@ -213,8 +223,17 @@ export function parseReceipt(text) {
     /^eor[: ]/i,
     /^zol[: ]/i,
     /^spar plus/i,
+    /s.?upaj/i,
+    /zvesto[bnh]e/i,
+    /masterca/i,
+    /\b[a-e]:/i,
+    /=\s*\d/,
+    /\d{1,2}[.,]\s{0,2}\d{1,2}[.,]\s{0,2}20\d{2}/,
     /mat\.št/i,
     /osn\.kapital/i,
+    /popust/i,
+    /dopla[cč]il/i,
+    /discount/i,
     /splošni pogoji/i,
     /vaše današnje ugodnosti/i,
     /točke zvestobe/i,
@@ -243,11 +262,11 @@ export function parseReceipt(text) {
     const delta = total ? Math.abs(fallbackTotal.value - total) : 0;
     const useFallback = !total || delta <= 0.05 || fallbackTotal.value > total;
     if (useFallback) {
-      console.log(`✅ Using fallback total: ${fallbackTotal.value} > main: ${total}`);
+      log(`✅ Using fallback total: ${fallbackTotal.value} > main: ${total}`);
       total = fallbackTotal.value;
       currency = fallbackTotal.currency ?? currency;
     } else {
-      console.log(`⚠️ Ignoring fallback: ${fallbackTotal.value} vs main: ${total}`);
+      log(`⚠️ Ignoring fallback: ${fallbackTotal.value} vs main: ${total}`);
     }
   }
 
@@ -256,31 +275,31 @@ export function parseReceipt(text) {
 
   // Parse items with support for Spar multi-column format and fallback generic parsing
   for (const line of lines) {
-    console.log(`Checking line: "${line}"`);
+    log(`Checking line: "${line}"`);
 
     // Skip lines with date/time metadata pattern
     if (dateTimePattern.test(line)) {
-      console.log("  Skipping due to date/time metadata pattern.");
+      log("  Skipping due to date/time metadata pattern.");
       continue;
     }
 
     if (shouldExcludeLine(line, excludeKeywords)) {
-      console.log("  Skipping due to exclude keyword (whole word match).");
+      log("  Skipping due to exclude keyword (whole word match).");
       continue;
     }
 
     if (nonItemPatterns.some((pat) => pat.test(line))) {
-      console.log("  Skipping due to non-item pattern.");
+      log("  Skipping due to non-item pattern.");
       continue;
     }
 
     if (totalCandidates.some((tc) => tc.line === line)) {
-      console.log("  Skipping line matching total candidate.");
+      log("  Skipping line matching total candidate.");
       continue;
     }
 
     if (/rekapitulacija|osnova za ddv|skupaj ddv/i.test(line)) {
-      console.log("  Skipping VAT summary or similar.");
+      log("  Skipping VAT summary or similar.");
       continue;
     }
 
@@ -303,7 +322,7 @@ export function parseReceipt(text) {
 
       const priceNum = parseFloat(normalizeAmount(priceNetRaw, isSlovenian));
       if (isNaN(priceNum) || priceNum <= 0) {
-        console.log("  Skipping Spar item line due to invalid net price.");
+        log("  Skipping Spar item line due to invalid net price.");
         continue;
       }
 
@@ -314,11 +333,11 @@ export function parseReceipt(text) {
       if (isNaN(quantityNum)) quantityNum = undefined;
 
       if (!name || name.length < 3) {
-        console.log("  Skipping Spar item line due to short or empty name.");
+        log("  Skipping Spar item line due to short or empty name.");
         continue;
       }
 
-      console.log(
+      log(
         `  Detected Spar item: name="${name}", price=${priceNum.toFixed(
           2
         )} ${currency}, quantity=${quantityNum ?? "N/A"}`
@@ -335,7 +354,7 @@ export function parseReceipt(text) {
     // Fallback generic parsing: extract last amount
     const amountMatch = extractLastAmountWithCurrency(line);
     if (!amountMatch) {
-      console.log("  Skipping due to no valid amount found in line.");
+      log("  Skipping due to no valid amount found in line.");
       continue;
     }
 
@@ -347,12 +366,12 @@ export function parseReceipt(text) {
         const price = parseFloat(priceNorm);
 
     if (isNaN(price) || price <= 0) {
-      console.log(`  Skipping due to invalid price: "${priceStr}" parsed as ${price}`);
+      log(`  Skipping due to invalid price: "${priceStr}" parsed as ${price}`);
       continue;
     }
 
     if (price > 10000) {
-      console.log(`  Skipping due to implausible large price: ${price.toFixed(2)}`);
+      log(`  Skipping due to implausible large price: ${price.toFixed(2)}`);
       continue;
     }
 
@@ -360,7 +379,7 @@ export function parseReceipt(text) {
     let description = line.slice(0, descEndIndex).trim();
 
     if (!description || description.length < 3 || !/[a-zA-Zčšž]/i.test(description)) {
-      console.log(`  Skipping due to invalid description: "${description}"`);
+      log(`  Skipping due to invalid description: "${description}"`);
       continue;
     }
 
@@ -376,7 +395,7 @@ export function parseReceipt(text) {
       }
     }
 
-    console.log(
+    log(
       `  Detected item: name="${description}", price=${price.toFixed(
         2
       )} ${detectedCurrency}, quantity=${quantityNum ?? "N/A"}`
@@ -389,10 +408,10 @@ export function parseReceipt(text) {
     });
   }
 
-  console.log(`Extracted date: ${date}`);
-  console.log(`Detected total candidates: ${totalCandidates.length}`);
-  console.log(`Final total: ${total ? total.toFixed(2) + " " + currency : null}`);
-  console.log(`Total items detected: ${items.length}`);
+  log(`Extracted date: ${date}`);
+  log(`Detected total candidates: ${totalCandidates.length}`);
+  log(`Final total: ${total ? total.toFixed(2) + " " + currency : null}`);
+  log(`Total items detected: ${items.length}`);
 
   return {
     version: PARSER_VERSION,

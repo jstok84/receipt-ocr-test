@@ -1,0 +1,27 @@
+Kruger šum.tab EUR
+oče oi or ed zad 8
+Barcaffe 100g 2.09 h
+Vmesna vsota 4,73
+Attendant-Id: a
+ECR-Id: 4
+ECR-Seq: 7970 .
+EFT Ref-No: 00637695
+Vnos pla?ila Visa Debit Contactless
+KXXXXXXXXXXX3030
+11.03.2025 08:11
+Trm-Id: 31502695
+Trx.. Seg-ont: 00637695
+4huth. Code; — 415801
+Ihog-rld 0 00999100200
+Znesek-EFT. EUR:- ' 4.73
+HOFER CENA ~~ 4.73
+3 Izdseripo!: >!
+VISA EUR 4,73
+preg
+A 9,5% Neto 2,69 DDV 0,25
+< B 22,0% Neto 1,47 DDV 0,32
+= -— 4 4 [s] [= |
+di Ča ET
+TUJOGI 9115S prid? 85
+Račun št.: 381080-004-293
+o oa na730071dddboe35a1415023030e

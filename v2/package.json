@@ -1,0 +1,35 @@
+{
+  "name": "receipt-ocr-test-v2",
+  "version": "2.0.0",
+  "private": true,
+  "dependencies": {
+    "assert": "^2.0.0",
+    "buffer": "^6.0.3",
+    "pdfjs-dist": "^3.11.174",
+    "process": "^0.11.10",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "stream-browserify": "^3.0.0",
+    "tesseract.js": "^7.0.0"
+  },
+  "alias": {
+    "buffer": "buffer",
+    "process": "process/browser",
+    "stream": "stream-browserify",
+    "assert": "assert"
+  },
+  "browserslist": [
+    "last 1 Chrome version",
+    "last 1 Firefox version"
+  ],
+  "scripts": {
+    "start": "parcel src/index.html --open",
+    "build": "parcel build src/index.html --dist-dir dist --public-url ./",
+    "test": "node --test tests/parseReceipt.test.js tests/corpus.test.js tests/sparV2.test.js tests/sparV3.test.js tests/hofer.test.js tests/eurospin.test.js"
+  },
+  "devDependencies": {
+    "parcel": "^2.16.4",
+    "sharp": "^0.35.5"
+  },
+  "type": "module"
+}

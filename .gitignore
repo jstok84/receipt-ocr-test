@@ -2,3 +2,6 @@ node_modules
 docs
 .cache
 dist
+.parcel-cache
+*.bak
+*.bak.*

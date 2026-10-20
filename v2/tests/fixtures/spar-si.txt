@@ -1,0 +1,26 @@
+SUPERMARKET SPAR D.D.
+LETALISKA 8, 1000 LJUBLJANA
+RACUN ST.: 987654
+DAT: 07. 07. 2025  OB: 13:17:09
+KARTICA: 999****8888
+----------------------------------------------------------------
+KOL NAR  KOL ARTIKLI           ENOTA  MPC   POPUST  NPC   DDV
+----------------------------------------------------------------
+1  000001  MLEKO ALPSKO 3,5%  1  1  KOS  1,29  0%  1,29  A
+1  000002  KRUH BELI 500G  1  2  KOS  1,49  10%  1,34  A
+1  000003  COKOLATA MILKA 100G  1  1  KOS  2,39  0%  2,39  B
+3  000004  JOGURT 500G  3  3  KOS  1,99  0%  1,99  A
+----------------------------------------------------------------
+PLACANO
+SKUPAJ EUR 11,50
+-------------- --------------------------------------
+  REZULTAT
+  REKAPITULACIJA PO OBJAVLJENIH STOPNJAH DDV
+  BRUTO                11,50
+  OSNOVA 9,5%           5,10   0,48   5,58
+  OSNOVA 22%            4,20   0,92   5,12
+  SKUPAJ DDV            1,40
+  SKUPNA VREDNOST      11,50
+VSE CENE VSEDANSJE V EUR.
+SPAS PLUS TOCKE 12
+HVALA ZA ZAUPANJE IN SE VIDIMO SPET!
