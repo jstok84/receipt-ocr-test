@@ -11,7 +11,7 @@ diverged deliberately — do not "sync" without the canonical-swap decision (see
 
 ## Current state (all verified by tests)
 
-- Parser `src/parseReceipt.js` version v1.6.8 state: keyword-tier totals
+- Parser `src/parseReceipt.js` version v1.6.9 state: keyword-tier totals
   (za plačilo > skupaj > znesek, LAST wins per tier), payment markers
   (`masterca`, `maest/rco`, `karticao`, `visa`, `eft`, `hofer cena` — NOT `gotovina`/`cash`:
   tender-side, can exceed payable), structural currency-tag rule
@@ -27,6 +27,13 @@ diverged deliberately — do not "sync" without the canonical-swap decision (see
   repair (`šumeče tablete 085 A` → 0,85 — only lines with NO other decimal
   amount), `\bneto\b` nonItem (DDV recap rows), trailing-4+-digit-run nonItem
   (EFT echo, e.g. "ACH HEE i BER 5.0 41501" phantom 5,00 item).
+  v1.6.9 addition (HOFER EFT run): VAT-recap "missing bucket" check — when
+  items don't sum to total, recap rows (`<code%> neto <neto>`) derive gross =
+  neto×(1+rate/100) — deliberately NOT from the (garbled) DDV digit — and an
+  exact ±0.02 match with the items-vs-total gap adds an informative flag
+  ("VAT 22,0% recap implies missing item ≈ 1,79 (neto 1,47) — row not
+  captured"). No-fire guard proven: SPAR coupon gap 5,74 and two-row loss
+  2,64 gain no hint.
 - Pipeline `src/ocrUtils.js`: grayscale → **bright-mask receipt isolation**
   (Otsu + close 15×15 + largest-bright-region bbox + 2% margin + sanity guards,
   replaced broken fixed-240 dark-mask autoCrop) → **contrast stretch**

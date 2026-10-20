@@ -92,3 +92,18 @@ test("hofer eft scan: missing (clipped) Krüger 1,79 keeps the mismatch honest",
   assert.ok(sumCheck, "items-sum check must be present");
   assert.equal(sumCheck.ok, false, `mismatch expected (0.85+2.09 ≠ 4.73): ${sumCheck.text}`);
 });
+
+test("hofer eft scan: VAT recap names the clipped item ≈ 1,79 (v1.6.9)", () => {
+  const r = parseReceipt(rawEft);
+  const vatCheck = (r.checks || []).find((c) => /VAT 22,0%/.test(c.text));
+  assert.ok(vatCheck, `VAT-bucket check missing: ${JSON.stringify(r.checks)}`);
+  assert.match(vatCheck.text, /1\.79/);
+  assert.match(vatCheck.text, /neto 1\.47/);
+});
+
+test("hofer eft scan: VAT-bucket check does NOT fire on multi-row losses or coupons", () => {
+  // hofer-scan-real lost BOTH the 1,79 and the 0,85 rows (gap 2,64 matches no
+  // single bucket); SPAR's 5,74 gap is a coupon. Neither may gain a VAT hint.
+  const rReal = parseReceipt(raw);
+  assert.ok(!(rReal.checks || []).some((c) => /VAT .* recap/.test(c.text)), "false VAT hint on 2,64 gap");
+});

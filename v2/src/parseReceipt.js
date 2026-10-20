@@ -1,5 +1,5 @@
 export function parseReceipt(text) {
-  const PARSER_VERSION = "v1.6.8";
+  const PARSER_VERSION = "v1.6.9";
   // Set window.__OCR_DEBUG = true to restore verbose parser diagnostics.
   const DEBUG = typeof window !== "undefined" && window.__OCR_DEBUG === true;
   const log = (...args) => { if (DEBUG) console.log(...args); };
@@ -592,6 +592,31 @@ export function parseReceipt(text) {
               text: `items sum ${itemSum.toFixed(2)} ≠ total ${total.toFixed(2)} — verify a price [?] or a discount/missing item`,
             }
       );
+      // VAT-recap "missing bucket" refinement (v1.6.9, HOFER real case): the
+      // photo clipped the Krüger 1,79 row entirely, but the DDV recap survived
+      // ("B 22,0% Neto 1,47 …"). Deriving each recap row's gross from rate ×
+      // neto (NOT from the garbled DDV digit — "0,82" was misread for "0,32")
+      // and matching it against the items-vs-total gap names the missing
+      // amount with evidence instead of leaving a bare sum mismatch. Fires
+      // only on an exact (±0.02) bucket match, so SPAR-coupon gaps (5,74) and
+      // multi-row losses (2,64 = two clipped rows) never produce false hits.
+      if (delta > 0.011) {
+        const missing = total - itemSum;
+        for (const recapRow of lines.filter((l) => /\bneto\b/i.test(l))) {
+          const m = recapRow.match(/([a-e0-9])?\s*(\d{1,2}(?:[.,]\d{1,2})?)\s*%\s*neto\s+(\d{1,3}(?:[.,]\d{1,4})?)/i);
+          if (!m) continue;
+          const rate = parseFloat(m[2].replace(",", "."));
+          const neto = parseFloat(m[3].replace(",", "."));
+          if (isNaN(rate) || isNaN(neto)) continue;
+          const gross = parseFloat((neto * (1 + rate / 100)).toFixed(2));
+          if (Math.abs(gross - missing) <= 0.02) {
+            checks.push({
+              ok: false,
+              text: `VAT ${m[2]}% recap row implies a missing item ≈ ${gross.toFixed(2)} ${currency} (neto ${neto.toFixed(2)}) — row not captured by OCR`,
+            });
+          }
+        }
+      }
     }
   }
 
