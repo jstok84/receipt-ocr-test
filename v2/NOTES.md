@@ -348,6 +348,34 @@ One shipping error en route: dropping the export also dropped "async" from
 extractTextLinesFromPDFPage, tripping Parcel ("await in non-async") !==
 caught by the E2E reload immediately, fixed same commit block.
 
+## UI restyle (2026-10-21): deliberate, non-generic design language
+
+Rebuilt the visual layer ( Goal: modern + cohesive, explicitly NOT the
+generic gradient/glow/emoji "AI look" - quiet utility design where the
+receipt data is the only loud element:
+
+- src/styles.css (new): token-driven design system - warm paper neutrals
+  (#f6f5f2/#fff), hairline borders, ink monochrome accent, 5/8px radius,
+  system font stack + true monospace with tabular numerals for money.
+  No gradients, no shadows-glow, no emoji decoration.
+- Items render as receipt rows (dotted leaders, price right-aligned mono);
+  ia markers became uppercase text badges (strip/band re-OCR) instead of
+  the repeated (- onem), because the info is data, not decoration; checks
+  keep the literal [+?]/check glyphs and get semantic colors only.
+- Upload = dashed dropzone with drag-and-drop; camera, PDF previews, strip
+  evidence panels restyled; empty progress states quieted; Copy button on
+  OCR text; file input re-selectable (value reset) + hidden-file label.
+- The stale v1 progress block (always-visible green bar ABOVE the app,
+  "Waiting to start OCR..." at idle) is now a fixed-bottom status chip,
+  hidden when idle - updateOCRProgressUI toggles display.
+- index.html: title "Receipt OCR", viewport meta, mojibake comments
+  removed; src/styles.js deleted (replaced by styles.css); app.js render
+  layer rewritten to classNames, logic untouched.
+
+Verified: 59/59 tests; live eurospin run renders all component classes
+(badge rows, warn/ok checks, Date/Total meta, evidence with 3 attempts);
+progress chip hidden after completion; zero debug canvases.
+
 ## Debts (waiting on the user)
 
 1. ~~Local git commit~~ — DONE 2026-10-21: initial v2 commit on `main`, local-only

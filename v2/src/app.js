@@ -1,13 +1,11 @@
 import React, { useState, useEffect, useRef } from "react";
 import { processImage, processPDF, cleanAndMergeText } from "./ocrUtils";
 import { parseReceipt } from "./parseReceipt";
-import styles from "./styles";
 
 export default function App() {
   const [text, setText] = useState("");
   const [parsed, setParsed] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [progress, setProgress] = useState(0);
   const [useCamera, setUseCamera] = useState(false);
   const [cameraAvailable, setCameraAvailable] = useState(false);
 
@@ -16,6 +14,8 @@ export default function App() {
   const [pdfPreviews, setPdfPreviews] = useState([]);
   const [useFlatMode, setUseFlatMode] = useState(false);
   const [stripRescue, setStripRescue] = useState(null);
+  const [copied, setCopied] = useState(false);
+  const [dragHover, setDragHover] = useState(false);
 
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -40,9 +40,8 @@ export default function App() {
     };
   }, [useCamera]);
 
-  // alreadyCleaned: processImage returns text that already went through
-  // cleanAndMergeText (idempotent), so the image paths skip the re-clean;
-  // the PDF path still cleans (pdf-embedded text was never cleaned).
+  // alreadyCleaned: processImage returns text that already went through the
+  // single clean pass (idempotent); the PDF path still cleans pdf-embedded text.
   const runParsing = (rawText, extraItems = [], rescue = null, corrections = [], alreadyCleaned = false) => {
     let prepared = rawText;
     if (!useFlatMode) {
@@ -63,7 +62,6 @@ export default function App() {
     const stream = video.srcObject;
 
     setLoading(true);
-    setProgress(0);
     setText("Processing captured image...");
     setParsed(null);
     setUploadedPreview(null);
@@ -73,18 +71,18 @@ export default function App() {
       const [track] = stream.getVideoTracks();
       let blob;
 
-      // ✅ Try using ImageCapture API
+      // Try using ImageCapture API
       if ("ImageCapture" in window) {
         try {
           const imageCapture = new ImageCapture(track);
           blob = await imageCapture.takePhoto(); // high-quality still image
-          console.log("📸 Captured photo using ImageCapture API");
+          console.log("Captured photo using ImageCapture API");
         } catch (err) {
-          console.warn("⚠️ ImageCapture failed, falling back to canvas:", err);
+          console.warn("ImageCapture failed, falling back to canvas:", err);
         }
       }
 
-      // 🔁 Fallback to canvas capture if ImageCapture failed or not supported
+      // Fallback to canvas capture if ImageCapture failed or not supported
       if (!blob) {
         // Let camera autofocus for a moment (simple UX improvement)
         await new Promise(res => setTimeout(res, 2000));
@@ -97,72 +95,57 @@ export default function App() {
         const dataUrl = canvas.toDataURL("image/jpeg");
         setCapturedImage(dataUrl);
 
-        const result = await processImage(dataUrl, (p) => setProgress(p));
+        const result = await processImage(dataUrl);
         setText(result.text);
         runParsing(result.text, result.extraItems, result.rescue, result.corrections, true);
         setLoading(false);
         return;
       }
 
-      // 📷 Convert blob (from ImageCapture) to DataURL for processing
+      // Convert blob (from ImageCapture) to DataURL for processing
       const reader = new FileReader();
       reader.onloadend = async () => {
         const dataUrl = reader.result;
         setCapturedImage(dataUrl);
 
-        const result = await processImage(dataUrl, (p) => setProgress(p));
+        const result = await processImage(dataUrl);
         setText(result.text);
         runParsing(result.text, result.extraItems, result.rescue, result.corrections, true);
         setLoading(false);
       };
       reader.readAsDataURL(blob);
     } catch (err) {
-      console.error("❌ Error during capture:", err);
+      console.error("Error during capture:", err);
       setText("Capture failed");
       setLoading(false);
     }
   };
 
-
-  const handleFileUpload = async e => {
-    const file = e.target.files?.[0];
+  const handleFiles = async file => {
     if (!file) return;
     const isImage = file.type.startsWith("image/");
     const isPDF = file.type === "application/pdf";
-    let preview = null;
-    if (isImage) preview = URL.createObjectURL(file);
+    const preview = isImage ? URL.createObjectURL(file) : null;
     setCapturedImage(null);
     setText(isImage ? "Processing image file..." : isPDF ? "Processing PDF..." : "");
     setUploadedPreview(isImage ? preview : null);
     setPdfPreviews([]);
     setParsed(null);
     setLoading(true);
-    setProgress(0);
 
-    if (isImage) {
-      await processGenericFile(file, preview);
-    } else if (isPDF) {
-      const { text: pdfText, previews } = await processPDF(file, p => setProgress(p));
-      setText(pdfText);
-      runParsing(pdfText);
-      setPdfPreviews(previews);
-      setLoading(false);
-    } else {
-      setText("Unsupported file type");
-      setLoading(false);
-    }
-  };
-
-  const processGenericFile = async (file, previewDataUrl = null) => {
-    setParsed(null);
-    setText("Processing OCR...");
-    setLoading(true);
-    setProgress(0);
-    if (previewDataUrl) setUploadedPreview(previewDataUrl);
     try {
-      const result = await processImage(file, p => setProgress(p));
-      setText(result.text);
-      runParsing(result.text, result.extraItems, result.rescue, result.corrections, true);
+      if (isImage) {
+        const result = await processImage(file);
+        setText(result.text);
+        runParsing(result.text, result.extraItems, result.rescue, result.corrections, true);
+      } else if (isPDF) {
+        const { text: pdfText, previews } = await processPDF(file);
+        setText(pdfText);
+        runParsing(pdfText);
+        setPdfPreviews(previews);
+      } else {
+        setText("Unsupported file type");
+      }
     } catch (err) {
       console.error(err);
       setText("Error processing image");
@@ -170,78 +153,150 @@ export default function App() {
     setLoading(false);
   };
 
+  const handleFileUpload = async e => {
+    await handleFiles(e.target.files?.[0]);
+    e.target.value = ""; // allow re-selecting the same file
+  };
+
+  const handleDrop = e => {
+    e.preventDefault();
+    const f = e.dataTransfer?.files?.[0];
+    if (f) handleFiles(f);
+  };
+
+  const handleDragOver = e => e.preventDefault();
+
+  const copyText = () => {
+    if (!text) return;
+    navigator.clipboard?.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1400);
+    });
+  };
+
+  const preview = uploadedPreview || capturedImage;
+
   return (
-    <div style={styles.container}>
-      <h1 style={styles.header}>🧾 Receipt OCR Scanner</h1>
-      <div style={styles.controls}>
-        <input type="file" accept="image/*,.pdf" onChange={handleFileUpload} style={styles.input} />
-        {cameraAvailable && <button onClick={() => setUseCamera(!useCamera)} style={styles.button}>
-          {useCamera ? "Stop Camera" : "Use Camera"}
-        </button>}
-        <button onClick={() => setUseFlatMode(!useFlatMode)} style={styles.button}>
-          {useFlatMode ? "Switch to Line Mode" : "Switch to Flat Mode"}
+    <div className="container">
+      <header className="app-header">
+        <h1>Receipt OCR</h1>
+        <button
+          className="btn ghost mini"
+          onClick={() => setUseFlatMode(!useFlatMode)}
+        >
+          {useFlatMode ? "Switch to line mode" : "Switch to flat mode"}
         </button>
-      </div>
-      <p style={{ marginTop: 5, fontStyle: "italic", color: "#444" }}>
-        Mode: <strong>{useFlatMode ? "Flat (no line breaks)" : "Line-based OCR"}</strong>
+      </header>
+      <p className="app-status">
+        Mode: {useFlatMode ? "flat (no line breaks)" : "line-based"} · everything is
+        processed locally in your browser
       </p>
 
-      {useCamera && <>
-        <video ref={videoRef} autoPlay playsInline style={styles.videoPreview} />
-        <canvas ref={canvasRef} style={{ display: "none" }} />
-        <button onClick={handleCapture} style={styles.button}>Capture & OCR</button>
-        {capturedImage && <img src={capturedImage} alt="Captured preview" style={{ width: 200, marginTop: 10, border: "1px solid #ccc" }} />}
-      </>}
+      <section
+        className={`upload${dragHover ? " drag" : ""}`}
+        onDragOver={e => { e.preventDefault(); setDragHover(true); }}
+        onDragLeave={() => setDragHover(false)}
+        onDrop={handleDrop}
+      >
+        <h2>Drop a receipt photo or PDF here</h2>
+        <p>Photograph or saved PDF — processing stays on this device</p>
+        <label className="btn primary file-label">
+          Choose file
+          <input type="file" accept="image/*,.pdf" onChange={handleFileUpload} />
+        </label>
+      </section>
 
-      {uploadedPreview && <img src={uploadedPreview} alt="Uploaded or captured preview" style={{ width: 200, marginTop: 10, border: "1px solid #ccc" }} />}
-
-      {pdfPreviews.length > 0 && <div style={{ marginTop: 20 }}>
-        <h3>PDF Page Previews</h3>
-        <div style={{ display: "flex", gap: 10, overflowX: "auto" }}>
-          {pdfPreviews.map((src, i) => <img key={i} src={src} alt={`Page ${i+1}`} style={{ height: 150, border: "1px solid #ccc" }} />)}
+      {useCamera && <section className="camera panel">
+        <video ref={videoRef} autoPlay playsInline />
+        <canvas ref={canvasRef} hidden />
+        <div className="actions" style={{ padding: "10px 16px" }}>
+          <button className="btn primary" onClick={handleCapture}>Capture &amp; OCR</button>
+          <button className="btn ghost" onClick={() => setUseCamera(false)}>Stop camera</button>
         </div>
+      </section>}
+
+      {loading && <div className="loading-row" role="status">
+        <span className="dot" />
+        Processing…
       </div>}
 
-      {loading && <>
-        <p>🔄 Processing OCR... {Math.round(progress * 100)}%</p>
-        <progress value={progress} max={1} style={{ width: "100%" }} />
-      </>}
+      {text && <section className="panel">
+        <div className="panel-head">
+          <h2>OCR text</h2>
+          <button className="btn ghost mini" onClick={copyText}>
+            {copied ? "Copied" : "Copy"}
+          </button>
+        </div>
+        <textarea className="ocr-text" readOnly value={text}
+          placeholder="OCR result will appear here..." />
+      </section>}
 
-      <textarea readOnly value={text} placeholder="OCR result will appear here..." style={styles.textarea} />
+      {parsed && <section className="panel">
+        <div className="panel-head">
+          <h2>Parsed data</h2>
+          {preview && <img className="preview-thumb" src={preview} alt="" />}
+        </div>
+        <div className="parsed">
+          <dl className="meta">
+            <div>
+              <dt>Date</dt>
+              <dd>{parsed.date || "—"}</dd>
+            </div>
+            <div className="dd-total">
+              <dt>Total</dt>
+              <dd>{parsed.total || "—"}</dd>
+            </div>
+          </dl>
 
-      {parsed && <div style={styles.parsedSection}>
-        <h2>Parsed Data</h2>
-        <p><strong>Date:</strong> {parsed.date || "Not found"}</p>
-        <p><strong>Total:</strong> {parsed.total || "Not found"}</p>
-        <h3>Items:</h3>
-        {parsed.items.length ? <ul>
-          {parsed.items.map((item, i) => <li key={i}>{item.name} — {item.price}{item.via === "strip-retry" ? " 🔁 (strip re-OCR)" : ""}{item.via === "strip-corrected" ? " 🔁 (band re-OCR)" : ""}</li>)}
-        </ul> : <p>No items detected</p>}
-        {parsed.checks?.length > 0 && <div style={{ fontSize: 12, color: "#777", marginTop: 8 }}>
-          {parsed.checks.map((c, i) => <div key={i}>{c.ok ? "✓" : "[?]"} {c.text}</div>)}
-        </div>}
-        {stripRescue && <details style={{ marginTop: 10, fontSize: 12, color: "#555" }}>
-          <summary style={{ cursor: "pointer", color: "#777" }}>
-            🔍 Strip re-OCR evidence ({stripRescue.missing != null
-              ? <>missing ≈ {stripRescue.missing.toFixed(2)} € — recovered "{stripRescue.winner.line}"</>
-              : <>items-sum mismatch — OCR measured "{stripRescue.winner.line}"</>})
-          </summary>
-          <div style={{ marginTop: 6 }}>
-            <p style={{ margin: "4px 0", fontWeight: "bold" }}>
-              The recovered price was <strong>measured by OCR</strong> from the strip below,
-              not derived from the total.
-            </p>
-            {stripRescue.attempts.map((a, i) => <div key={i} style={{ marginBottom: 8 }}>
-              <div>attempt {i + 1}: strip={a.stripKind}, band={Math.round(a.band[0] * 100)}–{Math.round(a.band[1] * 100)}%, {a.factor}×, {a.kernel === "lanczos3" ? "lanczos3" : "catrom"}, PSM={a.psm}
-                {a.image ? <img src={a.image} alt={`strip attempt ${i + 1}`} style={{ display: "block", width: 600, maxWidth: "100%", border: "1px solid #ccc", margin: "4px 0" }} /> : null}
-                <pre style={{ background: "#f7f7f7", padding: 6, whiteSpace: "pre-wrap", fontFamily: "monospace" }}>
-                  {a.lines.join("\n")}
-                </pre>
-              </div>
+          <ul className="items">
+            {parsed.items.length ? parsed.items.map((item, i) => <li key={i}>
+              <span>{item.name}</span>
+              <span className="leader" />
+              <span className="price">{item.price}</span>
+              {item.via === "strip-retry" && <span className="via-badge">strip re-OCR</span>}
+              {item.via === "strip-corrected" && <span className="via-badge">band re-OCR</span>}
+            </li>) : <p className="no-items">No items detected</p>}
+          </ul>
+
+          {parsed.checks?.length > 0 && <div className="checks">
+            {parsed.checks.map((c, i) => <div key={i} className={`check ${c.ok ? "ok" : "warn"}`}>
+              <span className="mark">{c.ok ? "✓" : "[?]"}</span>
+              <span>{c.text}</span>
             </div>)}
-          </div>
-        </details>}
-      </div>}
+          </div>}
+        </div>
+      </section>}
+
+      {pdfPreviews.length > 0 && <section className="panel">
+        <div className="panel-head"><h2>PDF pages (scanned, OCR fallback)</h2></div>
+        <div className="pdf-previews">
+          {pdfPreviews.map((src, i) => <img key={i} src={src} alt={`Page ${i + 1}`} />)}
+        </div>
+      </section>}
+
+      {stripRescue && <details className="panel evidence">
+        <summary>
+          Strip re-OCR evidence — {stripRescue.missing != null
+            ? `missing ≈ ${stripRescue.missing.toFixed(2)} €, recovered "${stripRescue.winner.line}"`
+            : `OCR measured "${stripRescue.winner.line}"`}
+        </summary>
+        <div className="evidence-body">
+          <p>
+            The recovered price was <strong>measured by OCR</strong> from the strip
+            below, not derived from the total.
+          </p>
+          {stripRescue.attempts.map((a, i) => <div className="attempt" key={i}>
+            <div className="attempt-label">
+              attempt {i + 1}: strip={a.stripKind}
+              {" "}band={Math.round(a.band[0] * 100)}–{Math.round(a.band[1] * 100)}%
+              {" "}{a.factor}× {a.kernel === "lanczos3" ? "lanczos3" : "catrom"}
+              {" "}PSM={a.psm}
+            </div>
+            {a.image && <img src={a.image} alt={`strip attempt ${i + 1}`} />}
+            <pre>{a.lines.join("\n")}</pre>
+          </div>)}
+        </div>
+      </details>}
     </div>
   );
 }

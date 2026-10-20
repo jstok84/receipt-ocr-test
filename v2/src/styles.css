@@ -1,0 +1,506 @@
+/* ---------------------------------------------------------------------------
+   Receipt OCR — design language
+   Neutral "ink & paper" utility look: warm paper background, hairline borders,
+   tabular numerals for money, one monochrome accent. No gradients, no glow,
+   no emoji chrome — the receipt data is the only loud thing on the page.
+   ------------------------------------------------------------------------- */
+
+:root {
+  --bg: #f6f5f2;
+  --surface: #ffffff;
+  --ink: #191813;
+  --ink-2: #5c5a52;
+  --ink-3: #a09d93;
+  --line: #e4e2dc;
+  --line-2: #d6d4cc;
+  --hover: #f4f3ef;
+  --ok: #38714b;
+  --warn: #9a6a1f;
+  --warn-bg: #faf6ee;
+  --radius-s: 5px;
+  --radius-m: 8px;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "Cascadia Mono", ui-monospace, "SF Mono", Consolas, Menlo,
+    "DejaVu Sans Mono", monospace;
+}
+
+html {
+  background: var(--bg);
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+::selection {
+  background: #19181322;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+a:focus-visible,
+label:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* ----- layout ----------------------------------------------------------- */
+
+.container {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 28px 20px 72px;
+}
+
+.app-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 4px;
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.app-status {
+  margin: 2px 0 20px;
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
+
+/* ----- buttons ---------------------------------------------------------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-s);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.btn.primary {
+  background: var(--ink);
+  color: #fff;
+}
+
+.btn.primary:hover {
+  background: #33322b;
+}
+
+.btn.ghost {
+  border-color: var(--line-2);
+  color: var(--ink);
+  background: var(--surface);
+}
+
+.btn.ghost:hover {
+  background: var(--hover);
+}
+
+.btn.mini {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+/* ----- upload panel ------------------------------------------------------ */
+
+.upload {
+  border: 1px dashed var(--line-2);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  padding: 36px 24px;
+  text-align: center;
+}
+
+.upload.drag {
+  border-color: var(--ink-2);
+  background: var(--hover);
+}
+
+.upload h2 {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.upload p {
+  margin: 0 0 16px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+
+.file-label {
+  position: relative;
+  display: inline-flex;
+  overflow: hidden;
+}
+
+.file-label input[type="file"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+/* ----- camera ------------------------------------------------------------ */
+
+.camera {
+  margin-top: 16px;
+}
+
+.camera video {
+  display: block;
+  width: 100%;
+  max-height: 340px;
+  object-fit: cover;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: #111;
+}
+
+.camera .actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* ----- panels ------------------------------------------------------------ */
+
+.panel {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  margin-top: 16px;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.panel-head h2 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+.preview-thumb {
+  height: 38px;
+  max-width: 120px;
+  object-fit: cover;
+  object-position: top;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+
+.loading-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.loading-row .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ink-3);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 1; }
+}
+
+/* ----- OCR text ----------------------------------------------------------- */
+
+.ocr-text {
+  display: block;
+  width: 100%;
+  height: 260px;
+  padding: 14px 16px;
+  border: 0;
+  border-radius: 0 0 var(--radius-m) var(--radius-m);
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+/* ----- parsed data -------------------------------------------------------- */
+
+.parsed {
+  padding: 16px;
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 40px;
+  margin-bottom: 14px;
+}
+
+.meta div dt {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.meta div dd {
+  margin: 1px 0 0;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 15px;
+}
+
+.meta div.dd-total dd {
+  font-weight: 700;
+}
+
+.items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.items li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 0;
+  font-size: 13.5px;
+}
+
+.items .leader {
+  flex: 1;
+  min-width: 14px;
+  border-bottom: 1px dotted var(--line-2);
+  transform: translateY(-3px);
+}
+
+.items .price {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.via-badge {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border: 1px solid #e7ddc8;
+  border-radius: 3px;
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.no-items {
+  margin: 10px 0 2px;
+  font-size: 13px;
+  color: var(--ink-3);
+  font-style: italic;
+}
+
+/* ----- checks -------------------------------------------------------------- */
+
+.checks {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.check {
+  display: flex;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+
+.check .mark {
+  flex-shrink: 0;
+  font-weight: 700;
+}
+
+.check.ok .mark {
+  color: var(--ok);
+}
+
+.check.warn {
+  color: var(--warn);
+}
+
+.check.warn .mark {
+  color: var(--warn);
+}
+
+/* ----- strip evidence ------------------------------------------------------ */
+
+.evidence summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 10px 16px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+
+.evidence summary::-webkit-details-marker {
+  display: none;
+}
+
+.evidence summary:hover {
+  background: var(--hover);
+}
+
+.evidence-body {
+  padding: 4px 16px 16px;
+  border-top: 1px solid var(--line);
+}
+
+.evidence-body > p {
+  margin: 10px 0 12px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+
+.attempt {
+  margin: 14px 0;
+}
+
+.attempt-label {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+
+.attempt img {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  margin: 6px 0;
+}
+
+.attempt pre {
+  max-height: 200px;
+  overflow: auto;
+  margin: 6px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: #faf9f6;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ----- PDF previews --------------------------------------------------------- */
+
+.pdf-previews {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding: 14px 16px;
+}
+
+.pdf-previews img {
+  height: 130px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+
+/* ----- global OCR progress chip (index.html element, driven by ocrUtils) ------ */
+
+#ocr-progress-container {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 10;
+  width: min(340px, calc(100vw - 40px));
+  padding: 10px 14px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  box-shadow: 0 1px 3px rgb(25 24 19 / 0.06);
+}
+
+#ocr-progress-container .bar {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+#ocr-progress-container .bar > div {
+  height: 100%;
+  width: 0%;
+  background: var(--ink);
+  transition: width 250ms ease;
+}
+
+#ocr-status-text {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--ink-2);
+}

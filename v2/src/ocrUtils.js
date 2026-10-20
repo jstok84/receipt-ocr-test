@@ -553,9 +553,18 @@ async function extractTextLinesFromPDFPage(page) {
 function updateOCRProgressUI(status, progressFraction) {
   const progressBar = document.getElementById("ocr-progress-bar");
   const statusText = document.getElementById("ocr-status-text");
-  if (progressBar && statusText) {
-    progressBar.style.width = `${(progressFraction * 100).toFixed(1)}%`;
-    statusText.textContent = status ? `OCR Status: ${status}` : "Waiting to start OCR...";
+  const container = document.getElementById("ocr-progress-container");
+  if (progressBar && statusText && container) {
+    if (status) {
+      container.style.display = "";
+      progressBar.style.width = `${(progressFraction * 100).toFixed(1)}%`;
+      statusText.textContent = `OCR Status: ${status}`;
+    } else {
+      // idle: hide the chip (was permanently visible with stale text)
+      container.style.display = "none";
+      progressBar.style.width = "0%";
+      statusText.textContent = "";
+    }
   }
 }
 
