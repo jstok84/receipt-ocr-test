@@ -252,11 +252,17 @@ export default function App() {
             {parsed.items.length ? parsed.items.map((item, i) => <li key={i}>
               <span>{item.name}</span>
               <span className="leader" />
-              <span className="price">{item.price}</span>
-              {item.via === "strip-retry" && <span className="via-badge">strip re-OCR</span>}
-              {item.via === "strip-corrected" && <span className="via-badge">band re-OCR</span>}
+              <span className={`price${item.via ? " corrected" : ""}`}
+                title="price re-measured by strip re-OCR — verify against the photo">
+                {item.price}
+                {item.via && <span className="re-mark" aria-label="re-measured by strip re-OCR">✳</span>}
+              </span>
             </li>) : <p className="no-items">No items detected</p>}
           </ul>
+
+          {parsed.items.some(i => i.via) && <p className="items-note">
+            ✳ re-measured by strip re-OCR — verify against the photo
+          </p>}
 
           {parsed.checks?.length > 0 && <div className="checks">
             {parsed.checks.map((c, i) => <div key={i} className={`check ${c.ok ? "ok" : "warn"}`}>
