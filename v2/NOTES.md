@@ -158,8 +158,16 @@ on the paper fold at the top edge. Chain of experiments (all on the real photo
    provenance note ("recovered by top-strip re-OCR ... verify against photo").
 
 Cost: rescue path only (~4 recognitions, seconds) runs when the missing-bucket
-check already fired; healthy receipts pay nothing. The JS Catmull-Rom
-upscale is kept (cheap, in-place) — unproven to be load-bearing; PSM 4 is.
+check already fired; healthy receipts pay nothing.
+PSM 4 is the load-bearing piece, NOT the resampler: after switching the
+upscale to pica (true lanczos3 in WASM, user suggestion) PSM 6 still
+garbled the price live — the cascade's PSM 4 attempt stayed the rescuer.
+The hand-rolled Catmull-Rom and progressive-drawImage resamplers were
+removed dead code; pica does the 3x strip upscale now. Unresolved nuance
+(unverified): Node lanczos3 sharp bench read 1,79 at PSM 6 while browser
+pica lanczos3 did not — crop bounds differ slightly (332..1073 vs
+370..1050), so a pixel-level A/B would be needed to chase this further;
+not worth it while PSM 4 rescues.
 
 Lessons: (a) never trust "the row is unrecoverable" without testing a strip
 re-OCR; (b) tesseract PSM choice dominates on garbled narrow strips — vary it
