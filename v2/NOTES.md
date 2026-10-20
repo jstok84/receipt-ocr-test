@@ -156,6 +156,10 @@ on the paper fold at the top edge. Chain of experiments (all on the real photo
    raw/prep 0.25 PSM 4]. PSM 4 attempt measures 1,79 -> item appended with
    `via: "strip-retry"` -> checks re-run: items sum = total (4.73) ✓ plus a
    provenance note ("recovered by top-strip re-OCR ... verify against photo").
+   v1.7.5: the app ALSO renders a collapsed "Strip re-OCR evidence" panel -
+   every cascade attempt's text + the winning strip image + the recovered
+   line - so the user can see the price was MEASURED by OCR, not derived;
+   recovered rows carry a mark in the items list.
 
 Cost: rescue path only (~4 recognitions, seconds) runs when the missing-bucket
 check already fired; healthy receipts pay nothing. The JS Catmull-Rom
