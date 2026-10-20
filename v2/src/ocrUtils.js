@@ -684,14 +684,26 @@ function rawStripDataURL(imageSrc, fraction = 0.25, factor = 3) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = "Anonymous";
-    img.onload = () => {
+    img.onload = async () => {
       const h = Math.max(1, Math.round(img.height * fraction));
       const cGray = document.createElement("canvas");
       cGray.width = img.width;
       cGray.height = h;
       const ctx1 = cGray.getContext("2d");
       ctx1.drawImage(img, 0, 0, img.width, h, 0, 0, img.width, h);
-      const data = ctx1.getImageData(0, 0, img.width, h);
+      let data;
+      try {
+        data = ctx1.getImageData(0, 0, img.width, h);
+      } catch (err) {
+        // pixel reads blocked (fingerprinting protection): raw-strip transform
+        // is impossible — fall back to the plain grayscale canvas drawn by the
+        // GPU (drawImage only, no pixel reads) and let the caller's other
+        // attempts carry the rescue
+        console.warn("🖼️ Canvas pixel read blocked — raw strip falls back to direct draw:", err && err.name);
+        const plain = upscaleCanvasProgressive(cGray, factor);
+        resolve(plain.toDataURL("image/png"));
+        return;
+      }
       const d = data.data;
       for (let i = 0; i < d.length; i += 4) {
         const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
@@ -761,16 +773,22 @@ function upscaleCanvasProgressive(src, totalFactor) {
 }
 
 /**
- * High-quality gray upscale in pure JS: canvas drawImage cannot reproduce the
- * sharp bench results (scripts/ocr-hofer-kernel.mjs — "1,79 8" survives
- * lanczos3/mitchell/cubic, dies on nearest and on Chrome's >2x drawImage).
- * Catmull-Rom (a=-0.5) matches sharp's `cubic` kernel, which read the price.
+ * Catmull-Rom gray upscale (v1.7.2) with a canvas-read fallback (v1.7.4):
+ * fingerprinting protection (Brave/Firefox strict) makes getImageData THROW —
+ * pica died on exactly this at import. Fallback: progressive drawImage
+ * upscale (no pixel reads), which never crashed anything.
  */
 function bicubicUpscaleGrayCanvas(srcCanvas, factor) {
+  let sd;
+  try {
+    const sctx = srcCanvas.getContext("2d");
+    sd = sctx.getImageData(0, 0, srcCanvas.width, srcCanvas.height).data;
+  } catch (err) {
+    console.warn("🖼️ Canvas pixel read blocked (fingerprinting protection) — falling back to drawImage upscale:", err && err.name);
+    return upscaleCanvasProgressive(srcCanvas, factor);
+  }
   const sw = srcCanvas.width;
   const sh = srcCanvas.height;
-  const sctx = srcCanvas.getContext("2d");
-  const sd = sctx.getImageData(0, 0, sw, sh).data;
   const dw = Math.round(sw * factor);
   const dh = Math.round(sh * factor);
   const out = new ImageData(dw, dh);
@@ -823,32 +841,6 @@ function bicubicUpscaleGrayCanvas(srcCanvas, factor) {
   dst.height = dh;
   dst.getContext("2d").putImageData(out, 0, 0);
   return dst;
-}
-
-/**
- * Largest contiguous run of "paper-bright" columns (v1.7.2 fix): the naive
- * first/last-bright-column scan failed on the live photo (bright speckle at
- * corners -> full-width strip kept -> PSM-6 garbles the price again). A
- * contiguous-run selection survives stray bright edges.
- */
-function brightColumnTrim(colMeans, minWidthFraction = 0.25) {
-  const maxMean = Math.max(...colMeans);
-  const threshold = Math.max(90, maxMean * 0.55);
-  const n = colMeans.length;
-  let bestStart = -1;
-  let bestLen = 0;
-  let curStart = -1;
-  for (let x = 0; x <= n; x++) {
-    if (x < n && colMeans[x] >= threshold) {
-      if (curStart < 0) curStart = x;
-    } else if (curStart >= 0) {
-      const len = x - curStart;
-      if (len > bestLen) { bestLen = len; bestStart = curStart; }
-      curStart = -1;
-    }
-  }
-  if (bestLen < n * minWidthFraction) return null;
-  return [bestStart, bestStart + bestLen - 1];
 }
 
 /**
@@ -938,13 +930,20 @@ export async function processImage(imageSrc, onProgress = () => {}) {
   // (VAT-recap bucket check), re-OCR the strip where the first item rows sit.
   // Only accepts a strip line whose MEASURED price equals the missing amount
   // (±0.02) — arithmetic from the recap is never turned into an item.
+  // v1.7.5: every attempt's text is recorded (returned to app.js) so the UI
+  // can show the strip's own OCR reading as evidence that the recovered
+  // price was MEASURED, not derived from arithmetic.
   const extraItems = [];
+  const stripEvidence = [];
+  let rescueWinner = null;
+  let missingBucket = null;
   const finalParse = parseReceipt(cleaned);
   const bucketText = (finalParse.checks || []).find(
     (c) => !c.ok && /missing item ≈ ([\d.]+)/.test(c.text)
   );
   if (bucketText) {
     const missing = parseFloat(bucketText.text.match(/missing item ≈ ([\d.]+)/)[1]);
+    missingBucket = missing;
     const alreadyParsed = finalParse.items.some(
       (it) => Math.abs((parseFloat(it.price) ?? 0) - missing) <= 0.02
     );
@@ -974,6 +973,7 @@ export async function processImage(imageSrc, onProgress = () => {}) {
           const stripText = cleanAndMergeText(stripResult.data.text);
           const stripLines = stripText.split("\n").filter(Boolean);
           console.log("🔁 Strip re-OCR (missing item ≈", missing.toFixed(2), ", strip", stripKind, fraction, "psm", psm, "):", stripLines);
+          stripEvidence.push({ stripKind, fraction, psm, lines: stripLines, image: strip });
           for (const line of stripLines) {
             const amounts = [...line.matchAll(/\d{1,3}[.,]\d{1,2}/g)].map((m) =>
               parseFloat(m[0].replace(",", "."))
@@ -993,6 +993,7 @@ export async function processImage(imageSrc, onProgress = () => {}) {
               quantity: undefined,
               via: "strip-retry",
             });
+            rescueWinner = { stripKind, fraction, psm, line };
             break outer; // one rescued row per bucket
           }
         }
@@ -1004,5 +1005,20 @@ export async function processImage(imageSrc, onProgress = () => {}) {
 
   updateOCRProgressUI("OCR complete", 1);
   setTimeout(() => updateOCRProgressUI("", 0), 2000);
-  return { text: cleaned, extraItems };
+  // The winning attempt's strip image rides along for the evidence panel;
+  // failed attempts keep their TEXT but their images are dropped for memory.
+  return {
+    text: cleaned,
+    extraItems,
+    rescue: extraItems.length > 0 && rescueWinner
+      ? {
+          missing: missingBucket,
+          winner: rescueWinner,
+          attempts: stripEvidence.map((a) => ({
+            stripKind: a.stripKind, fraction: a.fraction, psm: a.psm, lines: a.lines,
+            image: a.psm === rescueWinner.psm && a.stripKind === rescueWinner.stripKind ? a.image : null,
+          })),
+        }
+      : null,
+  };
 }

@@ -15,6 +15,7 @@ export default function App() {
   const [uploadedPreview, setUploadedPreview] = useState(null);
   const [pdfPreviews, setPdfPreviews] = useState([]);
   const [useFlatMode, setUseFlatMode] = useState(false);
+  const [stripRescue, setStripRescue] = useState(null);
 
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -39,7 +40,7 @@ export default function App() {
     };
   }, [useCamera]);
 
-  const runParsing = (rawText, extraItems = []) => {
+  const runParsing = (rawText, extraItems = [], rescue = null) => {
     let prepared = rawText;
     if (!useFlatMode) {
       const cleaned = cleanAndMergeText(rawText);
@@ -48,6 +49,8 @@ export default function App() {
       prepared = rawText.replace(/\n/g, " ");
     }
     setParsed(parseReceipt(prepared, extraItems));
+    // evidence for the strip-recovered item (null clears it)
+    setStripRescue(rescue);
   };
 
   function dataURLtoFile(dataurl, filename) {
@@ -104,7 +107,7 @@ export default function App() {
 
         const result = await processImage(dataUrl, (p) => setProgress(p));
         setText(result.text);
-        runParsing(result.text, result.extraItems);
+        runParsing(result.text, result.extraItems, result.rescue);
         setLoading(false);
         return;
       }
@@ -117,7 +120,7 @@ export default function App() {
 
         const result = await processImage(dataUrl, (p) => setProgress(p));
         setText(result.text);
-        runParsing(result.text, result.extraItems);
+        runParsing(result.text, result.extraItems, result.rescue);
         setLoading(false);
       };
       reader.readAsDataURL(blob);
@@ -167,7 +170,7 @@ export default function App() {
     try {
       const result = await processImage(file, p => setProgress(p));
       setText(result.text);
-      runParsing(result.text, result.extraItems);
+      runParsing(result.text, result.extraItems, result.rescue);
     } catch (err) {
       console.error(err);
       setText("Error processing image");
@@ -220,11 +223,30 @@ export default function App() {
         <p><strong>Total:</strong> {parsed.total || "Not found"}</p>
         <h3>Items:</h3>
         {parsed.items.length ? <ul>
-          {parsed.items.map((item, i) => <li key={i}>{item.name} — {item.price}</li>)}
+          {parsed.items.map((item, i) => <li key={i}>{item.name} — {item.price}{item.via === "strip-retry" ? " 🔁 (strip re-OCR)" : ""}</li>)}
         </ul> : <p>No items detected</p>}
         {parsed.checks?.length > 0 && <div style={{ fontSize: 12, color: "#777", marginTop: 8 }}>
           {parsed.checks.map((c, i) => <div key={i}>{c.ok ? "✓" : "[?]"} {c.text}</div>)}
         </div>}
+        {stripRescue && <details style={{ marginTop: 10, fontSize: 12, color: "#555" }}>
+          <summary style={{ cursor: "pointer", color: "#777" }}>
+            🔍 Strip re-OCR evidence (missing ≈ {stripRescue.missing.toFixed(2)} € — recovered "{stripRescue.winner.line}")
+          </summary>
+          <div style={{ marginTop: 6 }}>
+            <p style={{ margin: "4px 0", fontWeight: "bold" }}>
+              The recovered price was <strong>measured by OCR</strong> from the strip below,
+              not derived from the total.
+            </p>
+            {stripRescue.attempts.map((a, i) => <div key={i} style={{ marginBottom: 8 }}>
+              <div>attempt {i + 1}: strip={a.stripKind}, height={Math.round(a.fraction * 100)}%, PSM={a.psm}
+                {a.image ? <img src={a.image} alt={`strip attempt ${i + 1}`} style={{ display: "block", width: 600, maxWidth: "100%", border: "1px solid #ccc", margin: "4px 0" }} /> : null}
+                <pre style={{ background: "#f7f7f7", padding: 6, whiteSpace: "pre-wrap", fontFamily: "monospace" }}>
+                  {a.lines.join("\n")}
+                </pre>
+              </div>
+            </div>)}
+          </div>
+        </details>}
       </div>}
     </div>
   );
