@@ -619,7 +619,7 @@ function scoreParse(parse) {
  * so the strip is narrowed to the receipt column via column-brightness
  * projection — dark background columns trimmed, receipts stay centered.
  */
-function topStripDataURL(preprocessedDataURL, band = [0, 0.25], factor = 3) {
+function topStripDataURL(preprocessedDataURL, band = [0, 0.25], factor = 3, mode = "catrom") {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = "Anonymous";
@@ -666,7 +666,7 @@ function topStripDataURL(preprocessedDataURL, band = [0, 0.25], factor = 3) {
       c1.width = w;
       c1.height = stripH;
       c1.getContext("2d").drawImage(stripCanvas, x0, 0, w, stripH, 0, 0, w, stripH);
-      const canvas = bicubicUpscaleGrayCanvas(c1, factor);
+      const canvas = bicubicUpscaleGrayCanvas(c1, factor, mode);
       resolve(canvas.toDataURL("image/png"));
     };
     img.onerror = reject;
@@ -681,7 +681,7 @@ function topStripDataURL(preprocessedDataURL, band = [0, 0.25], factor = 3) {
  * price ("1,79 8") — sharp used lanczos3 on the same pixels. Nearest at an
  * integer factor is the canvas-side substitute for a sharp resampler.
  */
-function rawStripDataURL(imageSrc, band = [0, 0.25], factor = 3) {
+function rawStripDataURL(imageSrc, band = [0, 0.25], factor = 3, mode = "catrom") {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = "Anonymous";
@@ -741,7 +741,7 @@ function rawStripDataURL(imageSrc, band = [0, 0.25], factor = 3) {
       c1.width = w;
       c1.height = h;
       c1.getContext("2d").drawImage(c1src, left, 0, w, h, 0, 0, w, h);
-      const c2 = bicubicUpscaleGrayCanvas(c1, factor);
+      const c2 = bicubicUpscaleGrayCanvas(c1, factor, mode);
       resolve(c2.toDataURL("image/png"));
     };
     img.onerror = reject;
@@ -780,7 +780,7 @@ function upscaleCanvasProgressive(src, totalFactor) {
  * pica died on exactly this at import. Fallback: progressive drawImage
  * upscale (no pixel reads), which never crashed anything.
  */
-function bicubicUpscaleGrayCanvas(srcCanvas, factor) {
+function bicubicUpscaleGrayCanvas(srcCanvas, factor, mode = "catrom") {
   let sd;
   try {
     const sctx = srcCanvas.getContext("2d");
@@ -795,36 +795,62 @@ function bicubicUpscaleGrayCanvas(srcCanvas, factor) {
   const dh = Math.round(sh * factor);
   const out = new ImageData(dw, dh);
   const od = out.data;
-  // separable Catmull-Rom weights for factor=3: dst centers map onto src
-  // half-pixel positions; 4 taps max per axis
+  // separable weights, dst centers map onto src half-pixel positions
+  // ((d+0.5)/factor - 0.5). "catrom" (default, browser-validated): 4-tap
+  // Catmull-Rom. "lanczos3": 6-tap windowed sinc, sum-normalized — added as
+  // a cascade DIVERSITY axis, not a replacement: kernel sweep
+  // (scripts/ocr-eurospin-kernel-sweep.mjs) shows the two flip outcomes per
+  // band window (catrom reads 1,55 @35-75%, lanczos3 reads it @40-75% where
+  // catrom loses the row), so neither justifies a primary-pipeline swap.
+  const isLanczos = mode === "lanczos3";
+  const taps = isLanczos ? 6 : 4;
   const weightFor = (t) => {
     const s = Math.abs(t);
+    if (isLanczos) {
+      if (s >= 3) return 0;
+      if (s < 1e-8) return 1;
+      const sinc = (x) => Math.sin(Math.PI * x) / (Math.PI * x);
+      return sinc(s) * sinc(s / 3);
+    }
     let w = 0;
     if (s <= 1) w = 1.5 * s * s * s - 2.5 * s * s + 1;
     else if (s < 2) w = -0.5 * s * s * s + 2.5 * s * s - 4 * s + 2;
     return w;
   };
+  const half = taps / 2 - 1;
   const xWeights = new Array(dw);
   const xBases = new Array(dw);
   for (let dx = 0; dx < dw; dx++) {
     const sx = (dx + 0.5) / factor - 0.5;
-    const base = Math.floor(sx) - 1;
+    const base = Math.floor(sx) - half;
     xBases[dx] = base;
-    xWeights[dx] = [0, 1, 2, 3].map((k) => weightFor(sx - (base + k)));
+    const w = [];
+    for (let k = 0; k < taps; k++) w.push(weightFor(sx - (base + k)));
+    if (isLanczos) {
+      const sum = w.reduce((a, b) => a + b, 0) || 1;
+      for (let k = 0; k < taps; k++) w[k] /= sum;
+    }
+    xWeights[dx] = w;
   }
   for (let dy = 0; dy < dh; dy++) {
     const sy = (dy + 0.5) / factor - 0.5;
-    const yBase = Math.floor(sy) - 1;
-    const yW = [0, 1, 2, 3].map((k) => weightFor(sy - (yBase + k)));
-    const yClamp = [0, 1, 2, 3].map((k) => Math.max(0, Math.min(sh - 1, yBase + k)));
+    const yBase = Math.floor(sy) - half;
+    const yW = [];
+    for (let k = 0; k < taps; k++) yW.push(weightFor(sy - (yBase + k)));
+    if (isLanczos) {
+      const sum = yW.reduce((a, b) => a + b, 0) || 1;
+      for (let k = 0; k < taps; k++) yW[k] /= sum;
+    }
+    const yClamp = [];
+    for (let k = 0; k < taps; k++) yClamp.push(Math.max(0, Math.min(sh - 1, yBase + k)));
     for (let dx = 0; dx < dw; dx++) {
       const bx = xBases[dx];
       const w = xWeights[dx];
       let acc = 0;
-      for (let j = 0; j < 4; j++) {
+      for (let j = 0; j < taps; j++) {
         const srcRow = yClamp[j];
         let colAcc = 0;
-        for (let k = 0; k < 4; k++) {
+        for (let k = 0; k < taps; k++) {
           let sx0 = bx + k;
           if (sx0 < 0) sx0 = 0;
           else if (sx0 >= sw) sx0 = sw - 1;
@@ -1025,23 +1051,30 @@ export async function processImage(imageSrc, onProgress = () => {}) {
       // the mispriced row while a later variant reads it right); the parser's
       // improvement guard filters them, so over-collection is safe. Each
       // candidate remembers which attempt measured it for winner selection.
+      // Attempt list carries KERNEL diversity too: the kernel sweep
+      // (scripts/ocr-eurospin-kernel-sweep.mjs) measured catrom and
+      // lanczos3 flipping FROLLINI's price per band window — no primary
+      // kernel, so extra attempts buy coverage at 1 pass each, broken
+      // parses only. The 5th attempt (lanczos3) reads the row cleanly
+      // where catrom @2x PSM6 lost it.
       let attemptIdx = 0;
-      for (const [stripKind, band, factor, psm] of [
-        ["prep", [0.4, 0.75], 2, "6"], ["prep", [0.4, 0.75], 2, "4"],
-        ["raw", [0.4, 0.75], 2, "6"], ["prep", [0.32, 0.75], 3, "6"],
+      for (const [stripKind, band, factor, psm, kernel] of [
+        ["prep", [0.4, 0.75], 2, "6", "catrom"], ["prep", [0.4, 0.75], 2, "4", "catrom"],
+        ["raw", [0.4, 0.75], 2, "6", "catrom"], ["prep", [0.32, 0.75], 3, "6", "catrom"],
+        ["prep", [0.4, 0.75], 2, "6", "lanczos3"],
       ]) {
         try {
           const base = stripKind === "raw" ? imageSrc : (prePerspectiveDataURL || preprocessedDataURL);
           const strip = stripKind === "raw"
-            ? await rawStripDataURL(base, band, factor)
-            : await topStripDataURL(base, band, factor);
+            ? await rawStripDataURL(base, band, factor, kernel)
+            : await topStripDataURL(base, band, factor, kernel);
           await worker.setParameters({ ...tessParams, tessedit_pageseg_mode: psm });
           const stripResult = await worker.recognize(strip);
           await worker.setParameters(tessParams);
           const stripText = cleanAndMergeText(stripResult.data.text);
           const stripLines = stripText.split("\n").filter(Boolean);
-          console.log("🔁 Item-band re-OCR (sum mismatch, strip", stripKind, band.join("-"), factor + "x", "psm", psm, "):", stripLines);
-          stripEvidence.push({ stripKind, band, factor, psm, lines: stripLines, image: strip });
+          console.log("🔁 Item-band re-OCR (sum mismatch, strip", stripKind, band.join("-"), factor + "x", kernel, "psm", psm, "):", stripLines);
+          stripEvidence.push({ stripKind, band, factor, psm, kernel, lines: stripLines, image: strip });
           for (const line of stripLines) {
             const amounts = [...line.matchAll(/\d{1,3}[.,]\d{1,2}/g)].map((m) =>
               parseFloat(m[0].replace(",", "."))
@@ -1088,6 +1121,7 @@ export async function processImage(imageSrc, onProgress = () => {}) {
                   band: winAttempt.band,
                   factor: winAttempt.factor,
                   psm: winAttempt.psm,
+                  kernel: winAttempt.kernel,
                   line: winAttempt.lines.find((l) => winPriceTexts.some((p) => l.includes(p))) ?? winAttempt.lines[0],
                 }
               : null;
@@ -1116,10 +1150,10 @@ export async function processImage(imageSrc, onProgress = () => {}) {
           missing: missingBucket,
           winner: rescueWinner,
           attempts: stripEvidence.map((a) => ({
-            stripKind: a.stripKind, band: a.band, factor: a.factor, psm: a.psm, lines: a.lines,
+            stripKind: a.stripKind, band: a.band, factor: a.factor, psm: a.psm, kernel: a.kernel, lines: a.lines,
             image: a.stripKind === rescueWinner.stripKind && a.band[0] === rescueWinner.band[0] &&
                    a.band[1] === rescueWinner.band[1] && a.factor === rescueWinner.factor &&
-                   a.psm === rescueWinner.psm
+                   a.psm === rescueWinner.psm && a.kernel === rescueWinner.kernel
               ? a.image : null,
           })),
         }

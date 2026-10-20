@@ -225,6 +225,31 @@ at once; both fixed this version, both evidence-driven.
    "\u2713 items sum = total (4.29)" + [?] provenance note + evidence panel;
    HOFER upload unchanged (missing 1.79 via top strip, 4.73 ok). Tests 52/52.
 
+## Kernel question: custom lanczos as primary? (2026-10-20, after v1.7.6)
+
+User asked whether a custom Lanczos resampler could replace the Catmull-Rom
+one as the primary OCR preprocessing. Checked against evidence, twice:
+
+- Legality: a pure-JS lanczos carries no fingerprinting-protection risk
+  (only on-demand pixel reads, same as the existing guarded ones) - the pica
+  rejection was specifically pica's IMPORT-TIME getImageData probe.
+- Custom JS lanczos3 + browser-exact catrom weights were ported to Node and
+  run on IDENTICAL eurospin band pixels (scripts/ocr-eurospin-kernel.mjs,
+  then -kernel-sweep.mjs over 4 band windows, PSM 6, 2x): NO kernel wins
+  consistently. lanczos3 reads FROLLINI 1,55 clean at 40-75% where catrom
+  loses the row; catrom reads it at 35-75% where lanczos3 does not; sharp's
+  lanczos3 itself flips 1,55 (at 42-72%) into 1,854 (at 40-75%). The price
+  digits are fragile on this dot-matrix paper and the kernel+band+PSM combo
+  decides each cell - no primary kernel is justified by data (and a primary
+  swap would churn the 52 green fixtures for it).
+- Adopted instead: ONE extra band-cascade attempt (prep 0.40-0.75 2x PSM6
+  LANCZOS, attempt 5 of 5). bicubicUpscaleGrayCanvas grew a mode param
+  ("catrom" default = numerically identical to v1.7.5 behavior for the
+  HOFER path; "lanczos3" = 6-tap normalized windowed sinc). Cost: 1 extra
+  OCR pass, only on already-broken (sum-mismatch) parses. Verified live:
+  eurospin recovers (FROLLINI 1.55, sum 4.29 ok, evidence panel shows all
+  5 attempts), HOFER rescue unchanged (1.79 via top strip, 4.73 ok).
+
 ## Debts (waiting on the user)
 
 1. ~~Local git commit~~ — DONE 2026-10-21: initial v2 commit on `main`, local-only

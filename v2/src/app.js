@@ -240,7 +240,7 @@ export default function App() {
               not derived from the total.
             </p>
             {stripRescue.attempts.map((a, i) => <div key={i} style={{ marginBottom: 8 }}>
-              <div>attempt {i + 1}: strip={a.stripKind}, band={Math.round(a.band[0] * 100)}–{Math.round(a.band[1] * 100)}%, {a.factor}×, PSM={a.psm}
+              <div>attempt {i + 1}: strip={a.stripKind}, band={Math.round(a.band[0] * 100)}–{Math.round(a.band[1] * 100)}%, {a.factor}×, {a.kernel === "lanczos3" ? "lanczos3" : "catrom"}, PSM={a.psm}
                 {a.image ? <img src={a.image} alt={`strip attempt ${i + 1}`} style={{ display: "block", width: 600, maxWidth: "100%", border: "1px solid #ccc", margin: "4px 0" }} /> : null}
                 <pre style={{ background: "#f7f7f7", padding: 6, whiteSpace: "pre-wrap", fontFamily: "monospace" }}>
                   {a.lines.join("\n")}
