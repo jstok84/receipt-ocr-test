@@ -1,5 +1,5 @@
 export function parseReceipt(text) {
-  const PARSER_VERSION = "v1.6.7";
+  const PARSER_VERSION = "v1.6.8";
   // Set window.__OCR_DEBUG = true to restore verbose parser diagnostics.
   const DEBUG = typeof window !== "undefined" && window.__OCR_DEBUG === true;
   const log = (...args) => { if (DEBUG) console.log(...args); };
@@ -50,6 +50,21 @@ export function parseReceipt(text) {
     const m = line.match(/^(.*\d[.,]\d{1,2})(\D*)\s+(\d{3})(\s*\D*)$/);
     if (!m) return line;
     return `${m[1]}${m[2]} ${m[3].slice(0, -2)}.${m[3].slice(-2)}${m[4]}`;
+  }
+
+  /**
+   * The trailing repair above needs a decimal amount ALREADY present in the row
+   * (SPAR's discount-column case). HOFER (browser EFT run, 2026-10) shows the
+   * separator can vanish from the row's ONLY amount: "šumeče tablete 085 A"
+   * where the real price is 0,85. Repair a standalone trailing 3-digit int —
+   * but only when NO other decimal amount exists in the line, so multi-column
+   * rows keep their normal path, and at most a 1-2 letter VAT code may trail it.
+   */
+  function repairStandaloneIntAmount(line) {
+    if (/\d[.,]\d/.test(line)) return line;
+    const m = line.match(/^(.*[a-zA-ZčšžČŠŽ].*?)\s+(\d{3})(\s+[a-zčšž]{1,2})?\s*$/i);
+    if (!m) return line;
+    return `${m[1]} ${m[2].slice(0, -2)}.${m[2].slice(-2)}${m[3] ?? ""}`;
   }
 
   /**
@@ -302,6 +317,16 @@ export function parseReceipt(text) {
     /\bdenar\b/i,
     /vra[čc]il[ao]/i,
     /\bcash\b/i,
+    // VAT recap rows (HOFER real case: "Ca ok Neto 2,6900V 0,25" and
+    // "B 22,0% Neto 1,47 …" — the DDV rekapitulacija with "Neto" surviving
+    // OCR; a "Neto" token never appears in real item names on SI receipts).
+    /\bneto\b/i,
+    // Trailing 4+ digit run = terminal/EFT echo bleed, never a real item row
+    // (HOFER real case: "ACH HEE i BER 5.0 41501" — the ghost "41501" made
+    // the parser manufacture a 5,00 item from the line's "5.0" fragment).
+    // SPAR multi-column rows always END in a VAT code letter ("… 1.92 B"),
+    // so a bare digit tail is machinery, not merchandise.
+    /\s\d{4,}\s*$/,
     // Garbled VAT-code / summary fragments (EUROSPIN real case: "kd, 0% ? 4,29"
     // and "mat (ER): 4,29" from "Skupaj (EUR):"). Anchored short rate-code at
     // line start (or stray parenthesised currency remnant + colon), so real
@@ -442,7 +467,14 @@ export function parseReceipt(text) {
     }
 
     // Fallback generic parsing: extract last amount
-    const amountMatch = extractLastAmountWithCurrency(repairTrailingIntAmount(line));
+    let amountMatch = extractLastAmountWithCurrency(repairTrailingIntAmount(line));
+    if (!amountMatch) {
+      const repaired = repairStandaloneIntAmount(line);
+      if (repaired !== line) {
+        log(`  Applying standalone 3-digit repair: "${line}" -> "${repaired}"`);
+        amountMatch = extractLastAmountWithCurrency(repaired);
+      }
+    }
     if (!amountMatch) {
       log("  Skipping due to no valid amount found in line.");
       continue;

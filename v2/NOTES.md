@@ -11,7 +11,7 @@ diverged deliberately — do not "sync" without the canonical-swap decision (see
 
 ## Current state (all verified by tests)
 
-- Parser `src/parseReceipt.js` version v1.6.7 state: keyword-tier totals
+- Parser `src/parseReceipt.js` version v1.6.8 state: keyword-tier totals
   (za plačilo > skupaj > znesek, LAST wins per tier), payment markers
   (`masterca`, `maest/rco`, `karticao`, `visa`, `eft`, `hofer cena` — NOT `gotovina`/`cash`:
   tender-side, can exceed payable), structural currency-tag rule
@@ -22,7 +22,11 @@ diverged deliberately — do not "sync" without the canonical-swap decision (see
   ✓ / `[?]` lines; SPAR coupon case respected), nonItem rules:
   `ovin` (gotovina garbles), `denar`, `vračilo`, `cash`, `EUR`-token, VAT-code
   anchors (`kd, 0%`), `(EUR):` fragments, popust/doplačil/discount, digit-storm
-  separators, 3-letter name garble guard, 3-digit int repair (181→1.81).
+  separators, 3-letter name garble guard, 3-digit int repair (181→1.81),
+  v1.6.8 additions (HOFER EFT browser run): standalone trailing 3-digit int
+  repair (`šumeče tablete 085 A` → 0,85 — only lines with NO other decimal
+  amount), `\bneto\b` nonItem (DDV recap rows), trailing-4+-digit-run nonItem
+  (EFT echo, e.g. "ACH HEE i BER 5.0 41501" phantom 5,00 item).
 - Pipeline `src/ocrUtils.js`: grayscale → **bright-mask receipt isolation**
   (Otsu + close 15×15 + largest-bright-region bbox + 2% margin + sanity guards,
   replaced broken fixed-240 dark-mask autoCrop) → **contrast stretch**
@@ -40,7 +44,7 @@ diverged deliberately — do not "sync" without the canonical-swap decision (see
 | Receipt | Result |
 |---|---|
 | SPAR photo | 26/26 items, total ✓, date ✓ |
-| HOFER photo | 2/3 items (Krüger 1,79 clipped by original photo frame — unrecoverable), total ✓ |
+| HOFER photo | 2/3 items (Krüger 1,79 clipped by original photo frame — unrecoverable), total ✓; EFT browser run (v1.6.8): šumeče 0,85 recovered + `Neto`/trailing-digit echo rows filtered |
 | Triglav PDF | text layer, full parse |
 | EUROSPIN photo | 3/3 items, total 4,29 ✓, date ✗ (crease garbles "18."), 1 cosmetic junk item (*** separator row) |
   - Known OCR noise (`[?]`): EUROSPIN FROLLINI price read `1,95` vs likely real `1,55` (pixel 5→9).
