@@ -253,16 +253,11 @@ export default function App() {
               <span>{item.name}</span>
               <span className="leader" />
               <span className={`price${item.via ? " corrected" : ""}`}
-                title="price re-measured by strip re-OCR — verify against the photo">
+                title="re-measured by strip re-OCR — details in the verification note below">
                 {item.price}
-                {item.via && <span className="re-mark" aria-label="re-measured by strip re-OCR">✳</span>}
               </span>
             </li>) : <p className="no-items">No items detected</p>}
           </ul>
-
-          {parsed.items.some(i => i.via) && <p className="items-note">
-            ✳ re-measured by strip re-OCR — verify against the photo
-          </p>}
 
           {parsed.checks?.length > 0 && <div className="checks">
             {parsed.checks.map((c, i) => <div key={i} className={`check ${c.ok ? "ok" : "warn"}`}>

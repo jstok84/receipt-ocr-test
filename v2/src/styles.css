@@ -336,18 +336,18 @@ label:focus-visible {
   white-space: nowrap;
 }
 
-.items .price.corrected .re-mark {
-  margin-left: 2px;
-  color: var(--warn);
-  font-size: 9px;
-  vertical-align: super;
-  line-height: 1;
-}
+/*
+Price color-voice system (TurboTax Forms Mode convention): ink = direct OCR
+read; amber + dotted underline = re-measured by strip re-OCR. The value
+itself voices provenance — no badges, no glyphs; the explanatory sentence
+lives once, in the checks list below.
+*/
 
-.items-note {
-  margin: 10px 0 0;
-  font-size: 11px;
-  color: var(--ink-3);
+.items .price.corrected {
+  color: var(--warn);
+  text-decoration: underline dotted;
+  text-decoration-color: color-mix(in srgb, var(--warn) 55%, transparent);
+  text-underline-offset: 4px;
 }
 
 .no-items {
