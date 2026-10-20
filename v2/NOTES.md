@@ -288,6 +288,28 @@ no band cascade, honest 57.35 vs 51.61 flag; eurospin still recovers
 FROLLINI 1.55 (sum 4.29 ok, provenance note, evidence panel); HOFER rescue
 unchanged (1.79 top-strip, 4.73). Tests 59/59 (7 new).
 
+## MILESTONE (2026-10-20, tag 1.7.6-release)
+
+State at this milestone, verified end-to-end in the browser:
+
+- Real-photo recovery generalizes beyond the first receipt: HOFER fold rows
+  recovered by TOP strips (missing-bucket trigger), EUROSPIN price misreads
+  recovered by ITEM-BAND strips (sum-mismatch trigger), both MEASURED, both
+  provenance-noted, evidence panel shows every frozen attempt.
+- Corruption paths hardened against real regressions the same day: phantom
+  items from garble rows (short-letter TOKEN STORM rule), brand-prefix
+  wrong-item pairing (distinctive-token + diacritic-normalized matching +
+  best match), sequential "improvement" corruption (all-or-nothing commit),
+  LEGITIMATE discount gaps (popust gate).
+- 59/59 Node tests over real OCR fixtures; kernel question answered with
+  data (catrom vs lanczos3 flip per band window; lanczos adopted as cascade
+  diversity axis only, primary untouched).
+- Out of scope / parked: push to GitHub (user's manual decision), v2->root
+  canonical swap (root v1 still serves GitHub Pages), perspective-correction
+  off-by-default flip (warp not implicated in the live garbles).
+
+Working code at commit 7f00f35 (v2 line). Tagged 1.7.6-release.
+
 ## Debts (waiting on the user)
 
 1. ~~Local git commit~~ — DONE 2026-10-21: initial v2 commit on `main`, local-only
