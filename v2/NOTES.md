@@ -161,6 +161,18 @@ Cost: rescue path only (~4 recognitions, seconds) runs when the missing-bucket
 check already fired; healthy receipts pay nothing. The JS Catmull-Rom
 upscale is kept (cheap, in-place) — unproven to be load-bearing; PSM 4 is.
 
+pica postscript (v1.7.3 → reverted, v1.7.4): user suggested `pica` (true
+lanczos3 in WASM). Wired in, tests green, live rescue unchanged (PSM 4 still
+the rescuer; PSM 6 garbled even under pica lanczos3). REVERTED: pica probes
+canvas pixels at startup (feature detection via `getImageData`) and crashed
+with the user's browser fingerprinting protection ("cannot use getImageData
+on canvas" + React error overlay). Standing constraint: NO startup canvas
+pixel reads. v1.7.4 hardening: the strip resampler/trim/mask paths now fall
+back to drawImage variants when pixel reads throw (guards on all three
+`getImageData` call sites: bicubic upscale → drawImage upscale, raw-strip
+transform → plain drawImage strip, column trim → untrimmed strip). Resampler
+PSM-6 nuance stays unverified-noted above (crop 332..1073 vs bench 370..1050).
+
 Lessons: (a) never trust "the row is unrecoverable" without testing a strip
 re-OCR; (b) tesseract PSM choice dominates on garbled narrow strips — vary it
 before touching preprocessing; (c) cross-check browser determinism by
