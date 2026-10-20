@@ -20,7 +20,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { parseReceipt } from "../src/parseReceipt.js";
+import { parseReceipt, namesSimilar } from "../src/parseReceipt.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const raw = readFileSync(join(here, "fixtures", "eurospin-scan-real.txt"), "utf8");
@@ -135,4 +135,111 @@ test("arithmetics validator: tender arithmetic cross-check fires when tender lin
   const r = parseReceipt("Skupaj 4,29\nGotovina EUR 13,00\nVrnjen denar EUR 8,71");
   const tenderCheck = r.checks.find((c) => c.text.includes("tender"));
   assert.ok(tenderCheck && tenderCheck.ok, `expected tender ✓, got ${JSON.stringify(r.checks)}`);
+});
+
+/**
+ * Third fixture: the user's live browser run (2026-10-20, v2 app, uncropped
+ * photo). The dot-matrix separator row above the items this time carried a
+ * decimal-looking fragment ("…E66 330 3.3 KRE") that became a phantom 3.30 €
+ * item and broke the items-sum check. The item rows re-confirmed the known
+ * FROLLINI 1,95-vs-1,55 pixel misread. Fix (v1.7.6):
+ *  - garble-row nonItem rule (≥3 pure short letter tokens before the last
+ *    token, line contains digits),
+ *  - parseReceipt corrections: strip-measured {name, price} candidates from
+ *    an item-band re-OCR replace a price when the name fuzzy-matches.
+ */
+const junkHeader = readFileSync(join(here, "fixtures", "eurospin-browser-junk-header.txt"), "utf8");
+
+test("junk header run: the 'Me VO: 550…3.3' phantom row is not an item", () => {
+  const r = parseReceipt(junkHeader);
+  const names = r.items.map((i) => i.name.toLowerCase());
+  assert.ok(!names.some((n) => /me vo|enrra|e66/.test(n)), `phantom leaked: ${r.items.map((i) => i.name)}`);
+  assert.ok(!r.items.some((i) => i.price.startsWith("3.30")), `3.30 phantom leaked: ${r.items.map((i) => i.name)} / ${r.items.map((i) => i.price)}`);
+});
+
+test("junk header run: all three real item rows survive the garble rule", () => {
+  const r = parseReceipt(junkHeader);
+  assert.equal(r.items.length, 3, `items: ${r.items.map((i) => i.name)}`);
+  const frollini = r.items.find((i) => /frollini/i.test(i.name));
+  const taralli = r.items.find((i) => /tarall/i.test(i.name));
+  const cokoladni = r.items.find((i) => /onuladn/i.test(i.name));
+  assert.ok(frollini && frollini.price.startsWith("1.95"), `frollini: ${JSON.stringify(frollini)}`);
+  assert.ok(taralli && taralli.price.startsWith("1.29"), `taralli: ${JSON.stringify(taralli)}`);
+  assert.ok(cokoladni && cokoladni.price.startsWith("1.45"), `cokoladni: ${JSON.stringify(cokoladni)}`);
+});
+
+test("junk header run: without corrections the sum check flags the known misread", () => {
+  const r = parseReceipt(junkHeader);
+  const sumCheck = r.checks.find((c) => c.text.includes("items sum"));
+  assert.ok(sumCheck && !sumCheck.ok, `expected mismatch (4.69 vs 4.29), got ${JSON.stringify(sumCheck)}`);
+});
+
+test("junk header run: correction candidate measured at 1.55 replaces FROLLINI's 1.95", () => {
+  const withCorr = parseReceipt(junkHeader, [], [
+    { name: "EKSI FROLLINI 1KG", price: 1.55 },
+  ]);
+  const frollini = withCorr.items.find((i) => /frollini/i.test(i.name));
+  assert.ok(frollini && frollini.price.startsWith("1.55"), `frollini: ${JSON.stringify(frollini)}`);
+  assert.equal(frollini.via, "strip-corrected");
+  const note = withCorr.checks.find((c) => c.text.includes("price corrected by band re-OCR"));
+  assert.ok(note && !note.ok, `expected [?] provenance note, got ${JSON.stringify(note)}`);
+  const sumCheck = withCorr.checks.find((c) => c.text.includes("items sum"));
+  assert.ok(sumCheck && sumCheck.ok, `expected ✓ after correction, got ${JSON.stringify(sumCheck)}`);
+});
+
+test("junk header run: correction candidate matching nothing changes nothing", () => {
+  const r2 = parseReceipt(junkHeader, [], [
+    { name: "JOGURT WOLY V ANANASU", price: 0.99 },
+  ]);
+  assert.equal(r2.items.length, 3);
+  assert.ok(!r2.items.some((i) => i.price.startsWith("0.99")), "phantom correction applied");
+  assert.ok(!r2.checks.some((c) => c.text.includes("price corrected")));
+});
+
+test("corrections: candidate equal to the current price is a no-op (no note)", () => {
+  const r = parseReceipt("Skupaj (EUR): 4,29\nFROLLINI 1,55 A\nTARALLI 1,29 A\nONULADNI 1,45 A", [], [
+    { name: "EKSI FROLLINI 1KG", price: 1.55 },
+  ]);
+  assert.ok(!r.checks.some((c) => c.text.includes("price corrected")));
+  assert.ok(r.checks.find((c) => c.text.includes("items sum")).ok);
+});
+
+test("corrections: live-evidence garbled strip price that WORSENS the sum is rejected", () => {
+  // real live run 2026-10-20: prep 0.4-0.75 2x PSM6 strip garbled ČOKOLADNI's
+  // 1,45 into "2256 1.49" — applying it moves sum 4.69 -> 4.73 vs total 4.29.
+  const r = parseReceipt(junkHeader, [], [
+    { name: "ST ČONULADNI 2256", price: 1.49 },
+  ]);
+  const cok = r.items.find((i) => /onuladn/i.test(i.name));
+  assert.ok(cok && cok.price.startsWith("1.45"), `must stay 1.45, got ${JSON.stringify(cok)}`);
+  assert.ok(!r.checks.some((c) => c.text.includes("price corrected")), "no note for rejected correction");
+  assert.ok(!r.checks.find((c) => c.text.includes("items sum")).ok, "mismatch stays flagged");
+});
+
+test("corrections: good and garbled candidates together — only the improving one applies", () => {
+  const r = parseReceipt(junkHeader, [], [
+    { name: "ST ČONULADNI 2256", price: 1.49 },
+    { name: "EKSI FROLLINI 1KG", price: 1.55 },
+  ]);
+  const frollini = r.items.find((i) => /frollini/i.test(i.name));
+  const cok = r.items.find((i) => /onuladn/i.test(i.name));
+  assert.ok(frollini && frollini.price.startsWith("1.55"), `frollini: ${JSON.stringify(frollini)}`);
+  assert.ok(cok && cok.price.startsWith("1.45"), `cokoladni must stay 1.45, got ${JSON.stringify(cok)}`);
+  assert.ok(r.checks.find((c) => c.text.includes("items sum")).ok, `sum must pass: ${JSON.stringify(r.checks)}`);
+});
+
+test("namesSimilar: garble twins match, distinct SI names do not", () => {
+  assert.ok(namesSimilar("EKSI FROLLINI 1KG", "PFKSI FROLLINI 1KG"));
+  assert.ok(namesSimilar("SI CORULADNI 225G", "<ST ČONULADNI"));
+  assert.ok(namesSimilar("LANI PRT. TARALLI M", "| ANI PRTA.TARALLT M"));
+  assert.ok(!namesSimilar("JOGURT WOLY V ANANASU", "PFKSI FROLLINI 1KG"));
+  assert.ok(!namesSimilar("SI CORULADNI 225G", "LANI PRTA.TARALLT M"));
+  assert.ok(!namesSimilar("AB", "CDEF"), "short names never match");
+});
+
+test("garble rule guard: the reverted caps-rule's SPAR victims stay intact", () => {
+  // 'ČAJ LIPA F20 306 1001' and 'SB SIR RIBANI LAHKI 25' were eaten by an
+  // earlier (reverted) token-soup rule; the short-letter rule must not eat them.
+  const r = parseReceipt("ČAJ LIPA F20 306 1001 1,29 A\nSB SIR RIBANI LAHKI 25 2,49 B");
+  assert.equal(r.items.length, 2, `items: ${r.items.map((i) => i.name)}`);
 });

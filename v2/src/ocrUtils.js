@@ -1,7 +1,7 @@
 import { createWorker } from "tesseract.js";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 import pdfWorker from "pdfjs-dist/build/pdf.worker.js";
-import { parseReceipt } from "./parseReceipt";
+import { parseReceipt, namesSimilar } from "./parseReceipt";
 
 GlobalWorkerOptions.workerSrc = pdfWorker;
 
@@ -619,17 +619,18 @@ function scoreParse(parse) {
  * so the strip is narrowed to the receipt column via column-brightness
  * projection — dark background columns trimmed, receipts stay centered.
  */
-function topStripDataURL(preprocessedDataURL, fraction = 0.25, factor = 3) {
+function topStripDataURL(preprocessedDataURL, band = [0, 0.25], factor = 3) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = "Anonymous";
     img.onload = () => {
-      const stripH = Math.max(1, Math.round(img.height * fraction));
+      const y0 = Math.max(0, Math.round(img.height * band[0]));
+      const stripH = Math.max(1, Math.round(img.height * (band[1] - band[0])));
       const stripCanvas = document.createElement("canvas");
       stripCanvas.width = img.width;
       stripCanvas.height = stripH;
       const sctx = stripCanvas.getContext("2d");
-      sctx.drawImage(img, 0, 0, img.width, stripH, 0, 0, img.width, stripH);
+      sctx.drawImage(img, 0, y0, img.width, stripH, 0, 0, img.width, stripH);
       let x0 = 0;
       let x1 = img.width;
       try {
@@ -680,17 +681,18 @@ function topStripDataURL(preprocessedDataURL, fraction = 0.25, factor = 3) {
  * price ("1,79 8") — sharp used lanczos3 on the same pixels. Nearest at an
  * integer factor is the canvas-side substitute for a sharp resampler.
  */
-function rawStripDataURL(imageSrc, fraction = 0.25, factor = 3) {
+function rawStripDataURL(imageSrc, band = [0, 0.25], factor = 3) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = "Anonymous";
     img.onload = async () => {
-      const h = Math.max(1, Math.round(img.height * fraction));
+      const y0 = Math.max(0, Math.round(img.height * band[0]));
+      const h = Math.max(1, Math.round(img.height * (band[1] - band[0])));
       const cGray = document.createElement("canvas");
       cGray.width = img.width;
       cGray.height = h;
       const ctx1 = cGray.getContext("2d");
-      ctx1.drawImage(img, 0, 0, img.width, h, 0, 0, img.width, h);
+      ctx1.drawImage(img, 0, y0, img.width, h, 0, 0, img.width, h);
       let data;
       try {
         data = ctx1.getImageData(0, 0, img.width, h);
@@ -934,11 +936,13 @@ export async function processImage(imageSrc, onProgress = () => {}) {
   // can show the strip's own OCR reading as evidence that the recovered
   // price was MEASURED, not derived from arithmetic.
   const extraItems = [];
+  const corrections = [];
   const stripEvidence = [];
   let rescueWinner = null;
   let missingBucket = null;
   const finalParse = parseReceipt(cleaned);
-  const bucketText = (finalParse.checks || []).find(
+  const finalChecks = finalParse.checks || [];
+  const bucketText = finalChecks.find(
     (c) => !c.ok && /missing item ≈ ([\d.]+)/.test(c.text)
   );
   if (bucketText) {
@@ -951,29 +955,29 @@ export async function processImage(imageSrc, onProgress = () => {}) {
       let strip = null;
       try {
         const currency = (finalParse.total || "").split(" ")[1] || "€";
-        // cascade: strip height × page-seg. Live-evidence history: full-frame
+        // cascade: strip band × page-seg. Live-evidence history: full-frame
         // strips garbled ("prv 7S"); ink-trim alone helped names but the price
         // needed PSM 4 — decisive cross-check: Node tesseract on the EXACT
         // browser strip PNG read "preo B" at PSM 6 but "1,798" (= 1,79 with the
         // VAT letter B misread as 8) at PSM 4. PSM 6 wasted determinism on the
         // same pixels, so the segmentation, not the image, was the bottleneck.
-        outer: for (const [stripKind, fraction, psm] of [
-          ["raw", 0.25, "6"], ["prep", 0.25, "6"], ["prep", 0.18, "6"],
-          ["raw", 0.25, "4"], ["prep", 0.25, "4"],
+        outer: for (const [stripKind, band, psm] of [
+          ["raw", [0, 0.25], "6"], ["prep", [0, 0.25], "6"], ["prep", [0, 0.18], "6"],
+          ["raw", [0, 0.25], "4"], ["prep", [0, 0.25], "4"],
         ]) {
           // strip from the PRE-perspective image when available: creased rows
           // garble under the warp (live evidence), while the unwrapped crop
           // is what the Node benchmarks read correctly. "raw" attempts bypass
           // resampling entirely (canvas gray+stretch math == sharp params).
           const base = stripKind === "raw" ? imageSrc : (prePerspectiveDataURL || preprocessedDataURL);
-          strip = stripKind === "raw" ? await rawStripDataURL(base, fraction) : await topStripDataURL(base, fraction);
+          strip = stripKind === "raw" ? await rawStripDataURL(base, band) : await topStripDataURL(base, band);
           await worker.setParameters({ ...tessParams, tessedit_pageseg_mode: psm });
           const stripResult = await worker.recognize(strip);
           await worker.setParameters(tessParams);
           const stripText = cleanAndMergeText(stripResult.data.text);
           const stripLines = stripText.split("\n").filter(Boolean);
-          console.log("🔁 Strip re-OCR (missing item ≈", missing.toFixed(2), ", strip", stripKind, fraction, "psm", psm, "):", stripLines);
-          stripEvidence.push({ stripKind, fraction, psm, lines: stripLines, image: strip });
+          console.log("🔁 Strip re-OCR (missing item ≈", missing.toFixed(2), ", strip", stripKind, band.join("-"), "psm", psm, "):", stripLines);
+          stripEvidence.push({ stripKind, band, factor: 3, psm, lines: stripLines, image: strip });
           for (const line of stripLines) {
             const amounts = [...line.matchAll(/\d{1,3}[.,]\d{1,2}/g)].map((m) =>
               parseFloat(m[0].replace(",", "."))
@@ -993,12 +997,107 @@ export async function processImage(imageSrc, onProgress = () => {}) {
               quantity: undefined,
               via: "strip-retry",
             });
-            rescueWinner = { stripKind, fraction, psm, line };
+            rescueWinner = { stripKind, band, factor: 3, psm, line };
             break outer; // one rescued row per bucket
           }
         }
       } catch (err) {
         console.warn("🔁 Strip re-OCR failed, skipping rescue:", err);
+      }
+    }
+  } else {
+    // v1.7.6 item-band rescue (EUROSPIN real case): the items-sum check
+    // [?] fires and ≥2 items parsed — the damaged region may be the ITEM
+    // BLOCK ITSELF, not the top rows: eurospin's tall header pushed its items
+    // to ~45-62% of the paper, so a top strip reads nothing. A mid-band
+    // re-OCR (40-75% of the image) re-read the block and MEASURED the true
+    // price ("EKSI FROLLINI 1KG 1,55 A" where the main 2x pass read 1,95 —
+    // bench: scripts/ocr-eurospin-strip.mjs, 42-72% at 2x PSM 6). Winners are
+    // handed to the parser as correction CANDIDATES: parseReceipt only
+    // replaces a price when the candidate's name fuzzy-matches an existing
+    // item AND the measured price differs — otherwise the candidate is
+    // dropped, so strip garble can never invent money.
+    const sumMismatch = finalChecks.find(
+      (c) => !c.ok && /items sum .* ≠ total/.test(c.text)
+    );
+    if (sumMismatch && finalParse.items.length >= 2) {
+      // Collect candidates from EVERY attempt (an early attempt can garble
+      // the mispriced row while a later variant reads it right); the parser's
+      // improvement guard filters them, so over-collection is safe. Each
+      // candidate remembers which attempt measured it for winner selection.
+      let attemptIdx = 0;
+      for (const [stripKind, band, factor, psm] of [
+        ["prep", [0.4, 0.75], 2, "6"], ["prep", [0.4, 0.75], 2, "4"],
+        ["raw", [0.4, 0.75], 2, "6"], ["prep", [0.32, 0.75], 3, "6"],
+      ]) {
+        try {
+          const base = stripKind === "raw" ? imageSrc : (prePerspectiveDataURL || preprocessedDataURL);
+          const strip = stripKind === "raw"
+            ? await rawStripDataURL(base, band, factor)
+            : await topStripDataURL(base, band, factor);
+          await worker.setParameters({ ...tessParams, tessedit_pageseg_mode: psm });
+          const stripResult = await worker.recognize(strip);
+          await worker.setParameters(tessParams);
+          const stripText = cleanAndMergeText(stripResult.data.text);
+          const stripLines = stripText.split("\n").filter(Boolean);
+          console.log("🔁 Item-band re-OCR (sum mismatch, strip", stripKind, band.join("-"), factor + "x", "psm", psm, "):", stripLines);
+          stripEvidence.push({ stripKind, band, factor, psm, lines: stripLines, image: strip });
+          for (const line of stripLines) {
+            const amounts = [...line.matchAll(/\d{1,3}[.,]\d{1,2}/g)].map((m) =>
+              parseFloat(m[0].replace(",", "."))
+            );
+            if (!amounts.length) continue;
+            const price = amounts[amounts.length - 1];
+            const tokens = line.trim().split(/\s+/);
+            let end = 0;
+            while (end < tokens.length && !/\d/.test(tokens[end])) end++;
+            let name = tokens.slice(0, end).join(" ");
+            name = name.replace(/^[^a-zA-ZčšžČŠŽ]+\s*/, "").trim();
+            if ((name.match(/[a-zA-ZčšžČŠŽ]/g) || []).length < 4) continue;
+            const target = finalParse.items.find((it) => namesSimilar(name, it.name));
+            if (!target) continue; // no name match -> not a correction, could be anything
+            const oldPrice = parseFloat(String(target.price ?? "").replace(",", "."));
+            if (!isNaN(oldPrice) && Math.abs(oldPrice - price) <= 0.02) continue;
+            if (corrections.some((c) => c.attempt === attemptIdx && namesSimilar(c.name, name))) continue;
+            corrections.push({ name, price, attempt: attemptIdx });
+          }
+        } catch (err) {
+          console.warn("🔁 Item-band re-OCR attempt failed:", err);
+        }
+        attemptIdx++;
+      }
+      // Verify with the parser: only candidates that IMPROVE the items-sum
+      // become the returned correction set; the winning attempt is the one
+      // that measured an applied correction.
+      if (corrections.length) {
+        try {
+          const reParse = parseReceipt(cleaned, [], corrections);
+          const appliedCands = reParse.checks
+            .filter((c) => c.text.includes("price corrected by band re-OCR"))
+            .map((c) => (c.text.match(/OCR measured "(.+?)"\)? —/) || [])[1])
+            .filter(Boolean);
+          const kept = corrections.filter((c) => appliedCands.includes(c.name));
+          if (kept.length) {
+            const winAttempt = stripEvidence[kept[0].attempt];
+            const winPriceTexts = [kept[0].price.toFixed(2), String(kept[0].price).replace(".", ",")];
+            corrections.length = 0;
+            corrections.push(...kept.map(({ attempt, ...rest }) => rest));
+            rescueWinner = winAttempt
+              ? {
+                  stripKind: winAttempt.stripKind,
+                  band: winAttempt.band,
+                  factor: winAttempt.factor,
+                  psm: winAttempt.psm,
+                  line: winAttempt.lines.find((l) => winPriceTexts.some((p) => l.includes(p))) ?? winAttempt.lines[0],
+                }
+              : null;
+          } else {
+            corrections.length = 0;
+          }
+        } catch (err) {
+          console.warn("🔁 Correction verification re-parse failed:", err);
+          corrections.length = 0;
+        }
       }
     }
   }
@@ -1007,16 +1106,21 @@ export async function processImage(imageSrc, onProgress = () => {}) {
   setTimeout(() => updateOCRProgressUI("", 0), 2000);
   // The winning attempt's strip image rides along for the evidence panel;
   // failed attempts keep their TEXT but their images are dropped for memory.
+  const rescued = (extraItems.length > 0 || corrections.length > 0) && rescueWinner;
   return {
     text: cleaned,
     extraItems,
-    rescue: extraItems.length > 0 && rescueWinner
+    corrections,
+    rescue: rescued
       ? {
           missing: missingBucket,
           winner: rescueWinner,
           attempts: stripEvidence.map((a) => ({
-            stripKind: a.stripKind, fraction: a.fraction, psm: a.psm, lines: a.lines,
-            image: a.psm === rescueWinner.psm && a.stripKind === rescueWinner.stripKind ? a.image : null,
+            stripKind: a.stripKind, band: a.band, factor: a.factor, psm: a.psm, lines: a.lines,
+            image: a.stripKind === rescueWinner.stripKind && a.band[0] === rescueWinner.band[0] &&
+                   a.band[1] === rescueWinner.band[1] && a.factor === rescueWinner.factor &&
+                   a.psm === rescueWinner.psm
+              ? a.image : null,
           })),
         }
       : null,

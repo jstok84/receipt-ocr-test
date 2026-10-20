@@ -40,7 +40,7 @@ export default function App() {
     };
   }, [useCamera]);
 
-  const runParsing = (rawText, extraItems = [], rescue = null) => {
+  const runParsing = (rawText, extraItems = [], rescue = null, corrections = []) => {
     let prepared = rawText;
     if (!useFlatMode) {
       const cleaned = cleanAndMergeText(rawText);
@@ -48,7 +48,7 @@ export default function App() {
     } else {
       prepared = rawText.replace(/\n/g, " ");
     }
-    setParsed(parseReceipt(prepared, extraItems));
+    setParsed(parseReceipt(prepared, extraItems, corrections));
     // evidence for the strip-recovered item (null clears it)
     setStripRescue(rescue);
   };
@@ -107,7 +107,7 @@ export default function App() {
 
         const result = await processImage(dataUrl, (p) => setProgress(p));
         setText(result.text);
-        runParsing(result.text, result.extraItems, result.rescue);
+        runParsing(result.text, result.extraItems, result.rescue, result.corrections);
         setLoading(false);
         return;
       }
@@ -120,7 +120,7 @@ export default function App() {
 
         const result = await processImage(dataUrl, (p) => setProgress(p));
         setText(result.text);
-        runParsing(result.text, result.extraItems, result.rescue);
+        runParsing(result.text, result.extraItems, result.rescue, result.corrections);
         setLoading(false);
       };
       reader.readAsDataURL(blob);
@@ -170,7 +170,7 @@ export default function App() {
     try {
       const result = await processImage(file, p => setProgress(p));
       setText(result.text);
-      runParsing(result.text, result.extraItems, result.rescue);
+      runParsing(result.text, result.extraItems, result.rescue, result.corrections);
     } catch (err) {
       console.error(err);
       setText("Error processing image");
@@ -223,14 +223,16 @@ export default function App() {
         <p><strong>Total:</strong> {parsed.total || "Not found"}</p>
         <h3>Items:</h3>
         {parsed.items.length ? <ul>
-          {parsed.items.map((item, i) => <li key={i}>{item.name} — {item.price}{item.via === "strip-retry" ? " 🔁 (strip re-OCR)" : ""}</li>)}
+          {parsed.items.map((item, i) => <li key={i}>{item.name} — {item.price}{item.via === "strip-retry" ? " 🔁 (strip re-OCR)" : ""}{item.via === "strip-corrected" ? " 🔁 (band re-OCR)" : ""}</li>)}
         </ul> : <p>No items detected</p>}
         {parsed.checks?.length > 0 && <div style={{ fontSize: 12, color: "#777", marginTop: 8 }}>
           {parsed.checks.map((c, i) => <div key={i}>{c.ok ? "✓" : "[?]"} {c.text}</div>)}
         </div>}
         {stripRescue && <details style={{ marginTop: 10, fontSize: 12, color: "#555" }}>
           <summary style={{ cursor: "pointer", color: "#777" }}>
-            🔍 Strip re-OCR evidence (missing ≈ {stripRescue.missing.toFixed(2)} € — recovered "{stripRescue.winner.line}")
+            🔍 Strip re-OCR evidence ({stripRescue.missing != null
+              ? <>missing ≈ {stripRescue.missing.toFixed(2)} € — recovered "{stripRescue.winner.line}"</>
+              : <>items-sum mismatch — OCR measured "{stripRescue.winner.line}"</>})
           </summary>
           <div style={{ marginTop: 6 }}>
             <p style={{ margin: "4px 0", fontWeight: "bold" }}>
@@ -238,7 +240,7 @@ export default function App() {
               not derived from the total.
             </p>
             {stripRescue.attempts.map((a, i) => <div key={i} style={{ marginBottom: 8 }}>
-              <div>attempt {i + 1}: strip={a.stripKind}, height={Math.round(a.fraction * 100)}%, PSM={a.psm}
+              <div>attempt {i + 1}: strip={a.stripKind}, band={Math.round(a.band[0] * 100)}–{Math.round(a.band[1] * 100)}%, {a.factor}×, PSM={a.psm}
                 {a.image ? <img src={a.image} alt={`strip attempt ${i + 1}`} style={{ display: "block", width: 600, maxWidth: "100%", border: "1px solid #ccc", margin: "4px 0" }} /> : null}
                 <pre style={{ background: "#f7f7f7", padding: 6, whiteSpace: "pre-wrap", fontFamily: "monospace" }}>
                   {a.lines.join("\n")}

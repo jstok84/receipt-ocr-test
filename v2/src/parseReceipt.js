@@ -1,4 +1,31 @@
-export function parseReceipt(text, extraItems = []) {
+/**
+ * Fuzzy item-name matching for strip-measured price corrections (v1.7.6).
+ * Comparison is letters-only lowercase: OCR garbles digits inside names and
+ * punctuation randomly ("TKS] FROLLINI 1KG" vs "EKSI FROLLINI 1KG",
+ * "ČONULADNI" vs "CORULADNI"). Match = containment of the shorter string or
+ * LCS ≥ 65% of the longer one (ČONULADNI/CORULADNI ≈ 0.75; distinct SI item
+ * names fall well below that).
+ */
+export function namesSimilar(candidate, itemName) {
+  const lettersOf = (s) => (s.toLowerCase().match(/[a-zčšžćđ]/g) || []).join("");
+  const a = lettersOf(candidate);
+  const b = lettersOf(itemName);
+  if (a.length < 4 || b.length < 4) return false;
+  if (a.includes(b) || b.includes(a)) return true;
+  const m = a.length;
+  const n = b.length;
+  let prev = new Array(n + 1).fill(0);
+  let curr = new Array(n + 1).fill(0);
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      curr[j] = a[i - 1] === b[j - 1] ? prev[j - 1] + 1 : Math.max(prev[j], curr[j - 1]);
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[n] / Math.max(m, n) >= 0.65;
+}
+
+export function parseReceipt(text, extraItems = [], corrections = []) {
   const PARSER_VERSION = "v1.6.9";
   // Set window.__OCR_DEBUG = true to restore verbose parser diagnostics.
   const DEBUG = typeof window !== "undefined" && window.__OCR_DEBUG === true;
@@ -415,6 +442,32 @@ export function parseReceipt(text, extraItems = []) {
       continue;
     }
 
+    // v1.7.6 garble-row rule (EUROSPIN real case): a barcode/dot-matrix row
+    // above the items ("s Me VO: 550 AZ RR ENRRRA EE HE TEE E66 330 3.3 KRE")
+    // mangles into a storm of 1-3-letter tokens BETWEEN its digit fragments,
+    // and its trailing "3.3" became a phantom 3.30 item, breaking the
+    // items-sum check. The storm is counted strictly BETWEEN the first and
+    // last digit-bearing tokens: SPAR multi-column scans keep 1-3-letter
+    // bleed tokens at the line EDGES ("A ČEBULA … 0.95 B Lj -", "SB SIR …
+    // 1.69 B i )") whose core is clean, and those rows must survive (an
+    // earlier whole-line variant was reverted for exactly that). Junk row
+    // middle = {AZ,RR,EE,HE,TEE} = 5; every fixture item row reads ≤1.
+    {
+      const toks = line.trim().split(/\s+/);
+      let a = 0;
+      let b = toks.length - 1;
+      while (a < toks.length && !/\d/.test(toks[a])) a++;
+      while (b >= 0 && !/\d/.test(toks[b])) b--;
+      let shortMid = 0;
+      for (let t = a + 1; t < b; t++) {
+        if (/^[a-zA-ZčšžČŠŽ]{1,3}$/.test(toks[t])) shortMid++;
+      }
+      if (shortMid >= 3) {
+        log(`  Skipping garbled non-item row (${shortMid} short letter tokens between digit fragments)`);
+        continue;
+      }
+    }
+
     if (totalCandidates.some((tc) => tc.line === line)) {
       log("  Skipping line matching total candidate.");
       continue;
@@ -586,6 +639,55 @@ export function parseReceipt(text, extraItems = []) {
   const checks = [];
   const tenderLine = lines.find((l) => /\bovin|\bdenar|gotovin/i.test(l));
   const changeLine = lines.find((l) => /\bdenar\b|vra[čc]il/i.test(l));
+
+  // v1.7.6: strip-measured price corrections. ocrUtils measures candidate
+  // items from a band re-OCR and hands them over; matching happens HERE (one
+  // source of truth) against already-parsed items: fuzzy name match + a
+  // different measured price + STRICT ARITHMETIC IMPROVEMENT of the
+  // items-sum check. The improvement guard is not decoration: live eurospin
+  // evidence — a band strip garbled ČOKOLADNI's 1,45 as "1.49" while
+  // FROLLINI's row lost its price entirely ("zvo\""); the strip can misread
+  // any price, so a correction is accepted only when it moves items closer
+  // to the total (1.55 for FROLLINI: sum 4.69 -> 4.29 exact). Matching
+  // nothing / equal price / worsening = no change (honest).
+  const parseTotalVal = total == null
+    ? null
+    : (typeof total === "number" ? total : parseAmount("total", total));
+  const itemsSum = () => items.reduce((acc, it) => acc + (parseAmount("item", it.price) ?? 0), 0);
+  for (const corr of corrections) {
+    const idx = items.findIndex(
+      (it) => it.via !== "strip-retry" && it.via !== "strip-corrected" && namesSimilar(corr.name, it.name)
+    );
+    if (idx < 0) {
+      log(`  Correction candidate "${corr.name}" matched no item — dropped`);
+      continue;
+    }
+    const oldPrice = parseAmount("item", items[idx].price);
+    if (oldPrice != null && Math.abs(oldPrice - corr.price) <= 0.02) {
+      log(`  Correction candidate "${corr.name}" equals existing price — no change`);
+      continue;
+    }
+    const prevPrice = items[idx].price;
+    if (parseTotalVal == null || oldPrice == null) {
+      log(`  Correction candidate "${corr.name}" has no total/price anchor — dropped`);
+      continue;
+    }
+    const distBefore = Math.abs(itemsSum() - parseTotalVal);
+    items[idx].price = `${corr.price.toFixed(2)} €`;
+    const distAfter = Math.abs(itemsSum() - parseTotalVal);
+    if (distAfter >= distBefore - 1e-9) {
+      items[idx].price = prevPrice;
+      log(`  Correction candidate "${corr.name}" ${oldPrice.toFixed(2)} -> ${corr.price.toFixed(2)} rejected: sum ${
+        distAfter.toFixed(2)} not closer to total ${parseTotalVal.toFixed(2)} than ${distBefore.toFixed(2)}`);
+      continue;
+    }
+    log(`  Correcting "${items[idx].name}" ${prevPrice} -> ${corr.price.toFixed(2)} € (OCR measured)`);
+    checks.push({
+      ok: false,
+      text: `price corrected by band re-OCR: "${items[idx].name}" ${prevPrice} -> ${corr.price.toFixed(2)} € (OCR measured "${corr.name}") — verify against photo [?]`,
+    });
+    items[idx].via = "strip-corrected";
+  }
 
   if (total != null && items.length) {
     const itemSum = items.reduce((acc, it) => acc + (parseAmount("item", it.price) ?? 0), 0);

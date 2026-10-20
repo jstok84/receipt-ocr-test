@@ -182,6 +182,49 @@ re-OCR; (b) tesseract PSM choice dominates on garbled narrow strips — vary it
 before touching preprocessing; (c) cross-check browser determinism by
 shipping the exact browser pixels to Node (download the canvas PNG, Node
 recognize) — catches config/segmentation differences that pixels can't.
+## EUROSPIN band-rescue + garble-row rule (2026-10-20, v1.7.6)
+
+User's live run (samples/scan-eurospin.jpg, 1200x1600) exposed two failures
+at once; both fixed this version, both evidence-driven.
+
+1. **Phantom 3.30 item from the dot-matrix separator row.** The barcode-ish
+   row above the items printed a decimal-lookalike fragment ("s Me VO: 550
+   AZ RR ENRRRA EE HE TEE E66 330 3.3 KRE" where "3.3" became a 3.30 item and
+   broke the items-sum check). Fix: garble-row nonItem rule - count 1-3
+   letter-only tokens STRICTLY BETWEEN the first and last digit-bearing
+   tokens of a line; >= 3 = nonItem (junk middle = {AZ,RR,EE,HE,TEE}).
+   Whole-line variants DO NOT WORK: SPAR multi-column scans carry edge-bleed
+   tokens ("A CEBULA ... 0.95 B Lj -", "SB SIR ... 1.69 B i )") and a
+   whole-line cap-soup rule was already reverted once for eating them
+   (eurospin.test.js pins both). Verified live + fixture
+   eurospin-browser-junk-header.txt.
+2. **FROLLINI 1,95 misread is NOT permanent.** Node strip bench
+   (scripts/ocr-eurospin-strip.mjs) over the items REGION found the item
+   block sits ~45-62% down the paper (tall header - a TOP strip reads
+   nothing). Band 42-72% at 2x + PSM 6 MEASURES the true price
+   ("EKSI FROLLINI 1KG 1,55 A"); 3x lost the row. So: strips became BANDS
+   (	opStripDataURL/awStripDataURL(dataURL, band=[from,to], factor)
+   - HOFER top-cascade unchanged in behavior: [0,0.25] etc.) and a second
+   rescue trigger fires on the items-sum [?] check with >= 2 items: a
+   4-attempt band cascade (prep 0.40-0.75 2x PSM6/PSM4, raw 0.40-0.75 2x
+   PSM6, prep 0.32-0.75 3x PSM6) collects correction CANDIDATES
+   {name, price, attempt}.
+3. **Corrections apply only on strict arithmetic improvement**
+   (parseReceipt(text, extraItems, corrections), namesSimilar = letters-only
+   containment or LCS >= 0.65). Live-evidence lesson from the first E2E: an
+   attempt garbled COKOLADNI's 1,45 as "1.49" while FROLLINI's row lost its
+   price ("zvo") - "differs" alone would have made the receipt WORSE. The
+   parser accepts a correction only when it moves |items-sum - total| closer
+   (1.55: 4.69 \u2192 4.29 exact; 1.49 rejected). ocrUtils verifies candidates by
+   re-parsing and only passes applied ones to the app (candidate-name regex
+   must allow the closing paren: OCR measured \"(.+?)\"\)? -).
+   Same-price / no-name-match / worsening candidates are dropped, never
+   fabricated.
+4. E2E verified (browser): eurospin upload ends with junk row gone, FROLLINI
+   1.55 via "strip-corrected" (marked \ud83d\udd01 band re-OCR), check
+   "\u2713 items sum = total (4.29)" + [?] provenance note + evidence panel;
+   HOFER upload unchanged (missing 1.79 via top strip, 4.73 ok). Tests 52/52.
+
 ## Debts (waiting on the user)
 
 1. ~~Local git commit~~ — DONE 2026-10-21: initial v2 commit on `main`, local-only
