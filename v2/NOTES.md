@@ -1,6 +1,6 @@
 # v2 — session state ledger
 
-Last updated: 2026-10-21. Purpose: fresh sessions resume from here, not from chat memory.
+Last updated: 2026-10-20. Purpose: fresh sessions resume from here, not from chat memory.
 
 ## What this is
 
@@ -11,11 +11,13 @@ diverged deliberately — do not "sync" without the canonical-swap decision (see
 
 ## Current state (all verified by tests)
 
-- Parser `src/parseReceipt.js` version v1.6.6 state: keyword-tier totals
+- Parser `src/parseReceipt.js` version v1.6.7 state: keyword-tier totals
   (za plačilo > skupaj > znesek, LAST wins per tier), payment markers
   (`masterca`, `maest/rco`, `karticao`, `visa`, `eft`, `hofer cena` — NOT `gotovina`/`cash`:
   tender-side, can exceed payable), structural currency-tag rule
-  (`(EUR):/(FUR):/(ER): + amount` → weight-2 candidate), arithmetic cross-checks
+  (`(EUR):/(FUR):/(ER): + amount` → weight-2 candidate), comma-drift rejoin
+  (`(\d), +(\d{2})` → `4, 29` parses; comma REQUIRED — space-only splits stay out),
+  arithmetic cross-checks
   (`checks[]`: items-sum vs total, tender−change vs total — flags only, app renders
   ✓ / `[?]` lines; SPAR coupon case respected), nonItem rules:
   `ovin` (gotovina garbles), `denar`, `vračilo`, `cash`, `EUR`-token, VAT-code
@@ -25,8 +27,10 @@ diverged deliberately — do not "sync" without the canonical-swap decision (see
   (Otsu + close 15×15 + largest-bright-region bbox + 2% margin + sanity guards,
   replaced broken fixed-240 dark-mask autoCrop) → **contrast stretch**
   (convertScaleAbs 1.6, −80) → deskew → perspective → 2× upscale → tesseract
-  (`slv+eng`, PSM 6, DPI 300, preserve_interword_spaces).
-- Tests: `npm test` in v2 → 31/31. Fixtures in `tests/fixtures/`:
+  (`slv+eng`, PSM 6, DPI 300, preserve_interword_spaces). Plus **adaptive
+  second pass** (v1.7.1): if the first parse has no total or no items, re-run
+  OCR once with a fresh worker, keep the better parse (see experiment section).
+- Tests: `npm test` in v2 → 35/35. Fixtures in `tests/fixtures/`:
   `spar-scan-real.txt`, `spar-scan-v2.txt`, `spar-scan-v3.txt`, `hofer-scan-real.txt`,
   `eurospin-scan-real.txt` (Node OCR of tight crop), `eurospin-browser-garble.txt`
   (uncropped browser run), `generic-si.txt` + others.
@@ -63,6 +67,30 @@ diverged deliberately — do not "sync" without the canonical-swap decision (see
   `ocr-eurospin*.mjs` (Node + sharp; plot: full text → `samples/ocr-*.txt`).
 - `samples/` is git-ignored: photos, traineddata cache, OCR dumps. Never commit
   personal receipts without explicit user decision.
+
+## Browser OCR variance experiment (2026-10-20, `src/dev-bench.html`, untracked)
+
+Question: is the reported app-side run-to-run wobble real engine nondeterminism?
+Method: untracked bench page (git-ignored `src/dev-bench*`) runs the EXACT app
+pipeline (preprocess → upscale → worker OCR → cleanAndMergeText) 5× per page load
+on `samples/scan-eurospin.jpg`, diffs pairwise, and persists run 1 in localStorage
+so the next page load (fresh worker) diffs cross-session. A second parcel instance
+with two entries (`npx parcel src/index.html src/dev-bench.html --port 1235`) was
+used; the sample photo came from a port-1236 static CORS server because parcel dev
+SPA-fallbacks unknown asset paths. Results: **15/15 runs byte-identical across
+3 fresh sessions** (same `4, 29`, same junk lines); the controlled environment is
+fully deterministic, warm and cold.
+User's observed drift therefore lives across their app sessions (different
+browser instance/session state — unverified). Practical consequences:
+
+1. Same-tab double-pass is useless (pass 2 = pass 1). The useful hedge is a
+   **fresh-worker** re-run, kept only when the first parse is broken — shipped
+   as v1.7.1 in `processImage` (triggers on no-total/no-items; verified: healthy
+   EUROSPIN receipt stays single-pass ~5s, blank image triggers second pass,
+   first kept on tie). Fresh-worker user-side value is plausible but unverified.
+2. Parser already carries the drift defense: `4, 29` vs `4,29` is the same
+   structural `(EUR):` candidate — comma-drift rejoin handles it.
+
 
 ## Debts (waiting on the user)
 

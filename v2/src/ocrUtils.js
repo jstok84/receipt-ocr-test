@@ -1,6 +1,7 @@
 import { createWorker } from "tesseract.js";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 import pdfWorker from "pdfjs-dist/build/pdf.worker.js";
+import { parseReceipt } from "./parseReceipt";
 
 GlobalWorkerOptions.workerSrc = pdfWorker;
 
@@ -582,12 +583,52 @@ export async function processPDF(file, onProgress = () => {}) {
   });
 }
 
+// --- OCR quality score for the adaptive second pass ---
+// Higher is better: a found total dominates everything (5), then item count,
+// then date presence. Ties stay with pass 1, so a healthy receipt is never
+// swapped for an equal-scoring second opinion.
+function scoreParse(parse) {
+  if (!parse) return -1;
+  return (parse.total ? 5 : 0) + parse.items.length + (parse.date ? 1 : 0);
+}
+
 // --- OCR + preprocessing for direct image files ---
 export async function processImage(imageSrc, onProgress = () => {}) {
   const preprocessedDataURL = await preprocessWithOpenCV(imageSrc);
+  const upscaled = await upscaleDataURL(preprocessedDataURL);
   const worker = await getWorker();
-  const result = await worker.recognize(await upscaleDataURL(preprocessedDataURL));
-  const cleaned = cleanAndMergeText(result.data.text);
+  const result = await worker.recognize(upscaled);
+  let cleaned = cleanAndMergeText(result.data.text);
+
+  // v1.7.1 adaptive second pass: if the first OCR parse has no total or no
+  // items, re-run once with a FRESH worker and keep the better parse.
+  // Basis (dev-bench experiment, 20 Oct 2026): 15/15 identical runs across
+  // three fresh sessions in the controlled harness, but real-user sessions
+  // showed word-level drift between app restarts — occasionally enough to
+  // drop the total line. The re-run only triggers on receipts that already
+  // parse broken, so healthy ones pay zero extra cost.
+  const firstParse = parseReceipt(cleaned);
+  if (!firstParse.total || !firstParse.items.length) {
+    let freshWorker = null;
+    try {
+      freshWorker = await createWorker("slv+eng", 1, {});
+      await freshWorker.setParameters(tessParams);
+      const secondResult = await freshWorker.recognize(upscaled);
+      const secondCleaned = cleanAndMergeText(secondResult.data.text);
+      const secondParse = parseReceipt(secondCleaned);
+      if (scoreParse(secondParse) > scoreParse(firstParse)) {
+        console.log("🔁 Second pass (fresh worker) produced a better parse — using it");
+        cleaned = secondCleaned;
+      } else {
+        console.log("🔁 Second pass ran, first parse kept (equal or better)");
+      }
+    } catch (err) {
+      console.warn("🔁 Second pass failed, keeping first pass:", err);
+    } finally {
+      if (freshWorker) freshWorker.terminate();
+    }
+  }
+
   updateOCRProgressUI("OCR complete", 1);
   setTimeout(() => updateOCRProgressUI("", 0), 2000);
   return cleaned;

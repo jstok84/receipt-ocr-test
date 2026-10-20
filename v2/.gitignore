@@ -8,3 +8,4 @@ dist
 samples
 *.png
 *.traineddata
+src/dev-bench*
