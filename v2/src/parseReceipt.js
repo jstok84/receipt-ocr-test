@@ -1,5 +1,5 @@
 export function parseReceipt(text) {
-  const PARSER_VERSION = "v1.6.6";
+  const PARSER_VERSION = "v1.6.7";
   // Set window.__OCR_DEBUG = true to restore verbose parser diagnostics.
   const DEBUG = typeof window !== "undefined" && window.__OCR_DEBUG === true;
   const log = (...args) => { if (DEBUG) console.log(...args); };
@@ -26,9 +26,15 @@ export function parseReceipt(text) {
 
   /** Regex to find the last amount and optional currency symbol in a line */
   function extractLastAmountWithCurrency(line) {
+    // OCR wobble tolerance (EUROSPIN real case: the same photo read
+    // "4,29" and "4, 29" across two app runs): the comma sometimes drifts
+    // apart from the cents with a space. Rejoin `(\d), +(\d{2})` before
+    // matching — comma REQUIRED, so "8 71"/"2 09" space-only splits stay out
+    // (those are handled by repairTrailingIntAmount only at line end).
+    const cleaned = line.replace(/(\d),\s{1,3}(\d{2})\b/g, "$1,$2");
     const regex = /(\d{1,3}(?:[ .,]\d{3})*(?:[.,]\d{1,2}))\s*(€|EUR|USD|\$)?/gi;
     let lastMatch = null, match;
-    while ((match = regex.exec(line)) !== null) lastMatch = match;
+    while ((match = regex.exec(cleaned)) !== null) lastMatch = match;
     return lastMatch; // null if none
   }
 

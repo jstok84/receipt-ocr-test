@@ -106,6 +106,13 @@ test("structural currency tag: garbled '(FUR)/'(ER)' forms equally valid", () =>
   assert.equal(parseReceipt("mat (ER): 4,29").total, "4.29 €");
 });
 
+test("OCR wobble: comma-drift '4, 29' still totals (two runs of the same photo differ)", () => {
+  // real form, v2 app run after the good one: "Poz ID (EUR): | 4, 29"
+  const r = parseReceipt("Me VO: 550 AZ RR\nPoz ID (EUR): | 4, 29\nPLACILOMER La");
+  assert.equal(r.total, "4.29 €");
+  assert.equal(parseReceipt("Gotovina EUR 13, 00").items.length, 0, "'13, 00' must not create items");
+});
+
 test("arithmetics validator: items-sum matches total on the crop-run fixture", () => {
   const r = parseReceipt(raw);
   const sumCheck = r.checks.find((c) => c.text.includes("items sum"));
