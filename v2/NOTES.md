@@ -90,6 +90,13 @@ browser instance/session state — unverified). Practical consequences:
    first kept on tie). Fresh-worker user-side value is plausible but unverified.
 2. Parser already carries the drift defense: `4, 29` vs `4,29` is the same
    structural `(EUR):` candidate — comma-drift rejoin handles it.
+3. Verified reconstruction (old parser pulled via `git show 613c3da`): v1.6.6
+   parsed the clean line `Poz ID (EUR): | 4,29` → 4.29 fine. With the stray
+   space (`4, 29`) it did NOT return null — it fell through and reported
+   **13.00** (source: keyword, from the `otovina EUR 13,00` tender line) with
+   checks flagging `items sum 4.69 ≠ 13.00`. So the only regression trigger
+   was one space of engine wobble, and the old failure mode was a
+   confidently-wrong total, not "not found". v1.6.7 rejoin fixes both reads.
 
 
 ## Debts (waiting on the user)
