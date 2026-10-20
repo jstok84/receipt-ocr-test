@@ -39,7 +39,7 @@ export default function App() {
     };
   }, [useCamera]);
 
-  const runParsing = rawText => {
+  const runParsing = (rawText, extraItems = []) => {
     let prepared = rawText;
     if (!useFlatMode) {
       const cleaned = cleanAndMergeText(rawText);
@@ -47,7 +47,7 @@ export default function App() {
     } else {
       prepared = rawText.replace(/\n/g, " ");
     }
-    setParsed(parseReceipt(prepared));
+    setParsed(parseReceipt(prepared, extraItems));
   };
 
   function dataURLtoFile(dataurl, filename) {
@@ -103,8 +103,8 @@ export default function App() {
         setCapturedImage(dataUrl);
 
         const result = await processImage(dataUrl, (p) => setProgress(p));
-        setText(result);
-        runParsing(result);
+        setText(result.text);
+        runParsing(result.text, result.extraItems);
         setLoading(false);
         return;
       }
@@ -116,8 +116,8 @@ export default function App() {
         setCapturedImage(dataUrl);
 
         const result = await processImage(dataUrl, (p) => setProgress(p));
-        setText(result);
-        runParsing(result);
+        setText(result.text);
+        runParsing(result.text, result.extraItems);
         setLoading(false);
       };
       reader.readAsDataURL(blob);
@@ -166,8 +166,8 @@ export default function App() {
     if (previewDataUrl) setUploadedPreview(previewDataUrl);
     try {
       const result = await processImage(file, p => setProgress(p));
-      setText(result);
-      runParsing(result);
+      setText(result.text);
+      runParsing(result.text, result.extraItems);
     } catch (err) {
       console.error(err);
       setText("Error processing image");

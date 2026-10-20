@@ -1,4 +1,4 @@
-export function parseReceipt(text) {
+export function parseReceipt(text, extraItems = []) {
   const PARSER_VERSION = "v1.6.9";
   // Set window.__OCR_DEBUG = true to restore verbose parser diagnostics.
   const DEBUG = typeof window !== "undefined" && window.__OCR_DEBUG === true;
@@ -387,6 +387,13 @@ export function parseReceipt(text) {
 
   const date = extractDate(lines);
   const items = [];
+  // v1.6.9: optionally pre-seeded items recovered by the OCR layer's adaptive
+  // top-strip re-OCR (processImage injects them here so checks[] run over the
+  // complete item set). Each carries `via: "strip-retry"` for provenance.
+  for (const extra of extraItems) {
+    log(`  Injecting strip-recovered item: ${extra.name} ${extra.price}`);
+    items.push(extra);
+  }
 
   // Parse items with support for Spar multi-column format and fallback generic parsing
   for (const line of lines) {
@@ -631,6 +638,15 @@ export function parseReceipt(text) {
           : { ok: false, text: `tender ${tendered.toFixed(2)} − change ${change.toFixed(2)} = ${implied.toFixed(2)} ≠ total ${total.toFixed(2)}` }
       );
     }
+  }
+
+  // v1.6.9: provenance note for strip-recovered items — the app must show
+  // where the row came from so the user can spot-check it against the photo.
+  for (const extra of extraItems) {
+    checks.push({
+      ok: false,
+      text: `recovered by top-strip re-OCR: "${extra.name}" ${extra.price} — verify against photo [?]`,
+    });
   }
 
   log(`Extracted date: ${date}`);

@@ -41,7 +41,13 @@ diverged deliberately — do not "sync" without the canonical-swap decision (see
   (`slv+eng`, PSM 6, DPI 300, preserve_interword_spaces). Plus **adaptive
   second pass** (v1.7.1): if the first parse has no total or no items, re-run
   OCR once with a fresh worker, keep the better parse (see experiment section).
-- Tests: `npm test` in v2 → 35/35. Fixtures in `tests/fixtures/`:
+   Plus **top-strip rescue** (v1.7.2): when the VAT-recap missing-bucket flag
+   fires, re-OCR the top 25% strip - the fold/edge region the first item rows
+   sit on - and accept a candidate item ONLY if its OCR-measured price matches
+   the missing amount +/-0.02; `parseReceipt(text, extraItems)` takes the
+   recovered row, re-runs all checks over the full item set, and adds a
+   provenance `[?]` note. Evidence story: see "HOFER strip-rescue experiment".
+- Tests: `npm test` in v2 → 42/42. Fixtures in `tests/fixtures/`:
   `spar-scan-real.txt`, `spar-scan-v2.txt`, `spar-scan-v3.txt`, `hofer-scan-real.txt`,
   `eurospin-scan-real.txt` (Node OCR of tight crop), `eurospin-browser-garble.txt`
   (uncropped browser run), `generic-si.txt` + others.
@@ -51,7 +57,7 @@ diverged deliberately — do not "sync" without the canonical-swap decision (see
 | Receipt | Result |
 |---|---|
 | SPAR photo | 26/26 items, total ✓, date ✓ |
-| HOFER photo | 2/3 items (Krüger 1,79 clipped by original photo frame — unrecoverable), total ✓; EFT browser run (v1.6.8): šumeče 0,85 recovered + `Neto`/trailing-digit echo rows filtered |
+| HOFER photo | 3/3 items (v1.7.2 strip rescue: Krüger 1,79 measured by top-strip re-OCR), total 4,73 ✓, date ✓; EFT browser run (v1.6.8): šumeče 0,85 + `Neto`/trailing-digit echo rows filtered |
 | Triglav PDF | text layer, full parse |
 | EUROSPIN photo | 3/3 items, total 4,29 ✓, date ✗ (crease garbles "18."), 1 cosmetic junk item (*** separator row) |
   - Known OCR noise (`[?]`): EUROSPIN FROLLINI price read `1,95` vs likely real `1,55` (pixel 5→9).
@@ -110,6 +116,56 @@ browser instance/session state — unverified). Practical consequences:
    confidently-wrong total, not "not found". v1.6.7 rejoin fixes both reads.
 
 
+## HOFER strip-rescue experiment (2026-10-20, leading to v1.7.2)
+
+Question: the "Krüger šum.tablete 1,79 B" row was never outright invisible —
+at the pipeline's 2x the price garbles ("rr 8" / "ro B") because the row sits
+on the paper fold at the top edge. Chain of experiments (all on the real photo
+`samples/hofer-scan.jpg`, Node = sharp+tesseract, browser = app pipeline):
+
+1. Node strip bench (`scripts/ocr-hofer-strip.mjs`): top 25% of the receipt
+   crop at 3x lanczos + PSM 6 reads the price MEASURED: "Kruger sum.tablete
+   1,79 8". Deterministic across runs. 4x LOST the line (too zoomed for PSM 6).
+2. First browser rescue attempt: not a copy-paste of 1 — full-frame strip
+   (cropToReceipt sanity guard kept the whole 1280px frame) garbled again.
+   Right idea wrong geometry. Added column trim.
+3. Naive bright-column trim failed live: first/last-bright-column scan kept
+   the full width (bright speckle at photo corners). Largest contiguous
+   bright run failed too (run 426..1279 still included bright non-paper
+   margin — price garbled again, "preo B").
+4. In-page probe of the RAW photo top-240-rows: the whole strip is bright-ish
+   (means 165-220 everywhere, NOT a dark-mat photo); the paper is identified
+   by TEXT INK only (dark pixels x 490-1000). Ink-run (462..866) cut the faint
+   folded price column off. Final selector: smoothed ink projection
+   (+/-20px window, gap-merge 50px, must span >=15% width), margins -30/+60:
+   live trim = 332..1073, matching the bench's manual 370..1050.
+5. Even with the correct geometry the price still garbled in-browser
+   ("preo B" / "rea B" at every PSM 6/7 attempt). Suspects eliminated:
+   - perspective warp: not the cause (pre-perspective strip garbles too)
+   - Chrome drawImage resampling: CONFIRMED fake lead after all — kernel
+     isolation bench (`scripts/ocr-hofer-kernel.mjs`) on identical pixels:
+     nearest "br B" vs lanczos3/mitchell/cubic "1,79 8", and Chrome's 3x
+     drawImage behaves nearest-like; a pure-JS Catmull-Rom upscale was added,
+     still garbled.
+6. Decisive cross-check: downloaded the browser strip PNG (raw 0.25) and ran
+   Node tesseract on THE SAME BYTES: PSM 6 "preo B" (identical to browser —
+   deterministic parity confirmed), PSM 4 "1,798" (= 1,79 + VAT letter B
+   misread as 8). The segmentation, not the image, was the bottleneck.
+7. Final cascade in `topStripDataURL`/`rawStripDataURL` + rescue loop in
+   `processImage`: attempts [raw/prep strip 0.25 PSM 6, prep 0.18 PSM 6,
+   raw/prep 0.25 PSM 4]. PSM 4 attempt measures 1,79 -> item appended with
+   `via: "strip-retry"` -> checks re-run: items sum = total (4.73) ✓ plus a
+   provenance note ("recovered by top-strip re-OCR ... verify against photo").
+
+Cost: rescue path only (~4 recognitions, seconds) runs when the missing-bucket
+check already fired; healthy receipts pay nothing. The JS Catmull-Rom
+upscale is kept (cheap, in-place) — unproven to be load-bearing; PSM 4 is.
+
+Lessons: (a) never trust "the row is unrecoverable" without testing a strip
+re-OCR; (b) tesseract PSM choice dominates on garbled narrow strips — vary it
+before touching preprocessing; (c) cross-check browser determinism by
+shipping the exact browser pixels to Node (download the canvas PNG, Node
+recognize) — catches config/segmentation differences that pixels can't.
 ## Debts (waiting on the user)
 
 1. ~~Local git commit~~ — DONE 2026-10-21: initial v2 commit on `main`, local-only

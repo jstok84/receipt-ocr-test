@@ -101,7 +101,20 @@ test("hofer eft scan: VAT recap names the clipped item ≈ 1,79 (v1.6.9)", () =>
   assert.match(vatCheck.text, /neto 1\.47/);
 });
 
-test("hofer eft scan: VAT-bucket check does NOT fire on multi-row losses or coupons", () => {
+test("hofer eft scan: injected strip-recreated Krüger item closes the sum (v1.6.9 plumbing)", () => {
+  // Shape processImage hands over when the strip re-OCR measures the price.
+  const r = parseReceipt(rawEft, [
+    { name: "Kruger sum.tablete", price: "1.79 €", quantity: undefined, via: "strip-retry" },
+  ]);
+  assert.equal(r.items.length, 3, `expected 3 items, got ${JSON.stringify(r.items)}`);
+  const sumCheck = (r.checks || []).find((c) => /items sum/.test(c.text));
+  assert.ok(sumCheck && sumCheck.ok, `sum must now match 4.73: ${JSON.stringify(r.checks)}`);
+  assert.ok(!(r.checks || []).some((c) => /VAT .* recap/.test(c.text)), "bucket hint must vanish");
+  const prov = (r.checks || []).find((c) => /recovered by top-strip/.test(c.text));
+  assert.ok(prov, "provenance note must be present");
+});
+
+test("hofer eft scan: VAT-bucket check does NOT fire on multi-row losses", () => {
   // hofer-scan-real lost BOTH the 1,79 and the 0,85 rows (gap 2,64 matches no
   // single bucket); SPAR's 5,74 gap is a coupon. Neither may gain a VAT hint.
   const rReal = parseReceipt(raw);

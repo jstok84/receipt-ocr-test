@@ -284,6 +284,19 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
         }
         // Step 3: Perspective Correction
         if (perspectiveCorrection) {
+          // Stage capture (v1.7.2): the creased top row garbles UNDER the
+          // perspective warp (HOFER strip experiments: warped strip reads
+          // "prv 7S"/"rei B" at every PSM; unwrapped Node bench reads the
+          // price). The adaptive strip rescue needs the pre-warp image.
+          if (typeof options.onStageDataURLs === "function") {
+            const stageCanvas = document.createElement("canvas");
+            stageCanvas.width = gray.cols;
+            stageCanvas.height = gray.rows;
+            cv.imshow(stageCanvas, gray);
+            options.onStageDataURLs({ stage: "prePerspective", dataURL: stageCanvas.toDataURL("image/png") });
+            stageCanvas.width = 0;
+            stageCanvas.height = 0;
+          }
           console.log("🔄 Step 3: Perspective correction started");
           const binaryForPerspective = new cv.Mat();
           cv.threshold(gray, binaryForPerspective, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
@@ -592,9 +605,301 @@ function scoreParse(parse) {
   return (parse.total ? 5 : 0) + parse.items.length + (parse.date ? 1 : 0);
 }
 
+/**
+ * Adaptive top-strip capture (v1.7.2 HOFER rescue): the topmost item rows sit
+ * on the paper's fold/edge where 2x OCR misreads prices ("1,79 B" -> "rr 8").
+ * Node evidence (scripts/ocr-hofer-strip.mjs, deterministic across runs):
+ * re-OCRing the top 25% of the receipt column at 3x reads the price straight
+ * off the pixels ("Kruger sum.tablete 1,79 8"). 4x variants LOST the line, so
+ * 3x is the empirically-validated factor.
+ *
+ * cropToReceipt may legally leave the FULL frame (sanity guard: whole-photo
+ * bright region). Strips of full frames re-introduce the black-table margins
+ * that wreck PSM-6 line detection (first live test: 8 junk lines, no price),
+ * so the strip is narrowed to the receipt column via column-brightness
+ * projection — dark background columns trimmed, receipts stay centered.
+ */
+function topStripDataURL(preprocessedDataURL, fraction = 0.25, factor = 3) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = "Anonymous";
+    img.onload = () => {
+      const stripH = Math.max(1, Math.round(img.height * fraction));
+      const stripCanvas = document.createElement("canvas");
+      stripCanvas.width = img.width;
+      stripCanvas.height = stripH;
+      const sctx = stripCanvas.getContext("2d");
+      sctx.drawImage(img, 0, 0, img.width, stripH, 0, 0, img.width, stripH);
+      let x0 = 0;
+      let x1 = img.width;
+      try {
+        const data = sctx.getImageData(0, 0, img.width, stripH).data;
+        const colMeans = [];
+        const darkCounts = [];
+        for (let x = 0; x < img.width; x++) {
+          let sum = 0;
+          let n = 0;
+          let dark = 0;
+          for (let y = 0; y < stripH; y += 4) {
+            const i = (y * img.width + x) * 4;
+            const v = (data[i] + data[i + 1] + data[i + 2]) / 3;
+            sum += v;
+            if (v < 105) dark++;
+            n++;
+          }
+          colMeans.push(sum / n);
+          darkCounts.push(dark);
+        }
+        const span = brightColumnTrim(colMeans, darkCounts);
+        // only narrow when the projection found a plausible paper column
+        const margin = 15;
+        if (span) {
+          x0 = Math.max(0, span[0] - margin);
+          x1 = Math.min(img.width, span[1] + margin);
+        }
+      } catch {
+        // tainted canvas etc.: fall back to untrimmed strip
+      }
+      const w = x1 - x0;
+      const c1 = document.createElement("canvas");
+      c1.width = w;
+      c1.height = stripH;
+      c1.getContext("2d").drawImage(stripCanvas, x0, 0, w, stripH, 0, 0, w, stripH);
+      const canvas = bicubicUpscaleGrayCanvas(c1, factor);
+      resolve(canvas.toDataURL("image/png"));
+    };
+    img.onerror = reject;
+    img.src = preprocessedDataURL;
+  });
+}
+
+/**
+ * Decisive strip variant (v1.7.2 research): canvas-drawn gray + linear stretch
+ * (1.6,-80) + NEAREST-neighbor 3x + column trim. Chrome's "high"-quality
+ * drawImage resampling is the last difference vs the Node bench that read the
+ * price ("1,79 8") — sharp used lanczos3 on the same pixels. Nearest at an
+ * integer factor is the canvas-side substitute for a sharp resampler.
+ */
+function rawStripDataURL(imageSrc, fraction = 0.25, factor = 3) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = "Anonymous";
+    img.onload = () => {
+      const h = Math.max(1, Math.round(img.height * fraction));
+      const cGray = document.createElement("canvas");
+      cGray.width = img.width;
+      cGray.height = h;
+      const ctx1 = cGray.getContext("2d");
+      ctx1.drawImage(img, 0, 0, img.width, h, 0, 0, img.width, h);
+      const data = ctx1.getImageData(0, 0, img.width, h);
+      const d = data.data;
+      for (let i = 0; i < d.length; i += 4) {
+        const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+        const v = Math.max(0, Math.min(255, Math.round(1.6 * g - 80)));
+        d[i] = d[i + 1] = d[i + 2] = v;
+      }
+      ctx1.putImageData(data, 0, 0);
+      // column trim inside canvas data (bright+ink column projection; the
+      // stretched pixels saturate, so "ink" = stretched value under 75)
+      const colMeans = new Array(img.width).fill(0);
+      const darkCounts = new Array(img.width).fill(0);
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < img.width; x++) {
+          const v = d[(y * img.width + x) * 4];
+          colMeans[x] += v;
+          if (v < 75) darkCounts[x]++;
+        }
+      }
+      for (let x = 0; x < img.width; x++) colMeans[x] /= h;
+      const span = brightColumnTrim(colMeans, darkCounts);
+      let left = 0;
+      let right = img.width - 1;
+      if (span) {
+        left = Math.max(0, span[0] - 15);
+        right = Math.min(img.width - 1, span[1] + 15);
+      }
+      const w = right - left;
+      const c1src = document.createElement("canvas");
+      c1src.width = img.width;
+      c1src.height = h;
+      c1src.getContext("2d").putImageData(data, 0, 0);
+      const c1 = document.createElement("canvas");
+      c1.width = w;
+      c1.height = h;
+      c1.getContext("2d").drawImage(c1src, left, 0, w, h, 0, 0, w, h);
+      const c2 = bicubicUpscaleGrayCanvas(c1, factor);
+      resolve(c2.toDataURL("image/png"));
+    };
+    img.onerror = reject;
+    img.src = typeof imageSrc === "string" ? imageSrc : URL.createObjectURL(imageSrc);
+  });
+}
+
+/**
+ * Progressive upscale in ≤2x steps: Chrome's drawImage degrades past ~2x
+ * (kernel isolation scripts/ocr-hofer-kernel.mjs: nearest reads "br B" where
+ * lanczos/mitchell/cubic read "1,79 8" on identical pixels). Two successive
+ * steps (1.5x + 2x) keep every draw inside the smooth-resampling regime and
+ * approximate the sharp bench result (lanczos3).
+ */
+function upscaleCanvasProgressive(src, totalFactor) {
+  let out = src;
+  let remaining = totalFactor;
+  while (remaining > 1.0001) {
+    const step = Math.min(remaining, 2);
+    const c = document.createElement("canvas");
+    c.width = Math.round(out.width * step);
+    c.height = Math.round(out.height * step);
+    const ctx = c.getContext("2d");
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(out, 0, 0, out.width, out.height, 0, 0, c.width, c.height);
+    out = c;
+    remaining /= step;
+  }
+  return out;
+}
+
+/**
+ * High-quality gray upscale in pure JS: canvas drawImage cannot reproduce the
+ * sharp bench results (scripts/ocr-hofer-kernel.mjs — "1,79 8" survives
+ * lanczos3/mitchell/cubic, dies on nearest and on Chrome's >2x drawImage).
+ * Catmull-Rom (a=-0.5) matches sharp's `cubic` kernel, which read the price.
+ */
+function bicubicUpscaleGrayCanvas(srcCanvas, factor) {
+  const sw = srcCanvas.width;
+  const sh = srcCanvas.height;
+  const sctx = srcCanvas.getContext("2d");
+  const sd = sctx.getImageData(0, 0, sw, sh).data;
+  const dw = Math.round(sw * factor);
+  const dh = Math.round(sh * factor);
+  const out = new ImageData(dw, dh);
+  const od = out.data;
+  // separable Catmull-Rom weights for factor=3: dst centers map onto src
+  // half-pixel positions; 4 taps max per axis
+  const weightFor = (t) => {
+    const s = Math.abs(t);
+    let w = 0;
+    if (s <= 1) w = 1.5 * s * s * s - 2.5 * s * s + 1;
+    else if (s < 2) w = -0.5 * s * s * s + 2.5 * s * s - 4 * s + 2;
+    return w;
+  };
+  const xWeights = new Array(dw);
+  const xBases = new Array(dw);
+  for (let dx = 0; dx < dw; dx++) {
+    const sx = (dx + 0.5) / factor - 0.5;
+    const base = Math.floor(sx) - 1;
+    xBases[dx] = base;
+    xWeights[dx] = [0, 1, 2, 3].map((k) => weightFor(sx - (base + k)));
+  }
+  for (let dy = 0; dy < dh; dy++) {
+    const sy = (dy + 0.5) / factor - 0.5;
+    const yBase = Math.floor(sy) - 1;
+    const yW = [0, 1, 2, 3].map((k) => weightFor(sy - (yBase + k)));
+    const yClamp = [0, 1, 2, 3].map((k) => Math.max(0, Math.min(sh - 1, yBase + k)));
+    for (let dx = 0; dx < dw; dx++) {
+      const bx = xBases[dx];
+      const w = xWeights[dx];
+      let acc = 0;
+      for (let j = 0; j < 4; j++) {
+        const srcRow = yClamp[j];
+        let colAcc = 0;
+        for (let k = 0; k < 4; k++) {
+          let sx0 = bx + k;
+          if (sx0 < 0) sx0 = 0;
+          else if (sx0 >= sw) sx0 = sw - 1;
+          colAcc += sd[(srcRow * sw + sx0) * 4] * w[k];
+        }
+        acc += colAcc * yW[j];
+      }
+      const v = Math.max(0, Math.min(255, Math.round(acc)));
+      const o = (dy * dw + dx) * 4;
+      od[o] = od[o + 1] = od[o + 2] = v;
+      od[o + 3] = 255;
+    }
+  }
+  const dst = document.createElement("canvas");
+  dst.width = dw;
+  dst.height = dh;
+  dst.getContext("2d").putImageData(out, 0, 0);
+  return dst;
+}
+
+/**
+ * Largest contiguous run of "paper-bright" columns (v1.7.2 fix): the naive
+ * first/last-bright-column scan failed on the live photo (bright speckle at
+ * corners -> full-width strip kept -> PSM-6 garbles the price again). A
+ * contiguous-run selection survives stray bright edges.
+ */
+function brightColumnTrim(colMeans, minWidthFraction = 0.25) {
+  const maxMean = Math.max(...colMeans);
+  const threshold = Math.max(90, maxMean * 0.55);
+  const n = colMeans.length;
+  let bestStart = -1;
+  let bestLen = 0;
+  let curStart = -1;
+  for (let x = 0; x <= n; x++) {
+    if (x < n && colMeans[x] >= threshold) {
+      if (curStart < 0) curStart = x;
+    } else if (curStart >= 0) {
+      const len = x - curStart;
+      if (len > bestLen) { bestLen = len; bestStart = curStart; }
+      curStart = -1;
+    }
+  }
+  if (bestLen < n * minWidthFraction) return null;
+  return [bestStart, bestStart + bestLen - 1];
+}
+
+/**
+ * Ink-column trim (v1.7.2 final): the receipt column is located by TEXT INK,
+ * not brightness — live-photo probe shows the whole top strip is bright-ish
+ * (means 165-220 everywhere incl. background), while receipt text columns
+ * carry dark pixels (smoothed counts >=5 over a ±20px window). Columns with
+ * sparse/faint ink (the folded price!) survive because the ±20px window and a
+ * 50px gap-merge span them; bounds get ±30/60 slack like the bench crop.
+ */
+function brightColumnTrim(colMeans, darkCounts, minWidthFraction = 0.15, maxGapPx = 50) {
+  const n = colMeans.length;
+  const smooth = new Array(n).fill(0);
+  for (let x = 0; x < n; x++) {
+    let s = 0;
+    for (let k = Math.max(0, x - 20); k <= Math.min(n - 1, x + 20); k++) {
+      s += darkCounts ? darkCounts[k] : 0;
+    }
+    smooth[x] = s;
+  }
+  let bestStart = -1;
+  let bestEnd = -1;
+  let curStart = -1;
+  let lastInk = -1;
+  for (let x = 0; x <= n; x++) {
+    const isP = x < n && smooth[x] >= 6;
+    if (isP) {
+      if (curStart < 0) curStart = x;
+      lastInk = x;
+    } else if (curStart >= 0) {
+      if (x - lastInk <= maxGapPx && x < n) continue;
+      if (lastInk - curStart + 1 > bestEnd - bestStart + 1) { bestStart = curStart; bestEnd = lastInk; }
+      curStart = -1;
+      lastInk = -1;
+    }
+  }
+  if (bestStart < 0 || bestEnd - bestStart + 1 < n * minWidthFraction) return null;
+  return [Math.max(0, bestStart - 30), Math.min(n - 1, bestEnd + 60)];
+}
+
 // --- OCR + preprocessing for direct image files ---
+// Returns { text, extraItems }: item rows recovered by the adaptive strip
+// re-OCR ride along separately so app.js can hand both to parseReceipt
+// (checks[] then run over the complete item set with provenance markers).
 export async function processImage(imageSrc, onProgress = () => {}) {
-  const preprocessedDataURL = await preprocessWithOpenCV(imageSrc);
+  let prePerspectiveDataURL = null;
+  const preprocessedDataURL = await preprocessWithOpenCV(imageSrc, {
+    onStageDataURLs: ({ stage, dataURL }) => {
+      if (stage === "prePerspective" && !prePerspectiveDataURL) prePerspectiveDataURL = dataURL;
+    },
+  });
   const upscaled = await upscaleDataURL(preprocessedDataURL);
   const worker = await getWorker();
   const result = await worker.recognize(upscaled);
@@ -629,7 +934,75 @@ export async function processImage(imageSrc, onProgress = () => {}) {
     }
   }
 
+  // v1.7.2 adaptive top-strip rescue: when the parse PROVABLY misses an item
+  // (VAT-recap bucket check), re-OCR the strip where the first item rows sit.
+  // Only accepts a strip line whose MEASURED price equals the missing amount
+  // (±0.02) — arithmetic from the recap is never turned into an item.
+  const extraItems = [];
+  const finalParse = parseReceipt(cleaned);
+  const bucketText = (finalParse.checks || []).find(
+    (c) => !c.ok && /missing item ≈ ([\d.]+)/.test(c.text)
+  );
+  if (bucketText) {
+    const missing = parseFloat(bucketText.text.match(/missing item ≈ ([\d.]+)/)[1]);
+    const alreadyParsed = finalParse.items.some(
+      (it) => Math.abs((parseFloat(it.price) ?? 0) - missing) <= 0.02
+    );
+    if (!alreadyParsed) {
+      let strip = null;
+      try {
+        const currency = (finalParse.total || "").split(" ")[1] || "€";
+        // cascade: strip height × page-seg. Live-evidence history: full-frame
+        // strips garbled ("prv 7S"); ink-trim alone helped names but the price
+        // needed PSM 4 — decisive cross-check: Node tesseract on the EXACT
+        // browser strip PNG read "preo B" at PSM 6 but "1,798" (= 1,79 with the
+        // VAT letter B misread as 8) at PSM 4. PSM 6 wasted determinism on the
+        // same pixels, so the segmentation, not the image, was the bottleneck.
+        outer: for (const [stripKind, fraction, psm] of [
+          ["raw", 0.25, "6"], ["prep", 0.25, "6"], ["prep", 0.18, "6"],
+          ["raw", 0.25, "4"], ["prep", 0.25, "4"],
+        ]) {
+          // strip from the PRE-perspective image when available: creased rows
+          // garble under the warp (live evidence), while the unwrapped crop
+          // is what the Node benchmarks read correctly. "raw" attempts bypass
+          // resampling entirely (canvas gray+stretch math == sharp params).
+          const base = stripKind === "raw" ? imageSrc : (prePerspectiveDataURL || preprocessedDataURL);
+          strip = stripKind === "raw" ? await rawStripDataURL(base, fraction) : await topStripDataURL(base, fraction);
+          await worker.setParameters({ ...tessParams, tessedit_pageseg_mode: psm });
+          const stripResult = await worker.recognize(strip);
+          await worker.setParameters(tessParams);
+          const stripText = cleanAndMergeText(stripResult.data.text);
+          const stripLines = stripText.split("\n").filter(Boolean);
+          console.log("🔁 Strip re-OCR (missing item ≈", missing.toFixed(2), ", strip", stripKind, fraction, "psm", psm, "):", stripLines);
+          for (const line of stripLines) {
+            const amounts = [...line.matchAll(/\d{1,3}[.,]\d{1,2}/g)].map((m) =>
+              parseFloat(m[0].replace(",", "."))
+            );
+            const hit = amounts.find((a) => Math.abs(a - missing) <= 0.02);
+            if (hit == null) continue;
+            const tokens = line.trim().split(/\s+/);
+            let end = 0;
+            while (end < tokens.length && !/\d/.test(tokens[end])) end++;
+            let name = tokens.slice(0, end).join(" ");
+            name = name.replace(/^[^a-zA-ZčšžČŠŽ]+\s*/, "").trim();
+            const letterCount = (name.match(/[a-zA-ZčšžČŠŽ]/g) || []).length;
+            if (letterCount < 3) continue;
+            extraItems.push({
+              name,
+              price: `${hit.toFixed(2)} ${currency}`,
+              quantity: undefined,
+              via: "strip-retry",
+            });
+            break outer; // one rescued row per bucket
+          }
+        }
+      } catch (err) {
+        console.warn("🔁 Strip re-OCR failed, skipping rescue:", err);
+      }
+    }
+  }
+
   updateOCRProgressUI("OCR complete", 1);
   setTimeout(() => updateOCRProgressUI("", 0), 2000);
-  return cleaned;
+  return { text: cleaned, extraItems };
 }
