@@ -474,11 +474,11 @@ lives once, in the checks list below.
 
 #ocr-progress-container {
   position: fixed;
-  right: 20px;
-  bottom: 20px;
+  right: 16px;
+  bottom: 16px;
   z-index: 10;
-  width: min(340px, calc(100vw - 40px));
-  padding: 10px 14px;
+  width: min(240px, calc(100vw - 40px));
+  padding: 8px 12px;
   border: 1px solid var(--line-2);
   border-radius: var(--radius-m);
   background: var(--surface);
@@ -500,7 +500,10 @@ lives once, in the checks list below.
 }
 
 #ocr-status-text {
-  margin-top: 6px;
-  font-size: 11.5px;
+  margin-top: 4px;
+  font-size: 11px;
   color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
