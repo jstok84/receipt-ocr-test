@@ -1,5 +1,5 @@
 export function parseReceipt(text) {
-  const PARSER_VERSION = "v1.6.5";
+  const PARSER_VERSION = "v1.6.6";
   // Set window.__OCR_DEBUG = true to restore verbose parser diagnostics.
   const DEBUG = typeof window !== "undefined" && window.__OCR_DEBUG === true;
   const log = (...args) => { if (DEBUG) console.log(...args); };
@@ -525,6 +525,51 @@ export function parseReceipt(text) {
   // summed them into a confident wrong "62.67". A sum of unverified items must
   // never masquerade as a total; "Not found" keeps the review workflow honest.
 
+  // Arithmetic cross-checks — flags for the review workflow, never overrides
+  // anything. Evidence base:
+  //  - EUROSPIN: OCR read FROLLINI 1,95 where the paper likely says 1,55 ->
+  //    itemsSum 4,69 vs total 4,29 flags it (mismatch)
+  //  - EUROSPIN tender: Gotovina 13,00 - Vrnjen denar 8,71 = 4,29 = payable
+  //    (independent confirmation of the total when all three survive OCR)
+  //  - SPAR: coupon -5,74 makes itemsSum != total legitimately -> mismatches
+  //    are [?] flags with a discount hint, never errors, totals never touched
+  function parseAmount(prefix, s) {
+    const v = parseFloat((s || "").split(" ")[0].replace(",", "."));
+    return isNaN(v) ? null : v;
+  }
+
+  const checks = [];
+  const tenderLine = lines.find((l) => /\bovin|\bdenar|gotovin/i.test(l));
+  const changeLine = lines.find((l) => /\bdenar\b|vra[čc]il/i.test(l));
+
+  if (total != null && items.length) {
+    const itemSum = items.reduce((acc, it) => acc + (parseAmount("item", it.price) ?? 0), 0);
+    if (itemSum > 0) {
+      const delta = Math.abs(itemSum - total);
+      checks.push(
+        delta <= 0.011
+          ? { ok: true, text: `items sum = total (${itemSum.toFixed(2)})` }
+          : {
+              ok: false,
+              text: `items sum ${itemSum.toFixed(2)} ≠ total ${total.toFixed(2)} — verify a price [?] or a discount/missing item`,
+            }
+      );
+    }
+  }
+
+  if (total != null && tenderLine && changeLine && tenderLine !== changeLine) {
+    const tendered = parseAmount("t", (extractLastAmountWithCurrency(tenderLine) ?? [])[1]);
+    const change = parseAmount("c", (extractLastAmountWithCurrency(changeLine) ?? [])[1]);
+    if (tendered != null && change != null && tendered > change) {
+      const implied = parseFloat((tendered - change).toFixed(2));
+      checks.push(
+        Math.abs(implied - total) <= 0.011
+          ? { ok: true, text: `tender ${tendered.toFixed(2)} − change ${change.toFixed(2)} = total ✓` }
+          : { ok: false, text: `tender ${tendered.toFixed(2)} − change ${change.toFixed(2)} = ${implied.toFixed(2)} ≠ total ${total.toFixed(2)}` }
+      );
+    }
+  }
+
   log(`Extracted date: ${date}`);
   log(`Detected total candidates: ${totalCandidates.length}`);
   log(`Final total: ${total ? total.toFixed(2) + " " + currency : null}`);
@@ -535,6 +580,7 @@ export function parseReceipt(text) {
     date,
     total: total ? `${total.toFixed(2)} ${currency}` : null,
     totalSource,
+    checks,
     items,
   };
 }

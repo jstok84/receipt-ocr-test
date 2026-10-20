@@ -105,3 +105,27 @@ test("structural currency tag: garbled '(FUR)/'(ER)' forms equally valid", () =>
   assert.equal(parseReceipt("na) (FUR): 4,29").total, "4.29 €");
   assert.equal(parseReceipt("mat (ER): 4,29").total, "4.29 €");
 });
+
+test("arithmetics validator: items-sum matches total on the crop-run fixture", () => {
+  const r = parseReceipt(raw);
+  const sumCheck = r.checks.find((c) => c.text.includes("items sum"));
+  assert.ok(sumCheck && sumCheck.ok, `expected ✓, got ${JSON.stringify(r.checks)}`);
+  assert.equal(r.total, "4.29 €");
+});
+
+test("arithmetics validator: a misread price flags [?], never vetoes the total", () => {
+  // real browser-run form: FROLLINI misread as 1,95 -> sum 4,69 vs total 4,29
+  const r = parseReceipt("Skupaj (EUR): 4,29\nFROLLINI 1,95 A\nTARALLI 1,29 A\nONULADNI 1,45 A");
+  const sumCheck = r.checks.find((c) => c.text.includes("items sum"));
+  assert.ok(sumCheck && !sumCheck.ok, `expected mismatch flag, got ${JSON.stringify(r.checks)}`);
+  assert.equal(r.total, "4.29 €", "flag must not override the total");
+});
+
+test("arithmetics validator: tender arithmetic cross-check fires when tender lines survive", () => {
+  const garbledRun = parseReceipt(garbled); // no total -> no checks there
+  assert.ok(!garbledRun.checks.some((c) => c.text.includes("tender")));
+  // sanity: matching tender/change/total produce a ✓
+  const r = parseReceipt("Skupaj 4,29\nGotovina EUR 13,00\nVrnjen denar EUR 8,71");
+  const tenderCheck = r.checks.find((c) => c.text.includes("tender"));
+  assert.ok(tenderCheck && tenderCheck.ok, `expected tender ✓, got ${JSON.stringify(r.checks)}`);
+});
