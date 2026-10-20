@@ -394,6 +394,8 @@ The v2 shell reached its intended design language, approved by the user:
   per scan removed); stale v1 green progress bar replaced by an
   idle-hidden status chip; drag-and-drop dropzone; Copy button;
   re-selectable file input.
+- Status chip narrowed 340->240px, clear of panel borders (user remark,
+  verified live mid-scan).
 - Engine layer at the same point: band cascade early-stop (3/5 attempts on
   the live eurospin run), evidence-index fix, redundant clean pass
   removed, glob test script, 59/59 tests green.
