@@ -376,6 +376,33 @@ Verified: 59/59 tests; live eurospin run renders all component classes
 (badge rows, warn/ok checks, Date/Total meta, evidence with 3 attempts);
 progress chip hidden after completion; zero debug canvases.
 
+## MILESTONE (2026-10-21, tag ui-v1-release)
+
+The v2 shell reached its intended design language, approved by the user:
+
+- Token-driven styles.css: warm paper neutrals, hairline borders, ink
+  monochrome accent, system type + mono tabular numerals for money.
+  Explicitly NOT the generic gradient/glow/emoji "AI look".
+- Provenance system finalized after three iterations (badge -> footnote
+  asterisk -> color-voice), grounded in researched professional patterns
+  (TurboTax Forms Mode color code, CCH Axcess override/estimate text,
+  Dundas BI value-anchored hover, GitLens mark+hover, vLex corrected-cell
+  styling, Siegel case study proving boxes/highlights fail): re-measured
+  prices voice amber with a dotted underline; the story lives once in the
+  checks list. User verdict: "this is correct now".
+- Dev stage previews + sleeps behind window.__OCR_DEBUG (leak + 5x300ms
+  per scan removed); stale v1 green progress bar replaced by an
+  idle-hidden status chip; drag-and-drop dropzone; Copy button;
+  re-selectable file input.
+- Engine layer at the same point: band cascade early-stop (3/5 attempts on
+  the live eurospin run), evidence-index fix, redundant clean pass
+  removed, glob test script, 59/59 tests green.
+
+Commits: cleanup 641dde5, restyle e785112, footnote 3411adc(a), color-voice
+7621fb8. Out of scope / parked: GitHub push (user's manual decision),
+v2->root canonical swap (root v1 serves GitHub Pages), dark mode (not
+requested).
+
 ## Debts (waiting on the user)
 
 1. ~~Local git commit~~ — DONE 2026-10-21: initial v2 commit on `main`, local-only
