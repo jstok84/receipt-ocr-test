@@ -25,7 +25,7 @@
   "scripts": {
     "start": "parcel src/index.html --open",
     "build": "parcel build src/index.html --dist-dir dist --public-url ./",
-    "test": "node --test tests/parseReceipt.test.js tests/corpus.test.js tests/sparV2.test.js tests/sparV3.test.js tests/hofer.test.js tests/eurospin.test.js"
+    "test": "node --test tests/parseReceipt.test.js tests/corpus.test.js tests/sparV2.test.js tests/sparV3.test.js tests/hofer.test.js tests/eurospin.test.js tests/spar-coupon.test.js"
   },
   "devDependencies": {
     "parcel": "^2.16.4",

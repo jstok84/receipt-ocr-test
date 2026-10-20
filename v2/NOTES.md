@@ -250,6 +250,44 @@ one as the primary OCR preprocessing. Checked against evidence, twice:
   eurospin recovers (FROLLINI 1.55, sum 4.29 ok, evidence panel shows all
   5 attempts), HOFER rescue unchanged (1.79 via top strip, 4.73 ok).
 
+## SPAR coupon regression + hardening (2026-10-20, v1.7.6 fix)
+
+The v1.7.6 band-rescue fired on a SPAR coupon receipt (user live run,
+fixture spar-coupon-browser.txt): items sum EXACTLY the gross 57.35, total
+51.61 via "KUPON POPUST 10.00% od 57.35 -5.74" - legit gap - yet it applied
+4 corrupting corrections: strip row "SPAR AJVAR POLPEK. ... 1.19" was
+fuzzy-matched to the WRONG item ("SPAR TRAJNO MLEKO", letters-only LCS 10/15
+= 0.667 >= old 0.65 threshold because of the shared SPAR prefix), a PSM-4
+garble overwrote VAF.KAR. 1,69 as 1.09 ("1.69. 0.00 1.09"), BAZILIKA 1.49 ->
+1.43, and the 0.16 POPUST COLUMN (line "SPAR AJVAR POLPEK. 3606 1 135 0.16
+1198", trailing dot lost) replaced AJVAR's correct 1.19. Each step
+individually "improved" |sum - total| because the real gap is a discount -
+sequential improvement alone cannot distinguish repair from corruption.
+
+Fixes (all parser-level, pinned in tests/spar-coupon.test.js):
+1. **Discount gate**: corrections ignored entirely when the text carries a
+   coupon/discount marker (/pop[ou]st|doplac/i). Mirrored in the ocrUtils
+   cascade trigger (saves the 5 strip passes). SPAR: mismatches stay honest
+   [?] flags, exactly as pre-v1.7.6.
+2. **Distinctive-token matching** (namesScore, exported): match = shared
+   >=5-letter token (returns 1.0), else full-string LCS ratio;
+   namesSimilar >= 0.75 (was 0.65). Brand-prefix pairs now score below the
+   line; the eurospin twins still pass (FROLLINI token = 1.0, CORULADNI/
+   CONULADNI LCS = 0.75 exact, TARALLI 0.87). Diacritics normalize first
+   (c/s/z) - the CORULADNI case silently failed without it (lettersOf kept
+   "c" from c-onuladni vs plain "c").
+3. **Best-match, not first-match**: the wrong-item pairing came from
+   findIndex picking the FIRST item over the threshold; now the best-scoring
+   item wins (candidate "SPAR AJVAR POLPEK." resolves to AJVAR itself).
+4. **All-or-nothing commit**: corrections are provisional; they survive only
+   if the final sum reaches the total (+-0.02); otherwise every change is
+   reverted and no provenance note is written.
+
+Verified live after the fix: SPAR upload -> 26 items, ZERO corrected rows,
+no band cascade, honest 57.35 vs 51.61 flag; eurospin still recovers
+FROLLINI 1.55 (sum 4.29 ok, provenance note, evidence panel); HOFER rescue
+unchanged (1.79 top-strip, 4.73). Tests 59/59 (7 new).
+
 ## Debts (waiting on the user)
 
 1. ~~Local git commit~~ — DONE 2026-10-21: initial v2 commit on `main`, local-only

@@ -1,7 +1,7 @@
 import { createWorker } from "tesseract.js";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 import pdfWorker from "pdfjs-dist/build/pdf.worker.js";
-import { parseReceipt, namesSimilar } from "./parseReceipt";
+import { parseReceipt, namesScore, namesSimilar } from "./parseReceipt";
 
 GlobalWorkerOptions.workerSrc = pdfWorker;
 
@@ -1046,7 +1046,14 @@ export async function processImage(imageSrc, onProgress = () => {}) {
     const sumMismatch = finalChecks.find(
       (c) => !c.ok && /items sum .* ≠ total/.test(c.text)
     );
-    if (sumMismatch && finalParse.items.length >= 2) {
+    // Discount gate (SPAR regression, live 2026-10-20): a coupon/discount row
+    // legitimately explains the sum gap ("KUPON POPUST 10.00% od 57.35
+    // -5.74" — items sum exactly the gross 57.35). Band-rescue corrections
+    // there are poison (the improvement guard even "clawed" toward the
+    // discounted total using a misread popust column). Same gate exists in
+    // parseReceipt; this copy saves the 5 OCR passes.
+    const discountMarker = /pop[ou]st|doplac/i.test(cleaned);
+    if (sumMismatch && !discountMarker && finalParse.items.length >= 2) {
       // Collect candidates from EVERY attempt (an early attempt can garble
       // the mispriced row while a later variant reads it right); the parser's
       // improvement guard filters them, so over-collection is safe. Each
@@ -1087,8 +1094,14 @@ export async function processImage(imageSrc, onProgress = () => {}) {
             let name = tokens.slice(0, end).join(" ");
             name = name.replace(/^[^a-zA-ZčšžČŠŽ]+\s*/, "").trim();
             if ((name.match(/[a-zA-ZčšžČŠŽ]/g) || []).length < 4) continue;
-            const target = finalParse.items.find((it) => namesSimilar(name, it.name));
-            if (!target) continue; // no name match -> not a correction, could be anything
+            // best-matching item only (no brand-prefix first-match pairing)
+            let target = null;
+            let bestScore = 0;
+            for (const it of finalParse.items) {
+              const s = namesScore(name, it.name);
+              if (s > bestScore + 1e-9) { bestScore = s; target = it; }
+            }
+            if (!target || !namesSimilar(name, target.name)) continue; // no solid match -> drop, could be anything
             const oldPrice = parseFloat(String(target.price ?? "").replace(",", "."));
             if (!isNaN(oldPrice) && Math.abs(oldPrice - price) <= 0.02) continue;
             if (corrections.some((c) => c.attempt === attemptIdx && namesSimilar(c.name, name))) continue;

@@ -1,17 +1,27 @@
 /**
- * Fuzzy item-name matching for strip-measured price corrections (v1.7.6).
+ * Fuzzy item-name scoring for strip-measured price corrections (v1.7.6).
  * Comparison is letters-only lowercase: OCR garbles digits inside names and
  * punctuation randomly ("TKS] FROLLINI 1KG" vs "EKSI FROLLINI 1KG",
- * "ČONULADNI" vs "CORULADNI"). Match = containment of the shorter string or
- * LCS ≥ 65% of the longer one (ČONULADNI/CORULADNI ≈ 0.75; distinct SI item
- * names fall well below that).
+ * "ČONULADNI" vs "CORULADNI"). Return value in [0,1]:
+ *   1.0  one string contains the other, OR both share a distinctive token
+ *        (>=5 letters) — brand guess rows ("SPAR AJVAR POLPEK." vs
+ *        "SPAR TRAJNO MLEKO" are 0.667 on plain LCS; the shared brand prefix
+ *        must NOT pair them — live SPAR regression corrected the WRONG item).
+ *   else LCS ratio of the full letter strings (ČONULADNI/CORULADNI = 0.75;
+ *        threshold for namesSimilar).
  */
-export function namesSimilar(candidate, itemName) {
-  const lettersOf = (s) => (s.toLowerCase().match(/[a-zčšžćđ]/g) || []).join("");
+export function namesScore(candidate, itemName) {
+  // diacritics normalize (č->c, š->s, ž->z): OCR mixes "ČOKOLADNI"/"CORULADNI"
+  // freely and string equality must treat them as the same letter
+  const norm = (s) => s.toLowerCase().replace(/[čć]/g, "c").replace(/š/g, "s").replace(/ž/g, "z").replace(/đ/g, "d");
+  const lettersOf = (s) => (norm(s).match(/[a-z]/g) || []).join("");
   const a = lettersOf(candidate);
   const b = lettersOf(itemName);
-  if (a.length < 4 || b.length < 4) return false;
-  if (a.includes(b) || b.includes(a)) return true;
+  if (a.length < 4 || b.length < 4) return 0;
+  if (a.includes(b) || b.includes(a)) return 1;
+  const toksA = norm(candidate).match(/[a-z]{5,}/g) ?? [];
+  const toksB = new Set(norm(itemName).match(/[a-z]{5,}/g) ?? []);
+  if (toksA.some((t) => toksB.has(t))) return 1;
   const m = a.length;
   const n = b.length;
   let prev = new Array(n + 1).fill(0);
@@ -22,7 +32,11 @@ export function namesSimilar(candidate, itemName) {
     }
     [prev, curr] = [curr, prev];
   }
-  return prev[n] / Math.max(m, n) >= 0.65;
+  return prev[n] / Math.max(m, n);
+}
+
+export function namesSimilar(candidate, itemName) {
+  return namesScore(candidate, itemName) >= 0.75;
 }
 
 export function parseReceipt(text, extraItems = [], corrections = []) {
@@ -642,51 +656,92 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
 
   // v1.7.6: strip-measured price corrections. ocrUtils measures candidate
   // items from a band re-OCR and hands them over; matching happens HERE (one
-  // source of truth) against already-parsed items: fuzzy name match + a
-  // different measured price + STRICT ARITHMETIC IMPROVEMENT of the
-  // items-sum check. The improvement guard is not decoration: live eurospin
-  // evidence — a band strip garbled ČOKOLADNI's 1,45 as "1.49" while
-  // FROLLINI's row lost its price entirely ("zvo\""); the strip can misread
-  // any price, so a correction is accepted only when it moves items closer
-  // to the total (1.55 for FROLLINI: sum 4.69 -> 4.29 exact). Matching
-  // nothing / equal price / worsening = no change (honest).
+  // source of truth) against already-parsed items. Guards, all
+  // evidence-backed (v1.7.6 live eurospin + SPAR regression the same day):
+  //  - DISCOUNT GATE (SPAR): a coupon/discount row legitimately explains an
+  //    items-sum gap ("KUPON POPUST 10.00% od 57.35 -5.74", gap = 5.74).
+  //    With a known discount in the text, corrections are ignored — the
+  //    band cascade must not fire, and the [?] mismatch flag stays.
+  //  - BEST NAME MATCH, no brand-prefix pairing: "SPAR AJVAR POLPEK." vs
+  //    "SPAR TRAJNO MLEKO" scored 0.667 on plain LCS (shared SPAR prefix) and
+  //    first-match findIndex paired a strip row with the WRONG item. Now a
+  //    match needs a shared distinctive token (>=5 letters) or LCS >= 0.75,
+  //    and the BEST-scoring item is chosen, not the first passing one.
+  //  - STRICT ARITHMETIC IMPROVEMENT: a strip can garble any price (eurospin
+  //    live: COKOLADNI 1,45 read as "1.49"), so a candidate only applies when
+  //    it moves |items-sum - total| closer.
+  //  - ALL-OR-NOTHING COMMIT: individually "improving" corrections can
+  //    collectively claw toward a legitimately mismatched total (SPAR live:
+  //    AJVAR 1.19 -> the 0.16 popust column read passed "improvement" while
+  //    corrupting a correct row). Corrections survive only when the FINAL sum
+  //    actually reaches the total (±0.02); otherwise every applied change is
+  //    reverted and no provenance note is written.
   const parseTotalVal = total == null
     ? null
     : (typeof total === "number" ? total : parseAmount("total", total));
   const itemsSum = () => items.reduce((acc, it) => acc + (parseAmount("item", it.price) ?? 0), 0);
-  for (const corr of corrections) {
-    const idx = items.findIndex(
-      (it) => it.via !== "strip-retry" && it.via !== "strip-corrected" && namesSimilar(corr.name, it.name)
-    );
-    if (idx < 0) {
-      log(`  Correction candidate "${corr.name}" matched no item — dropped`);
-      continue;
+  const discountGate = /pop[ou]st|doplac/i.test(text);
+  const applied = []; // { idx, prevPrice, prevVia, candName, newPrice }
+  if (discountGate && corrections.length) {
+    log(`  Discount/coupon line in text — ${corrections.length} correction candidate(s) ignored`);
+  }
+  if (!discountGate) {
+    for (const corr of corrections) {
+      let best = -1;
+      let bestScore = 0;
+      items.forEach((it, i) => {
+        if (it.via === "strip-retry" || it.via === "strip-corrected") return;
+        const s = namesScore(corr.name, it.name);
+        if (s > bestScore + 1e-9) {
+          bestScore = s;
+          best = i;
+        }
+      });
+      if (best < 0) {
+        log(`  Correction candidate "${corr.name}" matched no item — dropped`);
+        continue;
+      }
+      const oldPrice = parseAmount("item", items[best].price);
+      if (oldPrice != null && Math.abs(oldPrice - corr.price) <= 0.02) {
+        log(`  Correction candidate "${corr.name}" equals existing price — no change`);
+        continue;
+      }
+      if (parseTotalVal == null || oldPrice == null) {
+        log(`  Correction candidate "${corr.name}" has no total/price anchor — dropped`);
+        continue;
+      }
+      const prevPrice = items[best].price;
+      const prevVia = items[best].via;
+      const distBefore = Math.abs(itemsSum() - parseTotalVal);
+      items[best].price = `${corr.price.toFixed(2)} €`;
+      const distAfter = Math.abs(itemsSum() - parseTotalVal);
+      if (distAfter >= distBefore - 1e-9) {
+        items[best].price = prevPrice;
+        log(`  Correction candidate "${corr.name}" ${oldPrice.toFixed(2)} -> ${corr.price.toFixed(2)} rejected: sum ${
+          distAfter.toFixed(2)} not closer to total ${parseTotalVal.toFixed(2)} than ${distBefore.toFixed(2)}`);
+        continue;
+      }
+      log(`  Provisional correction: "${items[best].name}" ${prevPrice} -> ${corr.price.toFixed(2)} € (OCR measured)`);
+      applied.push({ idx: best, prevPrice, prevVia, candName: corr.name, oldPrice, newPrice: corr.price });
+      items[best].via = "strip-corrected";
     }
-    const oldPrice = parseAmount("item", items[idx].price);
-    if (oldPrice != null && Math.abs(oldPrice - corr.price) <= 0.02) {
-      log(`  Correction candidate "${corr.name}" equals existing price — no change`);
-      continue;
+    // all-or-nothing commit
+    const finalGap = parseTotalVal != null ? Math.abs(itemsSum() - parseTotalVal) : Infinity;
+    if (applied.length && finalGap > 0.02) {
+      for (let k = applied.length - 1; k >= 0; k--) {
+        const a = applied[k];
+        items[a.idx].price = a.prevPrice;
+        items[a.idx].via = a.prevVia;
+      }
+      log(`  ${applied.length} correction(s) REVERTED: sum ${itemsSum().toFixed(2)} still ≠ total ${parseTotalVal.toFixed(2)} — gap is explained by something else (discount/missing row), not a proven price fix`);
+      applied.length = 0;
     }
-    const prevPrice = items[idx].price;
-    if (parseTotalVal == null || oldPrice == null) {
-      log(`  Correction candidate "${corr.name}" has no total/price anchor — dropped`);
-      continue;
+    for (const a of applied) {
+      checks.push({
+        ok: false,
+        text: `price corrected by band re-OCR: "${items[a.idx].name}" ${a.prevPrice} -> ${a.newPrice.toFixed(2)} € (OCR measured "${a.candName}") — verify against photo [?]`,
+      });
     }
-    const distBefore = Math.abs(itemsSum() - parseTotalVal);
-    items[idx].price = `${corr.price.toFixed(2)} €`;
-    const distAfter = Math.abs(itemsSum() - parseTotalVal);
-    if (distAfter >= distBefore - 1e-9) {
-      items[idx].price = prevPrice;
-      log(`  Correction candidate "${corr.name}" ${oldPrice.toFixed(2)} -> ${corr.price.toFixed(2)} rejected: sum ${
-        distAfter.toFixed(2)} not closer to total ${parseTotalVal.toFixed(2)} than ${distBefore.toFixed(2)}`);
-      continue;
-    }
-    log(`  Correcting "${items[idx].name}" ${prevPrice} -> ${corr.price.toFixed(2)} € (OCR measured)`);
-    checks.push({
-      ok: false,
-      text: `price corrected by band re-OCR: "${items[idx].name}" ${prevPrice} -> ${corr.price.toFixed(2)} € (OCR measured "${corr.name}") — verify against photo [?]`,
-    });
-    items[idx].via = "strip-corrected";
   }
 
   if (total != null && items.length) {
