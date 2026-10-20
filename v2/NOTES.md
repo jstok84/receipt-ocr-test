@@ -310,6 +310,44 @@ State at this milestone, verified end-to-end in the browser:
 
 Working code at commit 7f00f35 (v2 line). Tagged 1.7.6-release.
 
+## Cleanup pass (2026-10-21, v1.7.7 comments)
+
+Post-milestone audit (research confirmed: OCR recognize() passes dominate wall
+time; JS stages are minor). Behavior-preserving, 59/59 tests green, all three
+photos re-verified end-to-end:
+
+1. **Dev stage previews gated** (window.__OCR_DEBUG, same switch as the
+   parser): the unconditional per-scan intermediate-canvas container (leaked
+   every scan: DOM + pixel memory unbounded) and the ~5 x 300ms sleeps
+   (~1.5 s wall time per scan, healthy receipts included) now only run in
+   debug mode. Verified: flag on -> previews return; default -> zero canvases
+   on the page, no sleeps.
+2. **Band cascade EARLY STOP**: after each attempt, candidates-so-far are
+   re-parsed; once the committed set makes the sum check pass exactly, the
+   cascade stops (identical final parse - sum being the truth anchor, any
+   further price-shifting candidate would be rejected; documented residue:
+   a SECOND garbled price in a then-sum-exact state stays unrepaired, same
+   as full collection). Live eurospin run: 3 attempts instead of 5 (2 OCR
+   passes saved), recovery + provenance note untouched.
+3. **Evidence-index bug fix**: candidates remembered a failure-blind attempt
+   counter; one failed strip re-OCR smeared later candidates onto the WRONG
+   attempt's evidence/winner line. Candidates now store the actual
+   stripEvidence index taken after each successful push.
+4. **runParsing double-clean removed**: processImage already returns
+   cleanAndMergeText output (idempotent), so image paths skip the re-clean;
+   PDF path keeps one clean (pdf-embedded text is raw).
+5. **Dead code / export surface**: deleted app.js dataURLtoFile (zero
+   callers) and ocrUtils mergeItemLines (identity pass-through); unexported
+   preprocessWithOpenCV + extractTextLinesFromPDFPage (internal only).
+6. **Test script**: explicit file list -> 
+ode --test tests/*.test.js
+   (root cause of an almost-missed suite: adding a test file no longer needs
+   a package.json edit; Node 24 supports globs on Windows).
+
+One shipping error en route: dropping the export also dropped "async" from
+extractTextLinesFromPDFPage, tripping Parcel ("await in non-async") !==
+caught by the E2E reload immediately, fixed same commit block.
+
 ## Debts (waiting on the user)
 
 1. ~~Local git commit~~ — DONE 2026-10-21: initial v2 commit on `main`, local-only

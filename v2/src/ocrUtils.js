@@ -59,7 +59,7 @@ function upscaleDataURL(dataURL, factor = 2) {
   });
 }
 
-export function preprocessWithOpenCV(imageSrc, options = {}) {
+function preprocessWithOpenCV(imageSrc, options = {}) {
   return new Promise((resolve, reject) => {
     if (typeof cv === "undefined" || !cv.imread) {
       reject(new Error("OpenCV.js (cv) is not loaded or initialized."));
@@ -89,16 +89,25 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
     img.crossOrigin = "Anonymous";
     img.onload = async () => {
       console.log("🖼️ Image loaded:", img.width, "x", img.height);
-      const container = document.createElement("div");
-      container.style.display = "flex";
-      container.style.flexWrap = "wrap";
-      container.style.gap = "10px";
-      container.style.margin = "20px 0";
-      container.style.border = "1px solid #ccc";
-      container.style.padding = "10px";
-      container.style.background = "#fafafa";
-      document.body.appendChild(container);
+      // v1.7.7: intermediate stage previews + pacing sleeps are DEV-ONLY
+      // (same switch as the parser: window.__OCR_DEBUG). Previously every
+      // scan appended a fresh container to document.body that was never
+      // removed (DOM + pixel-memory leak per scan) and paid ~5 × 300ms of
+      // pure sleep on every receipt, healthy ones included.
+      const debugStages = typeof window !== "undefined" && window.__OCR_DEBUG === true;
+      const container = debugStages ? document.createElement("div") : null;
+      if (container) {
+        container.style.display = "flex";
+        container.style.flexWrap = "wrap";
+        container.style.gap = "10px";
+        container.style.margin = "20px 0";
+        container.style.border = "1px solid #ccc";
+        container.style.padding = "10px";
+        container.style.background = "#fafafa";
+        document.body.appendChild(container);
+      }
       function showIntermediate(mat, label) {
+        if (!container) return;
         const wrapper = document.createElement("div");
         wrapper.style.textAlign = "center";
         wrapper.style.fontFamily = "sans-serif";
@@ -122,6 +131,7 @@ export function preprocessWithOpenCV(imageSrc, options = {}) {
         cv.imshow(canvasEl, mat);
       }
       function delay(ms) {
+        if (!debugStages) return Promise.resolve();
         return new Promise((res) => setTimeout(res, ms));
       }
 
@@ -508,13 +518,8 @@ export function cleanAndMergeText(rawText) {
     .join("\n");
 }
 
-// --- No arbitrary merging - just a pass-through for now (adjust if needed) ---
-export function mergeItemLines(rawText) {
-  return rawText || "";
-}
-
 // --- Position-aware text extraction from a single PDF page ---
-export async function extractTextLinesFromPDFPage(page) {
+async function extractTextLinesFromPDFPage(page) {
   const textContent = await page.getTextContent();
   const items = textContent.items;
   const linesMap = new Map();
@@ -1064,7 +1069,6 @@ export async function processImage(imageSrc, onProgress = () => {}) {
       // kernel, so extra attempts buy coverage at 1 pass each, broken
       // parses only. The 5th attempt (lanczos3) reads the row cleanly
       // where catrom @2x PSM6 lost it.
-      let attemptIdx = 0;
       for (const [stripKind, band, factor, psm, kernel] of [
         ["prep", [0.4, 0.75], 2, "6", "catrom"], ["prep", [0.4, 0.75], 2, "4", "catrom"],
         ["raw", [0.4, 0.75], 2, "6", "catrom"], ["prep", [0.32, 0.75], 3, "6", "catrom"],
@@ -1082,6 +1086,11 @@ export async function processImage(imageSrc, onProgress = () => {}) {
           const stripLines = stripText.split("\n").filter(Boolean);
           console.log("🔁 Item-band re-OCR (sum mismatch, strip", stripKind, band.join("-"), factor + "x", kernel, "psm", psm, "):", stripLines);
           stripEvidence.push({ stripKind, band, factor, psm, kernel, lines: stripLines, image: strip });
+          // candidates remember the EVIDENCE index, not a counter: a failed
+          // attempt (rawStripDataURL rejection etc.) never lands in
+          // stripEvidence, and a counter would smear later candidates onto
+          // the wrong attempt's evidence/winner line
+          const evidIdx = stripEvidence.length - 1;
           for (const line of stripLines) {
             const amounts = [...line.matchAll(/\d{1,3}[.,]\d{1,2}/g)].map((m) =>
               parseFloat(m[0].replace(",", "."))
@@ -1104,13 +1113,28 @@ export async function processImage(imageSrc, onProgress = () => {}) {
             if (!target || !namesSimilar(name, target.name)) continue; // no solid match -> drop, could be anything
             const oldPrice = parseFloat(String(target.price ?? "").replace(",", "."));
             if (!isNaN(oldPrice) && Math.abs(oldPrice - price) <= 0.02) continue;
-            if (corrections.some((c) => c.attempt === attemptIdx && namesSimilar(c.name, name))) continue;
-            corrections.push({ name, price, attempt: attemptIdx });
+            if (corrections.some((c) => c.attempt === evidIdx && namesSimilar(c.name, name))) continue;
+            corrections.push({ name, price, attempt: evidIdx });
+          }
+          // v1.7.7 EARLY STOP: the sum check is the only truth anchor, so
+          // once candidates-so-far re-commit an exact total, later attempts
+          // can only produce no-ops — any candidate SHIFTING the sum off
+          // total would be rejected by the parser, so the final parse is
+          // identical to full collection while saving up to 4 OCR passes.
+          // Residue (documented, not a regression): a SECOND garbled price
+          // in a then-sum-exact state stays unrepaired — indistinguishable
+          // from correct without another anchor.
+          if (corrections.length) {
+            const reParse = parseReceipt(cleaned, [], corrections);
+            const sumOk = reParse.checks.some((c) => c.ok && /items sum/.test(c.text));
+            if (sumOk) {
+              console.log("🔁 Sum already exact after attempt", evidIdx + 1, "— stopping band cascade early");
+              break;
+            }
           }
         } catch (err) {
           console.warn("🔁 Item-band re-OCR attempt failed:", err);
         }
-        attemptIdx++;
       }
       // Verify with the parser: only candidates that IMPROVE the items-sum
       // become the returned correction set; the winning attempt is the one

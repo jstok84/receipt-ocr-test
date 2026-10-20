@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { processImage, processPDF, cleanAndMergeText, mergeItemLines } from "./ocrUtils";
+import { processImage, processPDF, cleanAndMergeText } from "./ocrUtils";
 import { parseReceipt } from "./parseReceipt";
 import styles from "./styles";
 
@@ -40,11 +40,13 @@ export default function App() {
     };
   }, [useCamera]);
 
-  const runParsing = (rawText, extraItems = [], rescue = null, corrections = []) => {
+  // alreadyCleaned: processImage returns text that already went through
+  // cleanAndMergeText (idempotent), so the image paths skip the re-clean;
+  // the PDF path still cleans (pdf-embedded text was never cleaned).
+  const runParsing = (rawText, extraItems = [], rescue = null, corrections = [], alreadyCleaned = false) => {
     let prepared = rawText;
     if (!useFlatMode) {
-      const cleaned = cleanAndMergeText(rawText);
-      prepared = mergeItemLines(cleaned);
+      if (!alreadyCleaned) prepared = cleanAndMergeText(rawText);
     } else {
       prepared = rawText.replace(/\n/g, " ");
     }
@@ -52,16 +54,6 @@ export default function App() {
     // evidence for the strip-recovered item (null clears it)
     setStripRescue(rescue);
   };
-
-  function dataURLtoFile(dataurl, filename) {
-    const [header, base64] = dataurl.split(",");
-    const mime = header.match(/:(.*?);/)[1];
-    const bstr = atob(base64);
-    let n = bstr.length;
-    const u8 = new Uint8Array(n);
-    while (n--) u8[n] = bstr.charCodeAt(n);
-    return new File([u8], filename, { type: mime });
-  }
 
   const handleCapture = async () => {
     if (!videoRef.current || !canvasRef.current) return;
@@ -107,7 +99,7 @@ export default function App() {
 
         const result = await processImage(dataUrl, (p) => setProgress(p));
         setText(result.text);
-        runParsing(result.text, result.extraItems, result.rescue, result.corrections);
+        runParsing(result.text, result.extraItems, result.rescue, result.corrections, true);
         setLoading(false);
         return;
       }
@@ -120,7 +112,7 @@ export default function App() {
 
         const result = await processImage(dataUrl, (p) => setProgress(p));
         setText(result.text);
-        runParsing(result.text, result.extraItems, result.rescue, result.corrections);
+        runParsing(result.text, result.extraItems, result.rescue, result.corrections, true);
         setLoading(false);
       };
       reader.readAsDataURL(blob);
@@ -170,7 +162,7 @@ export default function App() {
     try {
       const result = await processImage(file, p => setProgress(p));
       setText(result.text);
-      runParsing(result.text, result.extraItems, result.rescue, result.corrections);
+      runParsing(result.text, result.extraItems, result.rescue, result.corrections, true);
     } catch (err) {
       console.error(err);
       setText("Error processing image");
