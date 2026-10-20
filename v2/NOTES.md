@@ -11,11 +11,13 @@ diverged deliberately — do not "sync" without the canonical-swap decision (see
 
 ## Current state (all verified by tests)
 
-- Parser `src/parseReceipt.js` version v1.6.5 state: keyword-tier totals
+- Parser `src/parseReceipt.js` version v1.6.6 state: keyword-tier totals
   (za plačilo > skupaj > znesek, LAST wins per tier), payment markers
   (`masterca`, `maest/rco`, `karticao`, `visa`, `eft`, `hofer cena` — NOT `gotovina`/`cash`:
   tender-side, can exceed payable), structural currency-tag rule
-  (`(EUR):/(FUR):/(ER): + amount` → weight-2 candidate), nonItem rules:
+  (`(EUR):/(FUR):/(ER): + amount` → weight-2 candidate), arithmetic cross-checks
+  (`checks[]`: items-sum vs total, tender−change vs total — flags only, app renders
+  ✓ / `[?]` lines; SPAR coupon case respected), nonItem rules:
   `ovin` (gotovina garbles), `denar`, `vračilo`, `cash`, `EUR`-token, VAT-code
   anchors (`kd, 0%`), `(EUR):` fragments, popust/doplačil/discount, digit-storm
   separators, 3-letter name garble guard, 3-digit int repair (181→1.81).
