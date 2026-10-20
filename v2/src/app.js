@@ -218,13 +218,13 @@ export default function App() {
         <h2>Parsed Data</h2>
         <p><strong>Date:</strong> {parsed.date || "Not found"}</p>
         <p><strong>Total:</strong> {parsed.total || "Not found"}</p>
-        {parsed.checks?.length > 0 && <div style={{ fontSize: 13, margin: "4px 0" }}>
-          {parsed.checks.map((c, i) => <div key={i}>{c.ok ? "✓" : "[?]"} {c.text}</div>)}
-        </div>}
         <h3>Items:</h3>
         {parsed.items.length ? <ul>
           {parsed.items.map((item, i) => <li key={i}>{item.name} — {item.price}</li>)}
         </ul> : <p>No items detected</p>}
+        {parsed.checks?.length > 0 && <div style={{ fontSize: 12, color: "#777", marginTop: 8 }}>
+          {parsed.checks.map((c, i) => <div key={i}>{c.ok ? "✓" : "[?]"} {c.text}</div>)}
+        </div>}
       </div>}
     </div>
   );
