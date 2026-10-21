@@ -419,3 +419,8 @@ requested).
 - in-app receipt-region… shipped; next pipeline candidates: perspective-correction
   off-by-default on creased receipts (needs one more live-run evidence), HEIF input hardening
 - interactive crop UI (aligns with the human-review workflow — user says when)
+## RESTRUCTURE (2026-10-21, after ui-v1-release)
+- v2 promoted to repo root: src/, tests/ (59 tests), scripts/, NOTES.md, package.json (name receipt-ocr-test, 2.0.0) are now canonical.
+- v1 archived intact to old/ (src, tests, package.json tesseract ^4, README); not maintained.
+- deploy.yml: node 18->22; build cmd unchanged and already matched root layout (src/index.html -> docs, public-url /receipt-ocr-test/).
+- CI unverified until next push (user-side). Local verification after move: npm install + 59/59 tests + fresh build (see below).

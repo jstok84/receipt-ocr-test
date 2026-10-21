@@ -1,7 +1,8 @@
 {
-  "name": "receipt-ocr-test-v2",
-  "version": "2.0.0",
+  "name": "receipt-ocr-test",
+  "version": "1.0.0",
   "private": true,
+  "homepage": "https://jstok84.github.io/receipt-ocr-test",
   "dependencies": {
     "assert": "^2.0.0",
     "buffer": "^6.0.3",
@@ -10,7 +11,7 @@
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "stream-browserify": "^3.0.0",
-    "tesseract.js": "^7.0.0"
+    "tesseract.js": "^4.0.2"
   },
   "alias": {
     "buffer": "buffer",
@@ -24,12 +25,11 @@
   ],
   "scripts": {
     "start": "parcel src/index.html --open",
-    "build": "parcel build src/index.html --dist-dir dist --public-url ./",
-    "test": "node --test tests/*.test.js"
+    "build": "parcel build src/index.html --dist-dir docs --public-url /receipt-ocr-test/",
+    "test": "node --test tests/parseReceipt.test.js tests/corpus.test.js"
   },
   "devDependencies": {
-    "parcel": "^2.16.4",
-    "sharp": "^0.35.5"
+    "parcel": "^2.16.4"
   },
   "type": "module"
 }

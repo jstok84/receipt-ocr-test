@@ -1,5 +1,46 @@
-export function parseReceipt(text) {
-  const PARSER_VERSION = "v1.6.1";
+/**
+ * Fuzzy item-name scoring for strip-measured price corrections (v1.7.6).
+ * Comparison is letters-only lowercase: OCR garbles digits inside names and
+ * punctuation randomly ("TKS] FROLLINI 1KG" vs "EKSI FROLLINI 1KG",
+ * "ČONULADNI" vs "CORULADNI"). Return value in [0,1]:
+ *   1.0  one string contains the other, OR both share a distinctive token
+ *        (>=5 letters) — brand guess rows ("SPAR AJVAR POLPEK." vs
+ *        "SPAR TRAJNO MLEKO" are 0.667 on plain LCS; the shared brand prefix
+ *        must NOT pair them — live SPAR regression corrected the WRONG item).
+ *   else LCS ratio of the full letter strings (ČONULADNI/CORULADNI = 0.75;
+ *        threshold for namesSimilar).
+ */
+export function namesScore(candidate, itemName) {
+  // diacritics normalize (č->c, š->s, ž->z): OCR mixes "ČOKOLADNI"/"CORULADNI"
+  // freely and string equality must treat them as the same letter
+  const norm = (s) => s.toLowerCase().replace(/[čć]/g, "c").replace(/š/g, "s").replace(/ž/g, "z").replace(/đ/g, "d");
+  const lettersOf = (s) => (norm(s).match(/[a-z]/g) || []).join("");
+  const a = lettersOf(candidate);
+  const b = lettersOf(itemName);
+  if (a.length < 4 || b.length < 4) return 0;
+  if (a.includes(b) || b.includes(a)) return 1;
+  const toksA = norm(candidate).match(/[a-z]{5,}/g) ?? [];
+  const toksB = new Set(norm(itemName).match(/[a-z]{5,}/g) ?? []);
+  if (toksA.some((t) => toksB.has(t))) return 1;
+  const m = a.length;
+  const n = b.length;
+  let prev = new Array(n + 1).fill(0);
+  let curr = new Array(n + 1).fill(0);
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      curr[j] = a[i - 1] === b[j - 1] ? prev[j - 1] + 1 : Math.max(prev[j], curr[j - 1]);
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[n] / Math.max(m, n);
+}
+
+export function namesSimilar(candidate, itemName) {
+  return namesScore(candidate, itemName) >= 0.75;
+}
+
+export function parseReceipt(text, extraItems = [], corrections = []) {
+  const PARSER_VERSION = "v1.6.9";
   // Set window.__OCR_DEBUG = true to restore verbose parser diagnostics.
   const DEBUG = typeof window !== "undefined" && window.__OCR_DEBUG === true;
   const log = (...args) => { if (DEBUG) console.log(...args); };
@@ -26,38 +67,105 @@ export function parseReceipt(text) {
 
   /** Regex to find the last amount and optional currency symbol in a line */
   function extractLastAmountWithCurrency(line) {
+    // OCR wobble tolerance (EUROSPIN real case: the same photo read
+    // "4,29" and "4, 29" across two app runs): the comma sometimes drifts
+    // apart from the cents with a space. Rejoin `(\d), +(\d{2})` before
+    // matching — comma REQUIRED, so "8 71"/"2 09" space-only splits stay out
+    // (those are handled by repairTrailingIntAmount only at line end).
+    const cleaned = line.replace(/(\d),\s{1,3}(\d{2})\b/g, "$1,$2");
     const regex = /(\d{1,3}(?:[ .,]\d{3})*(?:[.,]\d{1,2}))\s*(€|EUR|USD|\$)?/gi;
     let lastMatch = null, match;
-    while ((match = regex.exec(line)) !== null) lastMatch = match;
+    while ((match = regex.exec(cleaned)) !== null) lastMatch = match;
     return lastMatch; // null if none
   }
 
-  /** Extract all total candidates by scanning lines with certain keywords */
+  /**
+   * OCR often drops the decimal separator from the LAST amount of a row
+   * (e.g. "... 1 2.14 0.33 181" where the real sum is 1.81). The amount regex
+   * requires a decimal part, so an unrepaired line falls back to the previous
+   * decimal amount — usually the discount column — being used as the price.
+   * Only 3-digit candidates are repaired: 4+ digits are too ambiguous
+   * (the trailing digit can be barcode-strip noise bleeding in, e.g. "1198" = 1.19).
+   */
+  function repairTrailingIntAmount(line) {
+    const m = line.match(/^(.*\d[.,]\d{1,2})(\D*)\s+(\d{3})(\s*\D*)$/);
+    if (!m) return line;
+    return `${m[1]}${m[2]} ${m[3].slice(0, -2)}.${m[3].slice(-2)}${m[4]}`;
+  }
+
+  /**
+   * The trailing repair above needs a decimal amount ALREADY present in the row
+   * (SPAR's discount-column case). HOFER (browser EFT run, 2026-10) shows the
+   * separator can vanish from the row's ONLY amount: "šumeče tablete 085 A"
+   * where the real price is 0,85. Repair a standalone trailing 3-digit int —
+   * but only when NO other decimal amount exists in the line, so multi-column
+   * rows keep their normal path, and at most a 1-2 letter VAT code may trail it.
+   */
+  function repairStandaloneIntAmount(line) {
+    if (/\d[.,]\d/.test(line)) return line;
+    const m = line.match(/^(.*[a-zA-ZčšžČŠŽ].*?)\s+(\d{3})(\s+[a-zčšž]{1,2})?\s*$/i);
+    if (!m) return line;
+    return `${m[1]} ${m[2].slice(0, -2)}.${m[2].slice(-2)}${m[3] ?? ""}`;
+  }
+
+  /**
+   * Extract total candidates by scanning lines with keyword TIERS:
+   *   tier 3 = payable-total phrasing ("za plačilo", "amount due") — wins outright
+   *   tier 2 = generic totals ("skupaj", "total")
+   *   tier 1 = loose money wording ("znesek", "paid")
+   * Within a tier, the LAST candidate in document order wins: a payable total
+   * always comes AFTER pre-coupon subtotals on real receipts (SPAR: 57.35
+   * subtotal before a 10% coupon, 51.61 payable). v1.6.x picked the HIGHEST
+   * value, which only worked while OCR garbling hid the subtotal line.
+   */
   function extractAllTotalCandidates(lines, isSlovenian) {
-    const keywords = isSlovenian
+    // Slovenian keywords have ASCII twins: older OCR paths strip diacritics
+    // ("PLACANO", "ZA PLACILO"), the v7 pipeline preserves them.
+    const tiers = isSlovenian
       ? [
-          "plačano",
-          "za plačilo",
-          "skupaj",
-          "znesek",
-          "končni znesek",
-          "skupna vrednost",
-          "skupaj z ddv",
+          { weight: 3, kws: ["za plačilo", "za placilo", "končni znesek", "koncni znesek"] },
+          { weight: 2, kws: ["skupaj", "skupna vrednost"] },
+          { weight: 1, kws: ["znesek", "plačano", "placano", "vsota"] },
         ]
       : [
-          "paid",
-          "total",
-          "amount due",
-          "grand total",
-          "amount",
-          "to pay",
+          { weight: 3, kws: ["amount due", "grand total", "total due", "to pay"] },
+          { weight: 2, kws: ["total", "amount"] },
+          { weight: 1, kws: ["paid", "sum"] },
         ];
 
+    // Payment markers: a card line with an amount equals the payable total
+    // even when the "Skupaj" text above it is garbled or vanished (both real
+    // receipts: SPAR "DAL MASTERCA EUR 51.61", Triglav "Kartica NW8YGL 216,10",
+    // HOFER "Znesek-EFT EUR 4.73" / "HOFER CENA 4.73").
+    // NOTE: gotovina/cash are deliberately NOT here — they are tender-side
+    // amounts (cash handed over), which can exceed the payable when change is
+    // given (EUROSPIN real case: "Gotovina EUR 13,00" vs "Za plačilo 4,29").
+    const paymentKws = [/masterca/i, /maest[rc]o/i, /\bkartic[ao]\b/i, /\bvisa\b/i, /\beft\b/i, /h[o0]fer\s+cena/i];
+
+    const keywords = tiers.flatMap((t) => t.kws);
     const candidates = [];
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      if (!keywords.some((kw) => line.toLowerCase().includes(kw))) continue;
-      if (line.toLowerCase().includes("keine")) continue;
+      const lower = line.toLowerCase();
+      let weight = 0;
+      for (const tier of tiers) {
+        if (tier.kws.some((kw) => lower.includes(kw))) {
+          weight = Math.max(weight, tier.weight);
+        }
+      }
+      if (paymentKws.some((re) => re.test(line))) {
+        weight = Math.max(weight, 3);
+      }
+      // Structural currency tag: a parenthesised (EUR)/(FUR)/(ER) remnant with a
+      // colon and an amount is a totals line whose keyword garbled away
+      // (EUROSPIN real case: "Poz ID (EUR): | 4,29" from "Skupaj (EUR): 4,29",
+      // "na) (FUR): 4,29"). Weight 2 — same tier as "skupaj". Item names never
+      // carry a parenthesised currency tag.
+      if (weight === 0 && /\(\s*(?:EUR|FUR|ER)\s*\)\s*:?\s*[|:]?\s*\d/i.test(line)) {
+        weight = 2;
+      }
+      if (weight === 0) continue;
+      if (lower.includes("keine")) continue;
 
       let match = extractLastAmountWithCurrency(line);
       if (!match) {
@@ -69,7 +177,7 @@ export function parseReceipt(text) {
             const curr = (match[2] || "€").toUpperCase();
             const val = parseFloat(normalizeAmount(raw, isSlovenian));
             if (!isNaN(val) && val > 0) {
-              candidates.push({ line: line + " " + nextLine, value: val, currency: curr });
+              candidates.push({ line: line + " " + nextLine, value: val, currency: curr, weight, index: i });
               continue;
             }
           }
@@ -78,12 +186,20 @@ export function parseReceipt(text) {
         const raw = match[1];
         const curr = (match[2] || "€").toUpperCase();
         const val = parseFloat(normalizeAmount(raw, isSlovenian));
-        if (!isNaN(val) && val > 0) candidates.push({ line, value: val, currency: curr });
+        if (!isNaN(val) && val > 0) candidates.push({ line, value: val, currency: curr, weight, index: i });
       }
     }
 
-    candidates.sort((a, b) => b.value - a.value);
+    // Document order preserved; selection happens in pickTotalCandidate()
     return candidates;
+  }
+
+  /** Strongest keyword tier wins; inside a tier, the LATEST line wins. */
+  function pickTotalCandidate(candidates) {
+    if (!candidates.length) return null;
+    return candidates.reduce((best, c) =>
+      c.weight > best.weight || (c.weight === best.weight && c.index > best.index) ? c : best
+    );
   }
 
   /** Tries fallback total extraction from VAT summary lines */
@@ -226,7 +342,43 @@ export function parseReceipt(text) {
     /s.?upaj/i,
     /zvesto[bnh]e/i,
     /masterca/i,
-    /\b[a-e]:/i,
+    // Tender-side lines (EUROSPIN real case): "Gotovina EUR 13,00" garbles as
+    // "otovina"/"stovina"/"Jt ovina" (all retain "ovina") — cash HANDED OVER,
+    // never an item; "Vrnjen denar EUR 8,71" keeps "denar" intact even garbled
+    // ("rnjen denar") — change given back, never an item. "Vračilo" = same role.
+    /ovin/i,
+    // "FUR" = garbled "EUR" (EUROSPIN real case: "s - 3 FUR 13,0" — the
+    // Gotovina line with its currency mangled into a name-like token).
+    /\bfur\b/i,
+    // Asterisk-row separator garbles (EUROSPIN real case: "***…" read as
+    // "F336 36 36.30.30 96 36 …"): ≥5 single-space-delimited pure digit runs.
+    // Real multi-column item rows separate columns with 2+ spaces, so they
+    // can't match; "MLEKO ALPSKO 3,5%"-style items have no digit runs at all.
+    /(?:\s|^)\d+(?:\s\d+){4,}(?:\s|$)/,
+    /\bdenar\b/i,
+    /vra[čc]il[ao]/i,
+    /\bcash\b/i,
+    // VAT recap rows (HOFER real case: "Ca ok Neto 2,6900V 0,25" and
+    // "B 22,0% Neto 1,47 …" — the DDV rekapitulacija with "Neto" surviving
+    // OCR; a "Neto" token never appears in real item names on SI receipts).
+    /\bneto\b/i,
+    // Trailing 4+ digit run = terminal/EFT echo bleed, never a real item row
+    // (HOFER real case: "ACH HEE i BER 5.0 41501" — the ghost "41501" made
+    // the parser manufacture a 5,00 item from the line's "5.0" fragment).
+    // SPAR multi-column rows always END in a VAT code letter ("… 1.92 B"),
+    // so a bare digit tail is machinery, not merchandise.
+    /\s\d{4,}\s*$/,
+    // Garbled VAT-code / summary fragments (EUROSPIN real case: "kd, 0% ? 4,29"
+    // and "mat (ER): 4,29" from "Skupaj (EUR):"). Anchored short rate-code at
+    // line start (or stray parenthesised currency remnant + colon), so real
+    // items ("MLEKO ALPSKO 3,5%", "REZINA ... 17% DT ...") can't match.
+    /^[a-z]{1,2},?\s*\d{1,2}(?:[.,]\d{1,2})?\s*%/i,
+    /\(e?u?r?\)\s*:/i,
+    // Standalone EUR token = currency remnant, not a product name (EUROSPIN
+    // real case: "mov “ EUR 13,00" — the Gotovina line with its word ground
+    // down to noise keeps the currency fragment on its own token).
+    /\bEUR\b/i,
+    /\b[a-e0-9]:/i,
     /=\s*\d/,
     /\d{1,2}[.,]\s{0,2}\d{1,2}[.,]\s{0,2}20\d{2}/,
     /mat\.št/i,
@@ -253,8 +405,11 @@ export function parseReceipt(text) {
 
   // Detect total candidates from lines
   const totalCandidates = extractAllTotalCandidates(lines, isSlovenian);
-  let total = totalCandidates.length > 0 ? totalCandidates[0].value : null;
-  let currency = totalCandidates.length > 0 ? totalCandidates[0].currency ?? "€" : "€";
+  const pickedCandidate = pickTotalCandidate(totalCandidates);
+  let total = pickedCandidate ? pickedCandidate.value : null;
+  let totalSource = null;
+  if (total != null) totalSource = "keyword";
+  let currency = (pickedCandidate?.currency) ?? "€";
 
   // Attempt fallback total from VAT net+vat summary
   const fallbackTotal = tryFallbackTotal(lines, isSlovenian);
@@ -264,6 +419,7 @@ export function parseReceipt(text) {
     if (useFallback) {
       log(`✅ Using fallback total: ${fallbackTotal.value} > main: ${total}`);
       total = fallbackTotal.value;
+      totalSource = "vat";
       currency = fallbackTotal.currency ?? currency;
     } else {
       log(`⚠️ Ignoring fallback: ${fallbackTotal.value} vs main: ${total}`);
@@ -272,6 +428,13 @@ export function parseReceipt(text) {
 
   const date = extractDate(lines);
   const items = [];
+  // v1.6.9: optionally pre-seeded items recovered by the OCR layer's adaptive
+  // top-strip re-OCR (processImage injects them here so checks[] run over the
+  // complete item set). Each carries `via: "strip-retry"` for provenance.
+  for (const extra of extraItems) {
+    log(`  Injecting strip-recovered item: ${extra.name} ${extra.price}`);
+    items.push(extra);
+  }
 
   // Parse items with support for Spar multi-column format and fallback generic parsing
   for (const line of lines) {
@@ -291,6 +454,32 @@ export function parseReceipt(text) {
     if (nonItemPatterns.some((pat) => pat.test(line))) {
       log("  Skipping due to non-item pattern.");
       continue;
+    }
+
+    // v1.7.6 garble-row rule (EUROSPIN real case): a barcode/dot-matrix row
+    // above the items ("s Me VO: 550 AZ RR ENRRRA EE HE TEE E66 330 3.3 KRE")
+    // mangles into a storm of 1-3-letter tokens BETWEEN its digit fragments,
+    // and its trailing "3.3" became a phantom 3.30 item, breaking the
+    // items-sum check. The storm is counted strictly BETWEEN the first and
+    // last digit-bearing tokens: SPAR multi-column scans keep 1-3-letter
+    // bleed tokens at the line EDGES ("A ČEBULA … 0.95 B Lj -", "SB SIR …
+    // 1.69 B i )") whose core is clean, and those rows must survive (an
+    // earlier whole-line variant was reverted for exactly that). Junk row
+    // middle = {AZ,RR,EE,HE,TEE} = 5; every fixture item row reads ≤1.
+    {
+      const toks = line.trim().split(/\s+/);
+      let a = 0;
+      let b = toks.length - 1;
+      while (a < toks.length && !/\d/.test(toks[a])) a++;
+      while (b >= 0 && !/\d/.test(toks[b])) b--;
+      let shortMid = 0;
+      for (let t = a + 1; t < b; t++) {
+        if (/^[a-zA-ZčšžČŠŽ]{1,3}$/.test(toks[t])) shortMid++;
+      }
+      if (shortMid >= 3) {
+        log(`  Skipping garbled non-item row (${shortMid} short letter tokens between digit fragments)`);
+        continue;
+      }
     }
 
     if (totalCandidates.some((tc) => tc.line === line)) {
@@ -352,7 +541,14 @@ export function parseReceipt(text) {
     }
 
     // Fallback generic parsing: extract last amount
-    const amountMatch = extractLastAmountWithCurrency(line);
+    let amountMatch = extractLastAmountWithCurrency(repairTrailingIntAmount(line));
+    if (!amountMatch) {
+      const repaired = repairStandaloneIntAmount(line);
+      if (repaired !== line) {
+        log(`  Applying standalone 3-digit repair: "${line}" -> "${repaired}"`);
+        amountMatch = extractLastAmountWithCurrency(repaired);
+      }
+    }
     if (!amountMatch) {
       log("  Skipping due to no valid amount found in line.");
       continue;
@@ -383,16 +579,43 @@ export function parseReceipt(text) {
       continue;
     }
 
+    // Garble guard: a plausible product name carries ≥3 letters (EUROSPIN real
+    // browser run: "se ? 0,37" — a stray VAT fragment). Trade-off: brands whose
+    // name is essentially letters-free/symbol-heavy ("H&M") would drop too;
+    // SI grocery receipts rarely print such names.
+    const letterCount = (description.match(/[a-zA-ZčšžČŠŽ]/g) || []).length;
+    if (letterCount < 3) {
+      log(`  Skipping: name has only ${letterCount} letters ("${description}")`);
+      continue;
+    }
+
+    // Clean the description: strip trailing bare-number tokens (receipt column
+    // leftovers — qty/cena/popust that end up inside the name) and leading OCR
+    // edge junk (punctuation-only or lone-letter tokens). Tokens containing
+    // letters or a % sign ("600G", "3,5%", "L10/1") are kept as part of the name.
+    // Quantity = last stripped integer below 100 (Količina column).
     let quantityNum = undefined;
+    const plainNum = /^\d{1,4}(?:[.,]\d{1,3})?$/;
     const descTokens = description.split(/\s+/);
-    if (descTokens.length > 1) {
-      const lastToken = descTokens[descTokens.length - 1];
-      const quantityCandidate = normalizeAmount(lastToken.replace(/[^\d,.\-]/g, ""), isSlovenian);
-      const quantityParsed = parseFloat(quantityCandidate);
-      if (!isNaN(quantityParsed)) {
-        quantityNum = quantityParsed;
-        description = descTokens.slice(0, -1).join(" ");
-      }
+    const stripped = [];
+    while (descTokens.length > 1) {
+      const t = descTokens[descTokens.length - 1];
+      if (plainNum.test(t)) stripped.unshift(descTokens.pop());
+      else break;
+    }
+    for (const t of stripped) {
+      const v = parseFloat(t.replace(",", "."));
+      if (!isNaN(v) && v > 0 && v < 100 && Number.isInteger(v)) quantityNum = v;
+    }
+    while (descTokens.length > 1) {
+      const t = descTokens[0];
+      if (!/\w/.test(t) || t.length === 1) descTokens.shift();
+      else break;
+    }
+    description = descTokens.join(" ");
+    if (!description || description.length < 3 || !/[a-z]/i.test(description)) {
+      log(`  Skipping: name reduced to junk after cleanup ("${description}")`);
+      continue;
     }
 
     log(
@@ -408,6 +631,181 @@ export function parseReceipt(text) {
     });
   }
 
+  // Last-resort total was REMOVED (v1.6.2): an items-sum fallback existed here
+  // briefly and got reverted on live evidence — a garbled browser run of the
+  // EUROSPIN receipt turned 5 OCR-garbage lines into items and the fallback
+  // summed them into a confident wrong "62.67". A sum of unverified items must
+  // never masquerade as a total; "Not found" keeps the review workflow honest.
+
+  // Arithmetic cross-checks — flags for the review workflow, never overrides
+  // anything. Evidence base:
+  //  - EUROSPIN: OCR read FROLLINI 1,95 where the paper likely says 1,55 ->
+  //    itemsSum 4,69 vs total 4,29 flags it (mismatch)
+  //  - EUROSPIN tender: Gotovina 13,00 - Vrnjen denar 8,71 = 4,29 = payable
+  //    (independent confirmation of the total when all three survive OCR)
+  //  - SPAR: coupon -5,74 makes itemsSum != total legitimately -> mismatches
+  //    are [?] flags with a discount hint, never errors, totals never touched
+  function parseAmount(prefix, s) {
+    const v = parseFloat((s || "").split(" ")[0].replace(",", "."));
+    return isNaN(v) ? null : v;
+  }
+
+  const checks = [];
+  const tenderLine = lines.find((l) => /\bovin|\bdenar|gotovin/i.test(l));
+  const changeLine = lines.find((l) => /\bdenar\b|vra[čc]il/i.test(l));
+
+  // v1.7.6: strip-measured price corrections. ocrUtils measures candidate
+  // items from a band re-OCR and hands them over; matching happens HERE (one
+  // source of truth) against already-parsed items. Guards, all
+  // evidence-backed (v1.7.6 live eurospin + SPAR regression the same day):
+  //  - DISCOUNT GATE (SPAR): a coupon/discount row legitimately explains an
+  //    items-sum gap ("KUPON POPUST 10.00% od 57.35 -5.74", gap = 5.74).
+  //    With a known discount in the text, corrections are ignored — the
+  //    band cascade must not fire, and the [?] mismatch flag stays.
+  //  - BEST NAME MATCH, no brand-prefix pairing: "SPAR AJVAR POLPEK." vs
+  //    "SPAR TRAJNO MLEKO" scored 0.667 on plain LCS (shared SPAR prefix) and
+  //    first-match findIndex paired a strip row with the WRONG item. Now a
+  //    match needs a shared distinctive token (>=5 letters) or LCS >= 0.75,
+  //    and the BEST-scoring item is chosen, not the first passing one.
+  //  - STRICT ARITHMETIC IMPROVEMENT: a strip can garble any price (eurospin
+  //    live: COKOLADNI 1,45 read as "1.49"), so a candidate only applies when
+  //    it moves |items-sum - total| closer.
+  //  - ALL-OR-NOTHING COMMIT: individually "improving" corrections can
+  //    collectively claw toward a legitimately mismatched total (SPAR live:
+  //    AJVAR 1.19 -> the 0.16 popust column read passed "improvement" while
+  //    corrupting a correct row). Corrections survive only when the FINAL sum
+  //    actually reaches the total (±0.02); otherwise every applied change is
+  //    reverted and no provenance note is written.
+  const parseTotalVal = total == null
+    ? null
+    : (typeof total === "number" ? total : parseAmount("total", total));
+  const itemsSum = () => items.reduce((acc, it) => acc + (parseAmount("item", it.price) ?? 0), 0);
+  const discountGate = /pop[ou]st|doplac/i.test(text);
+  const applied = []; // { idx, prevPrice, prevVia, candName, newPrice }
+  if (discountGate && corrections.length) {
+    log(`  Discount/coupon line in text — ${corrections.length} correction candidate(s) ignored`);
+  }
+  if (!discountGate) {
+    for (const corr of corrections) {
+      let best = -1;
+      let bestScore = 0;
+      items.forEach((it, i) => {
+        if (it.via === "strip-retry" || it.via === "strip-corrected") return;
+        const s = namesScore(corr.name, it.name);
+        if (s > bestScore + 1e-9) {
+          bestScore = s;
+          best = i;
+        }
+      });
+      if (best < 0) {
+        log(`  Correction candidate "${corr.name}" matched no item — dropped`);
+        continue;
+      }
+      const oldPrice = parseAmount("item", items[best].price);
+      if (oldPrice != null && Math.abs(oldPrice - corr.price) <= 0.02) {
+        log(`  Correction candidate "${corr.name}" equals existing price — no change`);
+        continue;
+      }
+      if (parseTotalVal == null || oldPrice == null) {
+        log(`  Correction candidate "${corr.name}" has no total/price anchor — dropped`);
+        continue;
+      }
+      const prevPrice = items[best].price;
+      const prevVia = items[best].via;
+      const distBefore = Math.abs(itemsSum() - parseTotalVal);
+      items[best].price = `${corr.price.toFixed(2)} €`;
+      const distAfter = Math.abs(itemsSum() - parseTotalVal);
+      if (distAfter >= distBefore - 1e-9) {
+        items[best].price = prevPrice;
+        log(`  Correction candidate "${corr.name}" ${oldPrice.toFixed(2)} -> ${corr.price.toFixed(2)} rejected: sum ${
+          distAfter.toFixed(2)} not closer to total ${parseTotalVal.toFixed(2)} than ${distBefore.toFixed(2)}`);
+        continue;
+      }
+      log(`  Provisional correction: "${items[best].name}" ${prevPrice} -> ${corr.price.toFixed(2)} € (OCR measured)`);
+      applied.push({ idx: best, prevPrice, prevVia, candName: corr.name, oldPrice, newPrice: corr.price });
+      items[best].via = "strip-corrected";
+    }
+    // all-or-nothing commit
+    const finalGap = parseTotalVal != null ? Math.abs(itemsSum() - parseTotalVal) : Infinity;
+    if (applied.length && finalGap > 0.02) {
+      for (let k = applied.length - 1; k >= 0; k--) {
+        const a = applied[k];
+        items[a.idx].price = a.prevPrice;
+        items[a.idx].via = a.prevVia;
+      }
+      log(`  ${applied.length} correction(s) REVERTED: sum ${itemsSum().toFixed(2)} still ≠ total ${parseTotalVal.toFixed(2)} — gap is explained by something else (discount/missing row), not a proven price fix`);
+      applied.length = 0;
+    }
+    for (const a of applied) {
+      checks.push({
+        ok: false,
+        text: `price corrected by band re-OCR: "${items[a.idx].name}" ${a.prevPrice} -> ${a.newPrice.toFixed(2)} € (OCR measured "${a.candName}") — verify against photo [?]`,
+      });
+    }
+  }
+
+  if (total != null && items.length) {
+    const itemSum = items.reduce((acc, it) => acc + (parseAmount("item", it.price) ?? 0), 0);
+    if (itemSum > 0) {
+      const delta = Math.abs(itemSum - total);
+      checks.push(
+        delta <= 0.011
+          ? { ok: true, text: `items sum = total (${itemSum.toFixed(2)})` }
+          : {
+              ok: false,
+              text: `items sum ${itemSum.toFixed(2)} ≠ total ${total.toFixed(2)} — verify a price [?] or a discount/missing item`,
+            }
+      );
+      // VAT-recap "missing bucket" refinement (v1.6.9, HOFER real case): the
+      // photo clipped the Krüger 1,79 row entirely, but the DDV recap survived
+      // ("B 22,0% Neto 1,47 …"). Deriving each recap row's gross from rate ×
+      // neto (NOT from the garbled DDV digit — "0,82" was misread for "0,32")
+      // and matching it against the items-vs-total gap names the missing
+      // amount with evidence instead of leaving a bare sum mismatch. Fires
+      // only on an exact (±0.02) bucket match, so SPAR-coupon gaps (5,74) and
+      // multi-row losses (2,64 = two clipped rows) never produce false hits.
+      if (delta > 0.011) {
+        const missing = total - itemSum;
+        for (const recapRow of lines.filter((l) => /\bneto\b/i.test(l))) {
+          const m = recapRow.match(/([a-e0-9])?\s*(\d{1,2}(?:[.,]\d{1,2})?)\s*%\s*neto\s+(\d{1,3}(?:[.,]\d{1,4})?)/i);
+          if (!m) continue;
+          const rate = parseFloat(m[2].replace(",", "."));
+          const neto = parseFloat(m[3].replace(",", "."));
+          if (isNaN(rate) || isNaN(neto)) continue;
+          const gross = parseFloat((neto * (1 + rate / 100)).toFixed(2));
+          if (Math.abs(gross - missing) <= 0.02) {
+            checks.push({
+              ok: false,
+              text: `VAT ${m[2]}% recap row implies a missing item ≈ ${gross.toFixed(2)} ${currency} (neto ${neto.toFixed(2)}) — row not captured by OCR`,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  if (total != null && tenderLine && changeLine && tenderLine !== changeLine) {
+    const tendered = parseAmount("t", (extractLastAmountWithCurrency(tenderLine) ?? [])[1]);
+    const change = parseAmount("c", (extractLastAmountWithCurrency(changeLine) ?? [])[1]);
+    if (tendered != null && change != null && tendered > change) {
+      const implied = parseFloat((tendered - change).toFixed(2));
+      checks.push(
+        Math.abs(implied - total) <= 0.011
+          ? { ok: true, text: `tender ${tendered.toFixed(2)} − change ${change.toFixed(2)} = total ✓` }
+          : { ok: false, text: `tender ${tendered.toFixed(2)} − change ${change.toFixed(2)} = ${implied.toFixed(2)} ≠ total ${total.toFixed(2)}` }
+      );
+    }
+  }
+
+  // v1.6.9: provenance note for strip-recovered items — the app must show
+  // where the row came from so the user can spot-check it against the photo.
+  for (const extra of extraItems) {
+    checks.push({
+      ok: false,
+      text: `recovered by top-strip re-OCR: "${extra.name}" ${extra.price} — verify against photo [?]`,
+    });
+  }
+
   log(`Extracted date: ${date}`);
   log(`Detected total candidates: ${totalCandidates.length}`);
   log(`Final total: ${total ? total.toFixed(2) + " " + currency : null}`);
@@ -417,6 +815,8 @@ export function parseReceipt(text) {
     version: PARSER_VERSION,
     date,
     total: total ? `${total.toFixed(2)} ${currency}` : null,
+    totalSource,
+    checks,
     items,
   };
 }
