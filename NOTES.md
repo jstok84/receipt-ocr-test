@@ -423,4 +423,4 @@ requested).
 - v2 promoted to repo root: src/, tests/ (59 tests), scripts/, NOTES.md, package.json (name receipt-ocr-test, 2.0.0) are now canonical.
 - v1 archived intact to old/ (src, tests, package.json tesseract ^4, README); not maintained.
 - deploy.yml: node 18->22; build cmd unchanged and already matched root layout (src/index.html -> docs, public-url /receipt-ocr-test/).
-- CI unverified until next push (user-side). Local verification after move: npm install + 59/59 tests + fresh build (see below).
+- CI unverified until next push (user-side). Local verification after move: npm install + 59/59 tests; production build green (5.83s, receipt-ocr-test.beeec167.js 1.58 MB); dev server from root + live HOFER scan identical (Kruger 1.79 rescue, sum 4.73, checks intact).
