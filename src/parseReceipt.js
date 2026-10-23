@@ -669,7 +669,12 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
   }
 
   const checks = [];
-  const tenderLine = lines.find((l) => /\bovin|\bdenar|gotovin/i.test(l));
+  // v2.0.2: bare "otovin" added — the desktop EUROSPIN run read Gotovina as
+  // "otovina EUR 13,00" (leading g eaten) and the tender check went silent;
+  // the stemmed-complete \bovin / gotovin forms were not enough. False-positive
+  // risk is bounded by the arithmetic: the check itself only passes when
+  // tendered − change equals the total to the cent.
+  const tenderLine = lines.find((l) => /\bovin|otovin|\bdenar|gotovin/i.test(l));
   const changeLine = lines.find((l) => /\bdenar\b|vra[čc]il/i.test(l));
 
   // v1.7.6: strip-measured price corrections. ocrUtils measures candidate

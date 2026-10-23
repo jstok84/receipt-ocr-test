@@ -137,6 +137,28 @@ test("arithmetics validator: tender arithmetic cross-check fires when tender lin
   assert.ok(tenderCheck && tenderCheck.ok, `expected tender ✓, got ${JSON.stringify(r.checks)}`);
 });
 
+test("arithmetics validator: fixture's misread change flags [?], never overrides the total", () => {
+  // The committed fixture OCR-read the change as 8,11 (real: 8,71), so
+  // 13,00 − 8,11 = 4,89 ≠ 4,29 — the check FLAGS the misread. This is the
+  // designed behavior: tender arithmetic is evidence, never a total source
+  // (see fixture header note "REJECTED by design").
+  const r = parseReceipt(raw);
+  const tenderCheck = r.checks.find((c) => c.text.includes("tender"));
+  assert.ok(tenderCheck && !tenderCheck.ok, `expected [?], got ${JSON.stringify(r.checks)}`);
+  assert.equal(r.total, "4.29 €", "flag must not override the total");
+  assert.match(tenderCheck.text, /tender 13\.00 − change 8\.11 = 4\.89 ≠ total 4\.29/);
+});
+
+test("tender matcher survives the otovina garble (live desktop run 2026-10-24)", () => {
+  // Live run read "Gotovina" as "otovina" — the leading g eaten by OCR haze
+  // kept \bovin / gotovin from firing, and a genuinely passing check
+  // (13,00 − 8,71 = 4,29) reported nothing. Bare "otovin" restores it.
+  const r = parseReceipt("Skupaj 4,29\notovina EUR 13,00\nrnjen denar EUR 8,71");
+  const tenderCheck = r.checks.find((c) => c.text.includes("tender"));
+  assert.ok(tenderCheck && tenderCheck.ok, `expected tender ✓, got ${JSON.stringify(r.checks)}`);
+  assert.match(tenderCheck.text, /tender 13\.00 − change 8\.71 = total/);
+});
+
 /**
  * Third fixture: the user's live browser run (2026-10-20, v2 app, uncropped
  * photo). The dot-matrix separator row above the items this time carried a
