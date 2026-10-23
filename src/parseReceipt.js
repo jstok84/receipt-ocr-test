@@ -305,6 +305,17 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
     "skupaj",
     "za plačilo",
     "plačano",
+    // HOFER-B real capture: every one of the anchors above was garbled away
+    // by OCR ("ra-Id", "Zresek", "pla?ila", "BRON CS B 22,0% Neto…"), so the
+    // parser fell into the ENGLISH tiers and misparsed the receipt. These
+    // tokens are the ones that CAN survive garbling (they read clean in the
+    // live run): "vsota" = the subtotal label itself, "vmesna" the same
+    // line's first word, "izdel" = "3 Izdel(i)" summary prefix. Additive
+    // only: no foreign receipt contains these words, and isSlovenian already
+    // being true elsewhere makes them no-ops.
+    "vsota",
+    "vmesna",
+    "izdel",
   ].some((kw) => joinedText.includes(kw));
 
   // Refined exclude keywords (avoid overly generic small words)
@@ -407,6 +418,14 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
     /splošni pogoji/i,
     /vaše današnje ugodnosti/i,
     /točke zvestobe/i,
+    // "Vmesna vsota" = interim/subtotal label (HOFER-B real capture: OCR line
+    // "Vmesna vsota 4,73" was the ONLY clean Slovenian token in the whole
+    // garbled text, yet language detection failed on it and the line became
+    // a phantom ITEM while the true total 4,73 stayed unfound). Dinner's
+    // classifications: never an item; its amount IS the interim total and
+    // already feeds pickTotal via the existing tier-1 "vsota" keyword.
+    /vsota/,
+    /v(?:m|n)esna/,
     /številka naročila/i,
     /datum naročila/i,
     /datum računa/i,

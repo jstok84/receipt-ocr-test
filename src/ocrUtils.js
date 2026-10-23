@@ -1236,8 +1236,31 @@ export async function processImage(imageSrc, onProgress = () => {}) {
   const bucketText = finalChecks.find(
     (c) => !c.ok && /missing item ≈ ([\d.]+)/.test(c.text)
   );
+  let missing = null;
   if (bucketText) {
-    const missing = parseFloat(bucketText.text.match(/missing item ≈ ([\d.]+)/)[1]);
+    missing = parseFloat(bucketText.text.match(/missing item ≈ ([\d.]+)/)[1]);
+  } else {
+    // v2.0.12: arm the strip rescue from the SUM-MISMATCH gap itself when the
+    // VAT-recap rows are too garbled to derive a bucket (HOFER-B real case,
+    // ink-crop geometry: total 4,73 recovered but recap rows read "BRON CS B
+    // 22,0% Neto aro 0,82" — no bucket check possible, and the prior gate
+    // therefore never attempted the strip re-OCR that the deployed build's
+    // geometry had armed). Missing = total − Σitems; the ACCEPTANCE criterion
+    // is unchanged and remains measurement-only: the strip must OCR-read an
+    // amount equal to the gap ±0.02 with a lettered name, arithmetic never
+    // becomes an item. Guard (v1.6.9 no-fire philosophy, proven on SPAR's
+    // 5,74 coupon gap): never arm when the raw text contains a discount or
+    // coupon marker — the mismatch is then explained without a missing item.
+    if (!/popust|kupon|discount|dopla[cč]il/i.test(cleaned)) {
+      const sumCheck = finalChecks.find((c) => !c.ok && /items sum ([\d.]+) ≠ total ([\d.]+)/.test(c.text));
+      if (sumCheck && finalParse.total) {
+        const t = parseFloat((finalParse.total.match(/([\d.,]+)/) || [])[1]?.replace(",", "."));
+        const sum = parseFloat(sumCheck.text.match(/items sum ([\d.]+)/)[1]);
+        if (!isNaN(t) && !isNaN(sum) && t - sum > 0.004) missing = +(t - sum).toFixed(2);
+      }
+    }
+  }
+  if (missing != null) {
     missingBucket = missing;
     const alreadyParsed = finalParse.items.some(
       (it) => Math.abs((parseFloat(it.price) ?? 0) - missing) <= 0.02
