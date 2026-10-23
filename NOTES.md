@@ -448,3 +448,9 @@ requested).
 - Case 3 = mouse again (user re-selected the desk photo; verdict now tells them).
 - UX fixes from this batch (commit f0dfb12): per-file job queue rows (name/note/live sync), active-file progress naming, evidence panel leads with scanVerdict (receipt/partial/garbage/empty + stats line) and collapses raw text; camera canvas-fallback dataUrl ReferenceError fixed while in the area.
 - Verdict unit-locked on the real noise text and HOFER phone OCR: 72/72 tests.
+## USER PUSHBACK ROUND (2026-10-23)
+- "HOFER was not rotated 90°" — USER CORRECT at the pipeline level, my framing was wrong. EXIF on the jpg: Make samsung Galaxy S25, Orientation tag = 6 (sensor stores landscape pixels, displays upright). The browser Image()/drawImage decode HONORS EXIF, so OCR read upright pixels (coherent text proves it); my offline byte-level view ignored EXIF. No bug; record the honest sequence.
+- "INTERSPORT sum was 55,99" — USER CORRECT. Payable printed 55,99, OCR read 59,99; PLAČANO 55,99 and DDV recap 45,89+10,10=55,99 agree; 79,99−24,00 popust = 55,99. Parser had no payable-vs-paid conflict path for card receipts (tender/check only fired with cash change) — added one: 'payable X ≠ paid Y [?]' failing check, tier picking unchanged; ambiguity surfaced, never silently resolved (locked on the merged INTERSPORT fixture, 75/75).
+- Blinked date guard: '16.09 2029' (dot blurred to space) had escaped the date exclusion and manufactured a 16.09 item; separator before 20YY may now be a space. Regressions: none.
+- Evidence panel: user wants comprehensiveness back — raw OCR text restored visible by default (verdict stays first above it).
+- Lacunae logged for the INTERSPORT class (more captures needed): JAKNA znesek '548'→5.48 misread; item line format '1 000 x 79,99 79.89' (qty×price columns) unsupported.
