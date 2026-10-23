@@ -522,6 +522,15 @@ The user provided a manual crop of the EUROSPIN photo (Downloads\\scan-eurospinc
   so it CANNOT be globally removed without an evidence-based gate. No change made; if the heavier
   separator rows bother you, say so and a scan-class-specific stretch gate can be explored WITH the
   EUROSPIN-class counter-evidence respected.
+  FULL-OMISSION A/B (user's follow-up: "you didn't actually omit the opencv preprocessing — run it
+  live"): same SPAR file, `__OCR_OPTS {contrastStretch:false, autoCrop:false, deskew:false,
+  perspectiveCorrection:false}` (stages confirmed: Grayscale → preprocess → 2× only, no crop/deskew/
+  warp stages) vs default run, same session: **26 items / 51.61 / 62 OCR lines BOTH ways, same
+  popust flag** — zero OCR difference. Visual side-by-side of the EXACT pixels fed to Tesseract:
+  the WITH-preprocessing stage is clearly crisper (dark text, white ground); the raw-scan stage is
+  visibly blurry/soft with doubled letter edges. Verdict: the preprocessing is not the cause of any
+  "worse" reading on SPAR — it is idle-to-helpful there and materially improves the OCR input image;
+  no default changes justified.
 - (3) "it wasn't just hofer rescued with 'lanczos' family corrections" — CORRECT, taxonomy from the
   ledger: the strip/band re-OCR machinery (resampling cascade: catrom default + lanczos3 as the
   5th band-cascade attempt) has THREE documented receivers:
