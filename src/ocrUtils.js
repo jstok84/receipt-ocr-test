@@ -81,6 +81,10 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
       // late-stage cropToContent was measured harmful (fixed 240 BINARY_INV dark-mask ->
       // selected the BACKGROUND on cluttered photos and cropped into the receipt), so it
       // was disabled; the new crop isolates the paper before geometry stages run.
+      autoCropMode = "axis", // v2.0.3 candidate: "axis" (current, bounding box keeps tilted
+      // receipts' background), "rotated" / "rotatedFlip" (tight minAreaRect rotate-crop —
+      // realigns the receipt as a side effect). Default stays "axis" until the live A/B
+      // on real photos decides; overridden via window.__OCR_OPTS for evidence runs.
       contrastStretch = true, // v1.7: linear a=1.6 b=-80 after crop. Measured on EUROSPIN
       // (ocr-eurospin2): contrast-stretched OCR read 3/3 item amounts (1,55/1,29/1,45),
       // unstretched read 0-2/3. Thermal print contrast is naturally low after crops.
@@ -167,13 +171,22 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
         return new Promise((res) => setTimeout(res, ms));
       }
 
-      function cropToReceipt(mat) {
+      function cropToReceipt(mat, mode = "axis") {
         // Isolate the paper from cluttered backgrounds (EUROSPIN real case:
         // black mesh mat + keyboard). Otsu bright mask selects the paper,
         // morphological closing bridges fold shadows that split it, then the
         // largest bright region is bounded and cut with a small margin.
         // Sanity guards leave the image untouched when no paper-sized region
         // is found (no crop-below-threshold surprises).
+        // v2.0.3 candidates: "rotated" / "rotatedFlip" cut a TIGHT
+        // minAreaRect-aligned box instead of the axis-aligned bounding rect —
+        // a tilted receipt's bounding rect keeps the mat visible along its
+        // sides (seen in eurospin evidence stage 2), and realigning kills the
+        // small tilt as a side effect. The two variants differ ONLY in the
+        // candidate rotation sign — OpenCV 4.5+ minAreaRect angle semantics
+        // are orientation-dependent and the deskew stage's sign is suspect
+        // (INTERSPORT phone evidence: text visibly tilts the other way after
+        // a 9.89° correction), so the sign is decided by live A/B, not faith.
         const binary = new cv.Mat();
         cv.threshold(mat, binary, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
         const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(15, 15));
@@ -197,13 +210,53 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
           }
         }
         let result = null;
-        if (maxContour) {
+        const boxOk = (w, h) =>
+          w >= 0.25 * mat.cols && h >= 0.25 * mat.rows && w * h >= 0.15 * imgArea;
+        if (maxContour && mode !== "axis") {
+          // rotated tight crop: same bright-mask, same sanity thresholds, but
+          // the cut follows the paper's own axes (minAreaRect box, normalized
+          // to portrait) and removes the background AND the small tilt.
+          const rect = cv.minAreaRect(maxContour);
+          if (boxOk(rect.size.width, rect.size.height)) {
+            let w = rect.size.width, h = rect.size.height, a = rect.angle;
+            if (w >= h) { const t = w; w = h; h = t; a += 90; } // portrait box: long edge vertical
+            // rectangles are 90°-periodic after a w/h swap — normalize to the
+            // shortest rotation so the crop is upright with text horizontal
+            while (a > 45) a -= 90;
+            while (a <= -45) a += 90;
+            if (mode === "rotatedFlip") a = -a;
+            const center = new cv.Point(rect.center.x, rect.center.y);
+            const M = cv.getRotationMatrix2D(center, a, 1.0);
+            const cosv = Math.abs(M.data64F[0]), sinv = Math.abs(M.data64F[1]);
+            const nW = Math.round(mat.cols * cosv + mat.rows * sinv);
+            const nH = Math.round(mat.cols * sinv + mat.rows * cosv);
+            // shift the rotated content to stay inside the enlarged canvas
+            // (getRotationMatrix2D returns CV_64FC1 — write doubles, the
+            // Float32 alias would corrupt the bytes: live TypeError evidence)
+            M.data64F[2] += nW / 2 - center.x;
+            M.data64F[5] += nH / 2 - center.y;
+            const rotated = new cv.Mat();
+            cv.warpAffine(
+              mat, rotated, M, new cv.Size(nW, nH),
+              cv.INTER_LINEAR, cv.BORDER_CONSTANT,
+              new cv.Scalar(255, 255, 255, 255)
+            );
+            const x = Math.max(0, Math.round((nW - w) / 2));
+            const y = Math.max(0, Math.round((nH - h) / 2));
+            const width = Math.min(Math.round(w), nW - x);
+            const height = Math.min(Math.round(h), nH - y);
+            const roi = rotated.roi({ x, y, width, height });
+            result = roi.clone();
+            roi.delete();
+            rotated.delete();
+            M.delete();
+            console.log("✂️ Receipt region (rotated):", JSON.stringify({ a: +a.toFixed(2), w: Math.round(w), h: Math.round(h) }));
+          } else {
+            console.log("↩️ Receipt region (rotated) too small, leaving frame untouched");
+          }
+        } else if (maxContour) {
           const rect = cv.boundingRect(maxContour);
-          if (
-            rect.width >= 0.25 * mat.cols &&
-            rect.height >= 0.25 * mat.rows &&
-            rect.width * rect.height >= 0.15 * imgArea
-          ) {
+          if (boxOk(rect.width, rect.height)) {
             const mx = Math.round(mat.cols * 0.02);
             const my = Math.round(mat.rows * 0.02);
             const x = Math.max(0, rect.x - mx);
@@ -253,7 +306,7 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
         // stages see the receipt instead of the camera background (EUROSPIN:
         // mesh mat + keyboard). Cropping late was measured; early is the fix.
         if (autoCrop) {
-          const receiptRegion = cropToReceipt(gray);
+          const receiptRegion = cropToReceipt(gray, autoCropMode);
           if (receiptRegion) {
             gray.delete();
             gray = receiptRegion;
@@ -1003,11 +1056,19 @@ export async function processImage(imageSrc, onProgress = () => {}) {
     await pushStageDataURL("input photo (raw)", inputSrc);
   }
   let prePerspectiveDataURL = null;
-  const preprocessedDataURL = await preprocessWithOpenCV(imageSrc, {
+  // v2.0.3: evidence-run hook — window.__OCR_OPTS (e.g. { autoCropMode:
+  // "rotated", deskew: false }) overrides preprocessing options for A/B
+  // comparisons; unset means production options, untouched path.
+  const preOpts = {
     onStageDataURLs: ({ stage, dataURL }) => {
       if (stage === "prePerspective" && !prePerspectiveDataURL) prePerspectiveDataURL = dataURL;
     },
-  });
+  };
+  if (typeof window !== "undefined" && window.__OCR_OPTS) {
+    Object.assign(preOpts, window.__OCR_OPTS);
+    console.log("🧪 evidence-run preprocessing override:", window.__OCR_OPTS);
+  }
+  const preprocessedDataURL = await preprocessWithOpenCV(imageSrc, preOpts);
   if (window.__OCR_DEBUG === true) {
     await pushStageDataURL("after OpenCV preprocessing", preprocessedDataURL);
   }
