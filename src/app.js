@@ -434,6 +434,12 @@ function SyncSetupPanel({ syncCfg, onSave, onClear }) {
     const bucket = (form.bucket || "").trim();
     const host = region ? `s3.${region}.backblazeb2.com` : "(no region)";
     lines.push(`endpoint: https://${host}/${bucket}/`);
+    // 0: which bundle is actually running — the hashed filename identifies the
+    // build. A phone serving a stale cached bundle caches the old HTML too, so
+    // the hash stays old across deploys until the user busts it. I can compare
+    // this hash against what Pages currently serves.
+    const bundleSrc = document.querySelector('script[src*="receipt"]')?.src || "(inline)";
+    lines.push(`0 bundle: ${bundleSrc.slice(-40)}`);
     // 1: unsigned simple GET to the bucket root (no preflight) — ambiguous in
     // throw terms too: unreachable host AND refused-without-ACAO look identical.
     try {
@@ -461,9 +467,9 @@ function SyncSetupPanel({ syncCfg, onSave, onClear }) {
       const probeCfg = {
         region,
         bucket,
-        keyID: (form.keyID || "").trim() || (saved?.keyID || ""),
-        secretKey: (form.secretKey || "").trim() || (saved?.secretKey || ""),
-        prefix: (form.prefix || "").trim() || (saved?.prefix || "receipts/"),
+        keyID: (form.keyID || "").trim() || String(saved?.keyID || "").trim(),
+        secretKey: (form.secretKey || "").trim() || String(saved?.secretKey || "").trim(),
+        prefix: (form.prefix || "").trim() || String(saved?.prefix || "receipts/").trim(),
       };
       if (!probeCfg.keyID || !probeCfg.secretKey) {
         lines.push("(paste device keyID+secret, or Save a config first — the real-path probe needs a key)");
