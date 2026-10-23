@@ -76,21 +76,36 @@ function amzStamp(now) {
 
 /**
  * Compose a presigned S3 URL (PUT or GET) for a user-scoped B2 app key.
- * cfg: { region, keyID, secretKey, prefix }
+ * cfg: { region, bucket, keyID, secretKey, prefix }
  * opts: { key, method = "GET", contentType = "", expires = 1800, now }
- * The URL is single-use in signing terms only: signature covers host,
- * content-type (when given) and presign params; passes within expiry.
+ * Path-style URL: https://s3.<region>.backblazeb2.com/<bucket>/<key>.
+ * (A caller-provided cfg.host switches to virtual-host style and the bucket
+ * stays out of the path — used by the AWS reference-vector test.)
+ * The signature covers host, presign params, and — GET only — content-type.
+ * B2 PUT contract (verified against the live endpoint): content-type must
+ * NOT be signed for query-auth PUT, though the header itself may be sent.
  */
 export async function presignS3(cfg, { key, method = "GET", contentType = "", expires = 1800, now = new Date() }) {
   if (!cfg || !cfg.region || !cfg.keyID || !cfg.secretKey || !key) {
     throw new Error("presignS3: incomplete config");
   }
+  // Path-style (B2 endpoint: bucket as first path segment) unless the caller
+  // provides a virtual-host style host (the AWS vector's examplebucket host).
+  const pathStyle = !cfg.host;
+  if (pathStyle && !cfg.bucket) throw new Error("presignS3: incomplete bucket");
+  const objectPath = pathStyle ? `${cfg.bucket}/${key}` : key;
   const host = cfg.host || `s3.${cfg.region}.backblazeb2.com`;
+  // B2 contract, verified against the live endpoint (2026-10-23): query-auth
+  // PUT validates ONLY with host signed — signing content-type (D) or the
+  // payload sha (E) yields SignatureDoesNotMatch even though both are legal
+  // per the AWS reference. GET validates host-only as the vector shows.
+  const signsContentType = contentType && method === "GET";
+  const signedHeaders = signsContentType ? "host;content-type" : "host";
+  const canonicalHeaders = `host:${host}\n` + (signsContentType ? `content-type:${contentType}\n` : "");
+
   const amzDate = amzStamp(now);
   const date = amzDate.slice(0, 8);
   const scope = `${date}/${cfg.region}/s3/aws4_request`;
-  const signedHeaders = contentType ? "host;content-type" : "host";
-  const canonicalHeaders = `host:${host}\n` + (contentType ? `content-type:${contentType}\n` : "");
 
   const params = [
     ["X-Amz-Algorithm", "AWS4-HMAC-SHA256"],
@@ -106,7 +121,7 @@ export async function presignS3(cfg, { key, method = "GET", contentType = "", ex
 
   const canonicalRequest = [
     method,
-    canonicalUri(key),
+    canonicalUri(objectPath),
     canonicalQuery,
     canonicalHeaders,
     signedHeaders,
@@ -126,7 +141,7 @@ export async function presignS3(cfg, { key, method = "GET", contentType = "", ex
   const kSigning = await hmac(kService, enc.encode("aws4_request"));
   const signature = toHex(await hmac(kSigning, enc.encode(stringToSign)));
 
-  return `https://${host}/${key}?${canonicalQuery}&X-Amz-Signature=${signature}`;
+  return `https://${host}/${objectPath}?${canonicalQuery}&X-Amz-Signature=${signature}`;
 }
 
 async function sha1Hex(buf) {
@@ -145,10 +160,10 @@ async function putObject(cfg, key, blob, contentType) {
       headers: { "Content-Type": contentType },
     });
   } catch (err) {
-    // Browsers give this the opaque name "Failed to fetch"; the host is the
-    // actionable part — a DNS- dead region (typo) looks exactly like a CORS
-    // refusal from in-page diagnostics that only see this exception.
-    throw new Error(`network: cannot reach https://${host} (${err?.message || err})`);
+    // Browsers report any response lacking CORS headers as "Failed to fetch",
+    // and B2 refusals (401/403) come back WITHOUT ACAO — so this catch sees
+    // both genuine unreachability and plain auth/capability rejections.
+    throw new Error(`network: fetch to https://${host} failed (${err?.message || err}) — network, or B2 refused without CORS headers`);
   }
   if (!res.ok) {
     const detail = (await res.text()).slice(0, 160);

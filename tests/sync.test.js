@@ -55,11 +55,37 @@ test("presignS3 encodes the credential scope and sorts query params", async () =
 });
 
 test("presignS3 signs content-type into signed headers when provided", async () => {
-  const url = await presignS3(CFG, {
+  // B2 PUT contract (verified against the live endpoint): content-type is
+  // included in the query of the request but must NOT be signed — signing it
+  // yields SignatureDoesNotMatch at real B2 even though it is legal SigV4.
+  const putUrl = await presignS3(CFG, {
     method: "PUT",
     key: "receipts/S25/x.jpg",
     contentType: "image/jpeg",
     now: T0,
   });
-  assert.ok(url.includes("X-Amz-SignedHeaders=host%3Bcontent-type"));
+  assert.ok(putUrl.includes("X-Amz-SignedHeaders=host"), "PUT must not sign content-type");
+  assert.ok(!putUrl.includes("host%3Bcontent-type"), "PUT must never extend signed headers");
+  const getUrl = await presignS3(CFG, {
+    method: "GET",
+    key: "receipts/S25/x.jpg",
+    contentType: "image/jpeg",
+    now: T0,
+  });
+  assert.ok(getUrl.includes("X-Amz-SignedHeaders=host%3Bcontent-type"));
+});
+
+test("presignS3 puts the bucket in the path (path-style, no host override)", async () => {
+  const url = await presignS3(
+    { region: "eu-central-003", bucket: "receipt-test", keyID: "KID", secretKey: "SEC", prefix: "" },
+    { method: "PUT", key: "receipts/S25/x.jpg", now: T0 }
+  );
+  const u = new URL(url);
+  assert.equal(u.host, "s3.eu-central-003.backblazeb2.com");
+  assert.equal(u.pathname, "/receipt-test/receipts/S25/x.jpg");
+  // same call without bucket must fail loudly, not silently produce a bucketless URL
+  await assert.rejects(
+    presignS3({ region: "eu-central-003", keyID: "KID", secretKey: "SEC", prefix: "" }, { method: "PUT", key: "x.jpg" }),
+    /incomplete bucket/
+  );
 });
