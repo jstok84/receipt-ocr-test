@@ -38,7 +38,24 @@ export default function App() {
   const activeJob = runningJobs[0] || null;
 
   // debug/evidence layer + test sync channel state
-  const [showEvidence, setShowEvidence] = useState(false);
+  // v2.0.2: evidence toggle persists (user reads it on every scan) and GATES
+  // the window.__OCR_DEBUG switch: with evidence on, ocrUtils records every
+  // workflow stage image into window.__OCR_STAGES and parseReceipt appends its
+  // per-line decisions to window.__OCR_LOG — both harvested into state per scan.
+  const [showEvidence, setShowEvidence] = useState(() => localStorage.getItem("ocr.evidence") !== "0");
+  const [parserLog, setParserLog] = useState([]);
+  const [stages, setStages] = useState([]);
+  useEffect(() => {
+    window.__OCR_DEBUG = showEvidence;
+    window.__OCR_PANEL = true;
+    localStorage.setItem("ocr.evidence", showEvidence ? "1" : "0");
+    if (showEvidence) {
+      // no scan has run in this session yet with evidence on — leave buffers;
+      // otherwise show anything recorded by an already-finished scan
+      setParserLog(window.__OCR_LOG || []);
+      setStages(window.__OCR_STAGES || []);
+    }
+  }, [showEvidence]);
   const [pipelineMs, setPipelineMs] = useState(null);
   const [syncCfg, setSyncCfg] = useState(() => loadSyncCfg());
   const [syncStatus, setSyncStatus] = useState(null); // null | uploading | {ok, photoKey} | error string
@@ -84,6 +101,12 @@ export default function App() {
     }
     const result = parseReceipt(prepared, extraItems, corrections);
     setParsed(result);
+    // v2.0.2: the app-level parse is the last parseReceipt call of the scan,
+    // so window.__OCR_LOG now holds exactly this scan's decision trail
+    if (window.__OCR_DEBUG) {
+      setParserLog([...(window.__OCR_LOG || [])]);
+      setStages([...(window.__OCR_STAGES || [])]);
+    }
     // evidence for the strip-recovered item (null clears it)
     setStripRescue(rescue);
     return result;
@@ -115,7 +138,7 @@ export default function App() {
     } catch (err) {
       console.warn("Sync failed:", err);
       setSyncStatus("sync failed: " + (err?.message || err));
-      if (jobId != null) jobSync(jobId, { state: "failed", msg: String(err?.message || err).slice(0, 120) });
+      if (jobId != null) jobSync(jobId, { state: "failed", msg: String(err?.message || err) });
     }
   };
 
@@ -211,6 +234,9 @@ export default function App() {
         jobDone(jobId, "done", `${ms} ms · ${parsedNow.items.length} items · ${parsedNow.checks.filter(c => !c.ok).length} failing checks`);
         maybeSync(file, file.name, result, parsedNow, ms, jobId);
       } else if (isPDF) {
+        // no OpenCV photo pipeline on the PDF path — clear stale stage images
+        // from the previous photo scan so the panel never mixes scans
+        if (window.__OCR_DEBUG === true) window.__OCR_STAGES = [];
         const { text: pdfText, previews } = await processPDF(file);
         setText(pdfText);
         runParsing(pdfText);
@@ -263,7 +289,7 @@ export default function App() {
           <button
             className="btn ghost mini"
             onClick={() => setShowEvidence(!showEvidence)}
-            title="raw OCR text, cascade attempts, pipeline timing"
+            title="workflow stages, parser decisions, raw OCR, checks — recorded while scanning"
           >
             evidence
           </button>
@@ -443,6 +469,19 @@ export default function App() {
             <summary>Raw OCR text ({text ? text.split("\n").filter(l => l.trim()).length : 0} lines)</summary>
             <pre className="evidence-raw">{text || "(nothing scanned yet)"}</pre>
           </details>
+          {parserLog.length > 0 && <details open>
+            <summary>Parser decisions ({parserLog.length} lines)</summary>
+            <pre className="evidence-raw">{parserLog.join("\n")}</pre>
+          </details>}
+          {stages.length > 0 && <details open>
+            <summary>Workflow stages ({stages.length} images)</summary>
+            <div className="evidence-stages">
+              {stages.map((s, i) => <figure key={i}>
+                <figcaption>{i + 1}. {s.label}</figcaption>
+                <img src={s.dataURL} alt={s.label} />
+              </figure>)}
+            </div>
+          </details>}
           {stripRescue?.attempts.map((a, i) => <div className="attempt" key={i}>
             <div className="attempt-label">
               attempt {i + 1}: strip={a.stripKind}

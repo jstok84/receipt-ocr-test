@@ -42,8 +42,17 @@ export function namesSimilar(candidate, itemName) {
 export function parseReceipt(text, extraItems = [], corrections = []) {
   const PARSER_VERSION = "v1.6.9";
   // Set window.__OCR_DEBUG = true to restore verbose parser diagnostics.
+  // v2.0.2: when debugging is on, every log line is ALSO appended to
+  // window.__OCR_LOG (buffer reset here — the app-level parse is the last
+  // call of a scan, so its decisions are the ones the evidence panel shows).
   const DEBUG = typeof window !== "undefined" && window.__OCR_DEBUG === true;
-  const log = (...args) => { if (DEBUG) console.log(...args); };
+  const logBuf = DEBUG && typeof window !== "undefined" ? (window.__OCR_LOG = []) : null;
+  const log = (...args) => {
+    if (!DEBUG) return;
+    const line = args.map((a) => (typeof a === "object" ? JSON.stringify(a) : String(a))).join(" ");
+    console.log(...args);
+    logBuf?.push(line);
+  };
   log("Receipt parser version:", PARSER_VERSION);
 
   /** Normalize amount string for parseFloat, handling Slovenian or non-Slovenian formats */
@@ -360,7 +369,9 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
     // Gratitude footer (phone HOFER real case): "HVALA ZA VAS NAKUP!" OCR-fused
     // with neighboring barcode digits ("HVALA Z 10,26 17. | SODNA" manufactured a
     // bogus 10,26 item whose involvement breaks the items-sum check). Always machinery.
-    /^hvala\b/i,
+    // Desktop variant reads the same footer as "S HVALA Z 10,26 17: | SODNA" —
+    // the word match survives the extra garble token (v2.0.2, live decision log).
+    /\bhvala\b/i,
     /\bcash\b/i,
     // VAT recap rows (HOFER real case: "Ca ok Neto 2,6900V 0,25" and
     // "B 22,0% Neto 1,47 …" — the DDV rekapitulacija with "Neto" surviving

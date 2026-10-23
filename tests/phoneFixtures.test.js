@@ -34,6 +34,18 @@ test("phone HOFER photo: gratitude-footer line is never an item", () => {
   assert.ok(!names.some((n) => n.startsWith("hvala")), `"HVALA Z" leaked as an item`);
 });
 
+test("HVALA guard survives leading garble (desktop live run, v2.0.2)", () => {
+  // The same footer read by the DESKTOP pipeline on the same receipt:
+  // "S HVALA Z 10,26 17: | SODNA" — the line-start anchor missed it.
+  const r = parseReceipt(
+    "760801 Brioš marmo. kolač 3,36 A\n" +
+    "HOFER CENA 12.14\n" +
+    "S HVALA Z 10,26 17: | SODNA\n"
+  );
+  const names = r.items.map((i) => i.name.toLowerCase());
+  assert.ok(!names.some((n) => n.includes("hvala")), `leaked: ${JSON.stringify(names)}`);
+});
+
 test("phone HOFER photo: the three article items parse and sum to total", () => {
   const r = parseReceipt(raw);
   assert.equal(r.items.length, 3, `expected exactly 3 items, got ${JSON.stringify(r.items)}`);

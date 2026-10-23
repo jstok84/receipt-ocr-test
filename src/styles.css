@@ -514,6 +514,34 @@ lives once, in the checks list below.
   overflow: auto;
 }
 
+/* ----- workflow stage pictures (evidence panel) --------------------------- */
+
+.evidence-stages {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0 0 12px;
+}
+
+.evidence-stages figure {
+  margin: 0;
+}
+
+.evidence-stages figcaption {
+  font: 11px var(--font-mono);
+  color: var(--ink-2);
+  margin-bottom: 4px;
+}
+
+.evidence-stages img {
+  max-width: 480px;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: var(--bg);
+}
+
 /* ----- sync setup panel --------------------------------------------------- */
 
 .setup .row {

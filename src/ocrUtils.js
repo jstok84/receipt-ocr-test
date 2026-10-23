@@ -94,8 +94,18 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
       // scan appended a fresh container to document.body that was never
       // removed (DOM + pixel-memory leak per scan) and paid ~5 × 300ms of
       // pure sleep on every receipt, healthy ones included.
+      // v2.0.2: two debug views behind the same capture data:
+      //   - panel mode (window.__OCR_PANEL, set by app.js): stages are
+      //     recorded as downscaled PNG sources into window.__OCR_STAGES for
+      //     the evidence panel — no body DOM, NO pacing sleeps (they made
+      //     evidence mode measurably slower for zero benefit)
+      //   - standalone debug view (legacy body container + 300ms pacing),
+      //     preserved unchanged for the console/debug use it was built for
       const debugStages = typeof window !== "undefined" && window.__OCR_DEBUG === true;
-      const container = debugStages ? document.createElement("div") : null;
+      const panelView = debugStages && window.__OCR_PANEL === true;
+      const bodyView = debugStages && !panelView;
+      const stagesBuf = debugStages ? (window.__OCR_STAGES = []) : null;
+      const container = bodyView ? document.createElement("div") : null;
       if (container) {
         container.style.display = "flex";
         container.style.flexWrap = "wrap";
@@ -106,7 +116,29 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
         container.style.background = "#fafafa";
         document.body.appendChild(container);
       }
+      // Downscaled PNG for the stage record: full-res OpenCV mats can be
+      // 9000×12000 after the 2× upscale — their PNG strings would eat tens of
+      // MB of tab memory per scan. ≤480 px keeps every scan's set of stages
+      // small enough to keep across the session.
+      function recordStage(mat, label) {
+        if (!stagesBuf) return;
+        const big = document.createElement("canvas");
+        big.width = mat.cols;
+        big.height = mat.rows;
+        cv.imshow(big, mat);
+        const w = Math.min(480, big.width);
+        const h = Math.max(1, Math.round(big.height * (w / big.width)));
+        const small = document.createElement("canvas");
+        small.width = w;
+        small.height = h;
+        small.getContext("2d").drawImage(big, 0, 0, w, h);
+        stagesBuf.push({ label, dataURL: small.toDataURL("image/png") });
+      }
       function showIntermediate(mat, label) {
+        if (panelView) {
+          recordStage(mat, label);
+          return;
+        }
         if (!container) return;
         const wrapper = document.createElement("div");
         wrapper.style.textAlign = "center";
@@ -131,7 +163,7 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
         cv.imshow(canvasEl, mat);
       }
       function delay(ms) {
-        if (!debugStages) return Promise.resolve();
+        if (!bodyView) return Promise.resolve();
         return new Promise((res) => setTimeout(res, ms));
       }
 
@@ -298,6 +330,7 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
           // perspective warp (HOFER strip experiments: warped strip reads
           // "prv 7S"/"rei B" at every PSM; unwrapped Node bench reads the
           // price). The adaptive strip rescue needs the pre-warp image.
+          if (panelView) recordStage(gray, "gray, before perspective warp");
           if (typeof options.onStageDataURLs === "function") {
             const stageCanvas = document.createElement("canvas");
             stageCanvas.width = gray.cols;
@@ -927,14 +960,61 @@ function brightColumnTrim(colMeans, darkCounts, minWidthFraction = 0.15, maxGapP
 // Returns { text, extraItems }: item rows recovered by the adaptive strip
 // re-OCR ride along separately so app.js can hand both to parseReceipt
 // (checks[] then run over the complete item set with provenance markers).
+/**
+ * v2.0.2: evidence-panel stage capture for the OCR input chain (processImage).
+ * Panel mode (window.__OCR_DEBUG === true, window.__OCR_PANEL === true) records
+ * a downscaled PNG of each stage into window.__OCR_STAGES so the app's evidence
+ * panel can show the actual workflow pictures: what came in, what the OpenCV
+ * preprocessing produced, and the exact pixels Tesseract read. Awaited in order
+ * so the buffer keeps document order even though the decode is async.
+ */
+function pushStageDataURL(label, srcURL) {
+  if (typeof window === "undefined" || window.__OCR_DEBUG !== true || !srcURL) {
+    return Promise.resolve();
+  }
+  if (!window.__OCR_STAGES) window.__OCR_STAGES = [];
+  const buf = window.__OCR_STAGES;
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const w = Math.min(480, img.width);
+      const h = Math.max(1, Math.round(img.height * (w / img.width)));
+      const small = document.createElement("canvas");
+      small.width = w;
+      small.height = h;
+      small.getContext("2d").drawImage(img, 0, 0, w, h);
+      buf.push({ label, dataURL: small.toDataURL("image/png") });
+      resolve();
+    };
+    img.onerror = () => resolve(); // never fail the scan for evidence capture
+    img.src = srcURL;
+  });
+}
+
 export async function processImage(imageSrc, onProgress = () => {}) {
+  // reset this scan's stage buffer BEFORE anything appends to it
+  if (typeof window !== "undefined" && window.__OCR_DEBUG === true) {
+    window.__OCR_STAGES = [];
+    // imageSrc may be a File/Blob (bulk upload path), not a value that an
+    // <img> can decode directly — an object URL covers both.
+    const inputSrc = typeof imageSrc === "string"
+      ? imageSrc
+      : URL.createObjectURL(imageSrc);
+    await pushStageDataURL("input photo (raw)", inputSrc);
+  }
   let prePerspectiveDataURL = null;
   const preprocessedDataURL = await preprocessWithOpenCV(imageSrc, {
     onStageDataURLs: ({ stage, dataURL }) => {
       if (stage === "prePerspective" && !prePerspectiveDataURL) prePerspectiveDataURL = dataURL;
     },
   });
+  if (window.__OCR_DEBUG === true) {
+    await pushStageDataURL("after OpenCV preprocessing", preprocessedDataURL);
+  }
   const upscaled = await upscaleDataURL(preprocessedDataURL);
+  if (window.__OCR_DEBUG === true) {
+    await pushStageDataURL("upscaled 2× — exact pixels fed to Tesseract", upscaled);
+  }
   const worker = await getWorker();
   const result = await worker.recognize(upscaled);
   let cleaned = cleanAndMergeText(result.data.text);
