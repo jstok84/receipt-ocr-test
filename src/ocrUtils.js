@@ -250,7 +250,7 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
       }
 
       function cropToReceipt(mat, mode = "axis") {
-        // v2.0.10 PROJECTION-PROFILE CUT — selection only, NO rotation, NO
+        // v2.0.11 PROJECTION-PROFILE CUT — selection only, NO rotation, NO
         // contours (user's crop, validated live: the paper is the brightest
         // surface, so at an absolute 160-threshold each COLUMN/ROW through
         // the paper scores a high bright-fraction while desk/keyboard rows
@@ -265,6 +265,21 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
         // Fail-safes: no qualifying band → fall back to the old contour
         // bbox; profiles are smoothed (moving average, ~4% frame) so fold
         // shadows inside the paper never split the band.
+        // v2.0.11 INK-EDGE second rule (user proposal: "find the edge of
+        // ink which is black and crop 10% around"): scan-style captures on
+        // a WHITE background (the SPAR scan probe: background gray 221-254
+        // vs paper 236 — every column clears the paper cutoffs 3×) keep
+        // 100% of the frame under the bright rule because background ≈
+        // paper brightness. When the paper band covers ≥98% of the frame,
+        // select by the ink instead: dark-pixel (<128) profile bands with
+        // a 2% dark-fraction cutoff, outermost 1% ring ZEROED first (scan
+        // page borders are black LINES, not receipt ink — SPAR probe:
+        // cols 0-10 mean gray 14 dragged the band to x=0 while cols 10-400
+        // are pure white), then cut with a 10% margin (user spec; sanity
+        // floor 25%×25%). GATED to the full-frame-bright case: on
+        // dark-background photos the ink mask also sees the background
+        // (HOFER probe: the ink band would cut away the TOP 57% of the
+        // receipt) — there the paper band trims and ink never runs.
         let result = null;
         try {
           const W = mat.cols, H = mat.rows;
@@ -291,16 +306,53 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
           };
           cols.delete(); rows.delete(); binary.delete();
           if (band.x && band.y) {
-            const mx = Math.round(W * 0.02), my = Math.round(H * 0.02);
-            const x = Math.max(0, band.x[0] - mx);
-            const y = Math.max(0, band.y[0] - my);
-            const w = Math.min(W - x, band.x[1] - band.x[0] + 1 + 2 * mx);
-            const h = Math.min(H - y, band.y[1] - band.y[0] + 1 + 2 * my);
-            const roi = mat.roi({ x, y, width: w, height: h });
-            result = roi.clone();
-            roi.delete();
-            console.log("✂️ Receipt region (profile cut, no rotation):",
-              JSON.stringify({ x: +(x / W).toFixed(3), y: +(y / H).toFixed(3), w, h }));
+            const bandArea = (band.x[1] - band.x[0] + 1) * (band.y[1] - band.y[0] + 1);
+            if (bandArea >= 0.98 * W * H) {
+              // full-frame band = bright-background (scan-style) case:
+              // ink-edge stage selects by the dark pixels instead
+              const ink = new cv.Mat();
+              cv.threshold(mat, ink, 128, 255, cv.THRESH_BINARY_INV);
+              const ring = Math.round(Math.max(W, H) * 0.01);
+              const black = new cv.Scalar(0, 0, 0, 0); // erase scan-border lines
+              cv.rectangle(ink, new cv.Point(0, 0), new cv.Point(W - 1, ring - 1), black, -1);
+              cv.rectangle(ink, new cv.Point(0, H - ring), new cv.Point(W - 1, H - 1), black, -1);
+              cv.rectangle(ink, new cv.Point(0, 0), new cv.Point(ring - 1, H - 1), black, -1);
+              cv.rectangle(ink, new cv.Point(W - ring, 0), new cv.Point(W - 1, H - 1), black, -1);
+              const icols = new cv.Mat(), irows = new cv.Mat();
+              cv.reduce(ink, icols, 0, cv.REDUCE_AVG, cv.CV_32F);
+              cv.reduce(ink, irows, 1, cv.REDUCE_AVG, cv.CV_32F);
+              const ib = {
+                x: findBand(icols.data32F, W, 0.02),
+                y: findBand(irows.data32F, H, 0.02),
+              };
+              ink.delete(); icols.delete(); irows.delete();
+              if (ib.x && ib.y) {
+                const bw = ib.x[1] - ib.x[0] + 1, bh = ib.y[1] - ib.y[0] + 1;
+                if (bw >= 0.25 * W && bh >= 0.25 * H) {
+                  const mx = Math.round(W * 0.10), my = Math.round(H * 0.10);
+                  const x = Math.max(0, ib.x[0] - mx);
+                  const y = Math.max(0, ib.y[0] - my);
+                  const w = Math.min(W - x, bw + 2 * mx);
+                  const h = Math.min(H - y, bh + 2 * my);
+                  const roi = mat.roi({ x, y, width: w, height: h });
+                  result = roi.clone();
+                  roi.delete();
+                  console.log("✂️ Receipt region (ink-edge cut, no rotation):",
+                    JSON.stringify({ x: +(x / W).toFixed(3), y: +(y / H).toFixed(3), w, h }));
+                }
+              }
+            } else {
+              const mx = Math.round(W * 0.02), my = Math.round(H * 0.02);
+              const x = Math.max(0, band.x[0] - mx);
+              const y = Math.max(0, band.y[0] - my);
+              const w = Math.min(W - x, band.x[1] - band.x[0] + 1 + 2 * mx);
+              const h = Math.min(H - y, band.y[1] - band.y[0] + 1 + 2 * my);
+              const roi = mat.roi({ x, y, width: w, height: h });
+              result = roi.clone();
+              roi.delete();
+              console.log("✂️ Receipt region (profile cut, no rotation):",
+                JSON.stringify({ x: +(x / W).toFixed(3), y: +(y / H).toFixed(3), w, h }));
+            }
           }
         } catch (e) {
           console.log("↩️ profile cut failed, falling back to contour bbox:", e && e.message);
