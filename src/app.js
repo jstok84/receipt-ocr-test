@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { processImage, processPDF, cleanAndMergeText } from "./ocrUtils";
 import { parseReceipt } from "./parseReceipt";
+import { scanVerdict } from "./scanVerdict";
 import { loadSyncCfg, saveSyncCfg, clearSyncCfg, uploadScan, presignS3 } from "./sync";
 
 export default function App() {
@@ -17,6 +18,24 @@ export default function App() {
   const [stripRescue, setStripRescue] = useState(null);
   const [copied, setCopied] = useState(false);
   const [dragHover, setDragHover] = useState(false);
+
+  // Per-scan job list: one row per processed file — name, live status and
+  // per-file sync result. Replaces the single shared loading row that gave
+  // zero feedback on a multi-pick (second file appeared to "not even OCR").
+  const [jobs, setJobs] = useState([]);
+  const jobSeq = useRef(0);
+  const newJob = name => {
+    const id = ++jobSeq.current;
+    setJobs(q => [...q, { id, name, status: "running", sync: null }]);
+    return id;
+  };
+  const jobDone = (id, status, note = "") =>
+    setJobs(q => q.map(j => (j.id === id ? { ...j, status, note } : j)));
+  const jobSync = (id, patch) =>
+    setJobs(q => q.map(j => (j.id === id ? { ...j, sync: { ...(j.sync || {}), ...patch } } : j)));
+  const runningJobs = jobs.filter(j => j.status === "running");
+  const runningIndex = jobs.findIndex(j => j.status === "running");
+  const activeJob = runningJobs[0] || null;
 
   // debug/evidence layer + test sync channel state
   const [showEvidence, setShowEvidence] = useState(false);
@@ -73,9 +92,10 @@ export default function App() {
   // Test sync: photo + manifest straight from the device to the user's
   // B2 bucket (bucket-scoped key, keyed in localStorage) — dormant until
   // configured via the #sync setup panel.
-  const maybeSync = async (blob, name, ocr, parsedNow, ms) => {
+  const maybeSync = async (blob, name, ocr, parsedNow, ms, jobId = null) => {
     const cfg = syncCfg || loadSyncCfg();
     if (!cfg || !blob) return;
+    if (jobId != null) jobSync(jobId, { state: "uploading" });
     setSyncStatus("uploading");
     try {
       const info = await uploadScan(cfg, {
@@ -91,9 +111,11 @@ export default function App() {
         ua: navigator.userAgent,
       });
       setSyncStatus({ ok: true, jsonKey: info.jsonKey });
+      if (jobId != null) jobSync(jobId, { state: "ok", key: info.photoKey });
     } catch (err) {
       console.warn("Sync failed:", err);
       setSyncStatus("sync failed: " + (err?.message || err));
+      if (jobId != null) jobSync(jobId, { state: "failed", msg: String(err?.message || err).slice(0, 120) });
     }
   };
 
@@ -135,33 +157,30 @@ export default function App() {
         const ctx = canvas.getContext("2d");
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-        const t0 = performance.now();
-        const result = await processImage(dataUrl);
-        setText(result.text);
-        const parsedNow = runParsing(result.text, result.extraItems, result.rescue, result.corrections, true);
-        setPipelineMs(Math.round(performance.now() - t0));
-        setLoading(false);
-        // canvas-frame blob for the sync channel
-        maybeSync(await fetch(dataUrl).then(r => r.blob()), "camera-capture.jpg", result, parsedNow, Math.round(performance.now() - t0));
-        return;
+        blob = await new Promise(res => canvas.toBlob(res, "image/jpeg", 0.95));
+        if (!blob) {
+          setText("Capture failed: empty frame");
+          setLoading(false);
+          return;
+        }
       }
 
-      // Convert blob (from ImageCapture) to DataURL for processing
-      const reader = new FileReader();
-      reader.onloadend = async () => {
-        const dataUrl = reader.result;
-        setCapturedImage(dataUrl);
+      // Convert blob to DataURL for processing (both capture paths land here)
+      const dataUrl = await new Promise(resolve => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.readAsDataURL(blob);
+      });
+      setCapturedImage(dataUrl);
 
-        const t0 = performance.now();
-        const result = await processImage(dataUrl);
-        setText(result.text);
-        const parsedNow = runParsing(result.text, result.extraItems, result.rescue, result.corrections, true);
-        const ms = Math.round(performance.now() - t0);
-        setPipelineMs(ms);
-        setLoading(false);
-        maybeSync(blob, "camera-capture.jpg", result, parsedNow, ms);
-      };
-      reader.readAsDataURL(blob);
+      const t0 = performance.now();
+      const result = await processImage(dataUrl);
+      setText(result.text);
+      const parsedNow = runParsing(result.text, result.extraItems, result.rescue, result.corrections, true);
+      const ms = Math.round(performance.now() - t0);
+      setPipelineMs(ms);
+      setLoading(false);
+      maybeSync(blob, "camera-capture.jpg", result, parsedNow, ms);
     } catch (err) {
       console.error("Error during capture:", err);
       setText("Capture failed");
@@ -169,7 +188,7 @@ export default function App() {
     }
   };
 
-  const handleFiles = async file => {
+  const handleFiles = async (file, jobId = null) => {
     if (!file) return;
     const isImage = file.type.startsWith("image/");
     const isPDF = file.type === "application/pdf";
@@ -189,18 +208,22 @@ export default function App() {
         const parsedNow = runParsing(result.text, result.extraItems, result.rescue, result.corrections, true);
         const ms = Math.round(performance.now() - t0);
         setPipelineMs(ms);
-        maybeSync(file, file.name, result, parsedNow, ms);
+        jobDone(jobId, "done", `${ms} ms · ${parsedNow.items.length} items · ${parsedNow.checks.filter(c => !c.ok).length} failing checks`);
+        maybeSync(file, file.name, result, parsedNow, ms, jobId);
       } else if (isPDF) {
         const { text: pdfText, previews } = await processPDF(file);
         setText(pdfText);
         runParsing(pdfText);
         setPdfPreviews(previews);
+        jobDone(jobId, "done", "PDF text below");
       } else {
         setText("Unsupported file type");
+        jobDone(jobId, "error", "unsupported file type");
       }
     } catch (err) {
       console.error(err);
       setText("Error processing image");
+      jobDone(jobId, "error", "processing threw — see console");
     }
     setLoading(false);
   };
@@ -209,7 +232,7 @@ export default function App() {
     // Bulk selection: process every picked file sequentially — earlier builds
     // took only files[0] and silently dropped the rest of a multi-selection.
     for (const f of e.target.files) {
-      await handleFiles(f);
+      await handleFiles(f, newJob(f.name));
     }
     e.target.value = ""; // allow re-selecting the same file
   };
@@ -217,7 +240,7 @@ export default function App() {
   const handleDrop = e => {
     e.preventDefault();
     const files = Array.from(e.dataTransfer?.files ?? []);
-    if (files.length) return (async () => { for (const f of files) await handleFiles(f); })();
+    if (files.length) return (async () => { for (const f of files) await handleFiles(f, newJob(f.name)); })();
   };
 
   const handleDragOver = e => e.preventDefault();
@@ -290,7 +313,22 @@ export default function App() {
 
       {loading && <div className="loading-row" role="status">
         <span className="dot" />
-        Processing…
+        Processing {activeJob
+          ? <strong>{jobs.reduce((acc, j, i) => acc + (i < runningIndex ? 1 : 0), 0)}{jobs.length ? `/${jobs.length}` : ""} · {activeJob.name}</strong>
+          : "…"}
+      </div>}
+
+      {jobs.length > 0 && <div className="queue" aria-label="scan queue">
+        {jobs.map(j => <div className={`queue-row ${j.status}`} key={j.id}>
+          <span className={`mark ${j.status === "running" ? "pulse" : ""}`}>
+            {j.status === "done" ? "✓" : j.status === "error" ? "!" : "·"}
+          </span>
+          <span className="qname">{j.name}</span>
+          {j.status !== "running" && j.note && <span className="qnote">{j.note}</span>}
+          {j.sync?.state === "uploading" && <span className="qsync">sync…</span>}
+          {j.sync?.state === "ok" && <span className="qsync ok">synced ✓</span>}
+          {j.sync?.state === "failed" && <span className="qsync bad" title={j.sync.msg}>sync failed</span>}
+        </div>)}
       </div>}
 
       {text && <section className="panel">
@@ -383,11 +421,28 @@ export default function App() {
           </span>
         </div>
         <div className="evidence-body">
-          <p className="evidence-note">
-            Raw OCR text (post-cleanup, pre-parse). Cascade attempt lines appear
-            below whenever a strip-repair cascade ran.
-          </p>
-          <pre className="evidence-raw">{text || "(nothing scanned yet)"}</pre>
+          {(() => {
+            const v = scanVerdict(text, parsed);
+            return <p className={`evidence-verdict ${v.kind}`}>
+              <strong>
+                {v.kind === "receipt" ? "Receipt parsed" :
+                 v.kind === "garbage" ? "No receipt content" :
+                 v.kind === "empty" ? "Nothing scanned" :
+                 "Partial read"}
+              </strong>
+              {" "}{v.detail}
+              <span className="ev-stats">
+                {" "}[{v.stats.lines} OCR lines · {v.stats.amountLines} amount lines · {v.stats.keywordLines} merchant keywords]
+              </span>
+            </p>;
+          })()}
+          {stripRescue && <p className="evidence-note">
+            Strip-repair cascade ran — recovered item evidence below.
+          </p>}
+          <details>
+            <summary>Raw OCR text ({text ? text.split("\n").filter(l => l.trim()).length : 0} lines)</summary>
+            <pre className="evidence-raw">{text || "(nothing scanned yet)"}</pre>
+          </details>
           {stripRescue?.attempts.map((a, i) => <div className="attempt" key={i}>
             <div className="attempt-label">
               attempt {i + 1}: strip={a.stripKind}
