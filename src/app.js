@@ -457,23 +457,28 @@ function SyncSetupPanel({ syncCfg, onSave, onClear }) {
     }
     // 3: REAL presigned PUT — the unambiguous one, identical to the scan path.
     try {
+      const saved = loadSyncCfg();
       const probeCfg = {
         region,
         bucket,
-        keyID: (form.keyID || "").trim(),
-        secretKey: (form.secretKey || "").trim(),
-        prefix: (form.prefix || "").trim(),
+        keyID: (form.keyID || "").trim() || (saved?.keyID || ""),
+        secretKey: (form.secretKey || "").trim() || (saved?.secretKey || ""),
+        prefix: (form.prefix || "").trim() || (saved?.prefix || "receipts/"),
       };
-      const key = `${probeCfg.prefix}diag-probe-${Date.now()}.jpg`;
-      const url = await presignS3(probeCfg, { method: "PUT", key, contentType: "image/jpeg", expires: 600 });
-      const r = await fetch(url, {
-        method: "PUT",
-        body: new Blob(["diag-upload-probe"], { type: "image/jpeg" }),
-        headers: { "Content-Type": "image/jpeg" },
-      });
-      lines.push(r.ok
-        ? `3 REAL presigned PUT: HTTP 200 — SYNC PATH WORKS (diag file stored as ${key})`
-        : `3 REAL presigned PUT: HTTP ${r.status} — ${(await r.text()).slice(0, 140)}`);
+      if (!probeCfg.keyID || !probeCfg.secretKey) {
+        lines.push("(paste device keyID+secret, or Save a config first — the real-path probe needs a key)");
+      } else {
+        const key = `${probeCfg.prefix}diag-probe-${Date.now()}.jpg`;
+        const url = await presignS3(probeCfg, { method: "PUT", key, contentType: "image/jpeg", expires: 600 });
+        const r = await fetch(url, {
+          method: "PUT",
+          body: new Blob(["diag-upload-probe"], { type: "image/jpeg" }),
+          headers: { "Content-Type": "image/jpeg" },
+        });
+        lines.push(r.ok
+          ? `3 REAL presigned PUT: HTTP 200 — SYNC PATH WORKS (diag file stored as ${key})`
+          : `3 REAL presigned PUT: HTTP ${r.status} — ${(await r.text()).slice(0, 140)}`);
+      }
     } catch (e) {
       lines.push(`3 REAL presigned PUT: THREW (${e?.message}) — if 1+2 also threw: carrier/network blocks the endpoint; if only 3 throws: post-status CORS or key problem`);
     }
