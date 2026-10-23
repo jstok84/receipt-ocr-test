@@ -82,9 +82,20 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
       // selected the BACKGROUND on cluttered photos and cropped into the receipt), so it
       // was disabled; the new crop isolates the paper before geometry stages run.
       autoCropMode = "axis", // v2.0.3 candidate: "axis" (current, bounding box keeps tilted
-      // receipts' background), "rotated" / "rotatedFlip" (tight minAreaRect rotate-crop —
+      // receipts' background), "rotated" / "rotatedFlip" (tight text-aligned rotate-crop —
       // realigns the receipt as a side effect). Default stays "axis" until the live A/B
       // on real photos decides; overridden via window.__OCR_OPTS for evidence runs.
+      // v2.0.5: the rotation angle comes from text-line direction (textAngleOf),
+      // NOT minAreaRect — that one reported junk ~10° on a ~0° tilted receipt.
+      // v2.0.5: rotation sign for the text-angle correction. NUMERICALLY
+      // settled (EUROSPIN live A/B, Hough length-weighted text angle):
+      // original −3.44°; after getRotationMatrix2D(+3.45°) ("pos") the final
+      // text angle measured −3.1..−4.9° — "pos" rotated text AWAY from
+      // horizontal (this build's +θ turns content the visually-opposite way
+      // vs the docs' wording); after "+neg" (−3.45°) the deskewed stage
+      // measured +1.06° ≈ flat. So the correct flattening angle is −T.
+      // "neg" default; "pos" still selectable via window.__OCR_OPTS for A/Bs.
+      textAngleSign = "neg",
       contrastStretch = true, // v1.7: linear a=1.6 b=-80 after crop. Measured on EUROSPIN
       // (ocr-eurospin2): contrast-stretched OCR read 3/3 item amounts (1,55/1,29/1,45),
       // unstretched read 0-2/3. Thermal print contrast is naturally low after crops.
@@ -171,6 +182,71 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
         return new Promise((res) => setTimeout(res, ms));
       }
 
+      // v2.0.4: text-line angle estimator. Both previous rotation sources
+      // (deskew's minAreaRect on the biggest Otsu blob and the rotated crop's
+      // same measurement) BREAK on near-upright paper: OpenCV 4.5+ returns an
+      // arbitrary box angle (live INTERSPORT evidence: raw ~10° on a ~0-1°
+      // tilted receipt, so the "correction" rotated a straight receipt 10°
+      // the wrong way and the deskew then measured <1° on the messed-up blob
+      // and skipped). The receipt's TEXT direction is the ground truth:
+      // Canny + Hough lines, near-horizontal window, length-weighted mean.
+      // Tight quartiles measured on the real photo: original +0.9°, σIQR 1.5°.
+      function textAngleOf(mat) {
+        const edges = new cv.Mat();
+        cv.Canny(mat, edges, 60, 150);
+        const lines = new cv.Mat();
+        cv.HoughLinesP(edges, lines, 1, Math.PI / 180, 60, 60, 12);
+        let n = 0, lenSum = 0, angSum = 0;
+        for (let i = 0; i < lines.rows; i++) {
+          const x1 = lines.data32S[i * 4], y1 = lines.data32S[i * 4 + 1];
+          const x2 = lines.data32S[i * 4 + 2], y2 = lines.data32S[i * 4 + 3];
+          const len = Math.hypot(x2 - x1, y2 - y1);
+          const ang = Math.atan2(y2 - y1, x2 - x1) * 180 / Math.PI;
+          if (Math.abs(ang) < 20 && len >= 40) {
+            n++;
+            lenSum += len;
+            angSum += ang * len;
+          }
+        }
+        edges.delete();
+        lines.delete();
+        if (n < 12) return null; // too few confident baselines — don't rotate
+        return angSum / lenSum;
+      }
+      // rotate content about a center, enlarging the canvas so corners
+      // survive, and fix the translation into the new frame
+      // (getRotationMatrix2D returns CV_64FC1 — data32F alias corrupts)
+      function rotatedMat(mat, angle, center, fillWhite = true) {
+        const M = cv.getRotationMatrix2D(center, angle, 1.0);
+        const cosv = Math.abs(M.data64F[0]), sinv = Math.abs(M.data64F[1]);
+        const nW = Math.round(mat.cols * cosv + mat.rows * sinv);
+        const nH = Math.round(mat.cols * sinv + mat.rows * cosv);
+        M.data64F[2] += nW / 2 - center.x;
+        M.data64F[5] += nH / 2 - center.y;
+        const out = new cv.Mat();
+        cv.warpAffine(
+          mat, out, M, new cv.Size(nW, nH),
+          cv.INTER_LINEAR, cv.BORDER_CONSTANT,
+          fillWhite ? new cv.Scalar(255, 255, 255, 255) : new cv.Scalar(0, 0, 0, 255)
+        );
+        M.delete();
+        return out;
+      }
+
+      function maskOf(m) {
+        // Otsu bright mask + closing: the paper is the brieright region
+        // (thermal paper is the bright region vs dark background); closing bridges fold shadows
+        // that would otherwise split it into several blobs.
+        const binary = new cv.Mat();
+        cv.threshold(m, binary, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+        const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(15, 15));
+        const closed = new cv.Mat();
+        cv.morphologyEx(binary, closed, cv.MORPH_CLOSE, kernel);
+        binary.delete();
+        kernel.delete();
+        return closed;
+      }
+
       function cropToReceipt(mat, mode = "axis") {
         // Isolate the paper from cluttered backgrounds (EUROSPIN real case:
         // black mesh mat + keyboard). Otsu bright mask selects the paper,
@@ -178,24 +254,37 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
         // largest bright region is bounded and cut with a small margin.
         // Sanity guards leave the image untouched when no paper-sized region
         // is found (no crop-below-threshold surprises).
-        // v2.0.3 candidates: "rotated" / "rotatedFlip" cut a TIGHT
-        // minAreaRect-aligned box instead of the axis-aligned bounding rect —
-        // a tilted receipt's bounding rect keeps the mat visible along its
-        // sides (seen in eurospin evidence stage 2), and realigning kills the
-        // small tilt as a side effect. The two variants differ ONLY in the
-        // candidate rotation sign — OpenCV 4.5+ minAreaRect angle semantics
-        // are orientation-dependent and the deskew stage's sign is suspect
-        // (INTERSPORT phone evidence: text visibly tilts the other way after
-        // a 9.89° correction), so the sign is decided by live A/B, not faith.
-        const binary = new cv.Mat();
-        cv.threshold(mat, binary, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
-        const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(15, 15));
-        const closed = new cv.Mat();
-        cv.morphologyEx(binary, closed, cv.MORPH_CLOSE, kernel);
+        // v2.0.5 "rotated"/"rotatedFlip": rotate the WHOLE frame so the TEXT
+        // is horizontal (angle from textAngleOf — the previous minAreaRect
+        // source reported ~10° on a ~0° tilted INTERSPORT receipt, realigning
+        // the text 10° off with the deskew unable to undo it), then cut the
+        // axis-aligned bounding box of the rotated mask. Below the 1° deadband
+        // or with no confident baselines it falls back to the plain axis crop
+        // — realigning by <1° was always a no-op for OCR. "rotatedFlip" keeps
+        // its role as the sign-verification channel by flipping the sign.
+        let frame = mat;
+        let owned = null; // rotated frame copy we must free
+        let closed = maskOf(frame);
+        const T = mode !== "axis" ? textAngleOf(frame) : null;
+        if (T !== null && Math.abs(T) > 1.0) {
+          let angle = (textAngleSign === "neg" ? -1 : 1) * T;
+          if (mode === "rotatedFlip") angle = -angle;
+          const center = new cv.Point(mat.cols / 2, mat.rows / 2);
+          owned = rotatedMat(frame, angle, center, true);
+          closed.delete();
+          closed = maskOf(owned);
+          frame = owned;
+          console.log("✂️ Receipt region (text-aligned): rotated", +angle.toFixed(2) + "° (text tilt " + +T.toFixed(2) + "°)");
+        } else if (mode !== "axis") {
+          console.log("↩️ Receipt region: text angle below 1° deadband or unmeasurable — axis crop" +
+            (T !== null ? " (tilt " + +T.toFixed(2) + "°)" : ""));
+          mode = "axis";
+        }
+        const imgArea = frame.rows * frame.cols;
+        let result = null;
         const contours = new cv.MatVector();
         const hierarchy = new cv.Mat();
         cv.findContours(closed, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-        const imgArea = mat.rows * mat.cols;
         let maxContour = null;
         let maxArea = 0;
         for (let i = 0; i < contours.size(); i++) {
@@ -203,79 +292,41 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
           const area = cv.contourArea(contour);
           if (area > maxArea) {
             maxArea = area;
-            if (maxContour) maxContour.delete();
+            if (maxContour) maxContour.delete(); // replaced wrapper — free it
             maxContour = contour;
           } else {
-            contour.delete();
+            contour.delete(); // non-max wrappers are unused — free them
           }
         }
-        let result = null;
-        const boxOk = (w, h) =>
-          w >= 0.25 * mat.cols && h >= 0.25 * mat.rows && w * h >= 0.15 * imgArea;
-        if (maxContour && mode !== "axis") {
-          // rotated tight crop: same bright-mask, same sanity thresholds, but
-          // the cut follows the paper's own axes (minAreaRect box, normalized
-          // to portrait) and removes the background AND the small tilt.
-          const rect = cv.minAreaRect(maxContour);
-          if (boxOk(rect.size.width, rect.size.height)) {
-            let w = rect.size.width, h = rect.size.height, a = rect.angle;
-            if (w >= h) { const t = w; w = h; h = t; a += 90; } // portrait box: long edge vertical
-            // rectangles are 90°-periodic after a w/h swap — normalize to the
-            // shortest rotation so the crop is upright with text horizontal
-            while (a > 45) a -= 90;
-            while (a <= -45) a += 90;
-            if (mode === "rotatedFlip") a = -a;
-            const center = new cv.Point(rect.center.x, rect.center.y);
-            const M = cv.getRotationMatrix2D(center, a, 1.0);
-            const cosv = Math.abs(M.data64F[0]), sinv = Math.abs(M.data64F[1]);
-            const nW = Math.round(mat.cols * cosv + mat.rows * sinv);
-            const nH = Math.round(mat.cols * sinv + mat.rows * cosv);
-            // shift the rotated content to stay inside the enlarged canvas
-            // (getRotationMatrix2D returns CV_64FC1 — write doubles, the
-            // Float32 alias would corrupt the bytes: live TypeError evidence)
-            M.data64F[2] += nW / 2 - center.x;
-            M.data64F[5] += nH / 2 - center.y;
-            const rotated = new cv.Mat();
-            cv.warpAffine(
-              mat, rotated, M, new cv.Size(nW, nH),
-              cv.INTER_LINEAR, cv.BORDER_CONSTANT,
-              new cv.Scalar(255, 255, 255, 255)
-            );
-            const x = Math.max(0, Math.round((nW - w) / 2));
-            const y = Math.max(0, Math.round((nH - h) / 2));
-            const width = Math.min(Math.round(w), nW - x);
-            const height = Math.min(Math.round(h), nH - y);
-            const roi = rotated.roi({ x, y, width, height });
-            result = roi.clone();
-            roi.delete();
-            rotated.delete();
-            M.delete();
-            console.log("✂️ Receipt region (rotated):", JSON.stringify({ a: +a.toFixed(2), w: Math.round(w), h: Math.round(h) }));
-          } else {
-            console.log("↩️ Receipt region (rotated) too small, leaving frame untouched");
-          }
-        } else if (maxContour) {
+        if (maxContour) {
           const rect = cv.boundingRect(maxContour);
-          if (boxOk(rect.width, rect.height)) {
-            const mx = Math.round(mat.cols * 0.02);
-            const my = Math.round(mat.rows * 0.02);
+          const boxOk =
+            rect.width >= 0.25 * frame.cols &&
+            rect.height >= 0.25 * frame.rows &&
+            rect.width * rect.height >= 0.15 * imgArea;
+          if (boxOk) {
+            const mx = Math.round(frame.cols * 0.02);
+            const my = Math.round(frame.rows * 0.02);
             const x = Math.max(0, rect.x - mx);
             const y = Math.max(0, rect.y - my);
-            const w = Math.min(mat.cols - x, rect.width + 2 * mx);
-            const h = Math.min(mat.rows - y, rect.height + 2 * my);
-            const roi = mat.roi({ x, y, width: w, height: h });
+            const w = Math.min(frame.cols - x, rect.width + 2 * mx);
+            const h = Math.min(frame.rows - y, rect.height + 2 * my);
+            const roi = frame.roi({ x, y, width: w, height: h });
             result = roi.clone();
             roi.delete();
-            console.log("✂️ Receipt region:", JSON.stringify({ x, y, w, h }));
+            console.log(mode === "axis"
+              ? "✂️ Receipt region:" + " " + JSON.stringify({ x, y, w, h })
+              : "✂️ Receipt region (tight):" + " " + JSON.stringify({ x, y, w, h }));
           } else {
-            console.log("↩️ Receipt region too small, leaving frame untouched");
+            console.log(mode === "axis"
+              ? "↩️ Receipt region too small, leaving frame untouched"
+              : "↩️ Receipt region (rotated) too small, leaving frame untouched");
           }
         }
         contours.delete();
         hierarchy.delete();
         closed.delete();
-        binary.delete();
-        kernel.delete();
+        if (owned) owned.delete();
         return result;
       }
 
@@ -324,58 +375,32 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
           gray = stretched;
           await delay(300);
         }
-        // Step 2: Deskew
+        // Step 2: Deskew — v2.0.5: the angle source is TEXT-LINE direction
+        // (Canny + Hough, length-weighted mean, ≥12 confident baselines),
+        // not minAreaRect on the biggest bright blob. Live evidence
+        // (INTERSPORT phone): the blob box reported ~10° on a receipt whose
+        // text tilt is +0.9° (IQR ±1.5°) — the "correction" rotated a
+        // straight receipt 10°, the wrong way, and the same blob then
+        // measured <1° so nothing undid it. Text baselines are the ground
+        // truth for what OCR needs. Canvas is ENLARGED during the rotation
+        // (rotatedMat) — the old same-size warp clipped corners of tilted
+        // receipts. Sign: A/B via window.__OCR_OPTS.textAngleSign.
         if (deskew) {
-          console.log("🧭 Step 2: Deskewing started");
-          const binary = new cv.Mat();
-          cv.threshold(gray, binary, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
-          const contours = new cv.MatVector();
-          const hierarchy = new cv.Mat();
-          cv.findContours(binary, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-          let maxArea = 0;
-          let maxContour = null;
-          for (let i = 0; i < contours.size(); i++) {
-            const contour = contours.get(i);
-            const area = cv.contourArea(contour);
-            if (area > maxArea) {
-              maxArea = area;
-              maxContour = contour;
-            }
+          console.log("🧭 Step 2: Deskewing started (text-line angle)");
+          const T = textAngleOf(gray);
+          if (T !== null) console.log("🧭 text-line angle:", +T.toFixed(2) + "° (n lines ok)");
+          else console.log("🧭 text-line angle: not enough confident baselines, skipping");
+          if (T !== null && Math.abs(T) > 1.0) {
+            const angle = (textAngleSign === "neg" ? -1 : 1) * T;
+            const center = new cv.Point(gray.cols / 2, gray.rows / 2);
+            const rotated = rotatedMat(gray, angle, center, true);
+            showIntermediate(rotated, `Deskewed (text angle: ${T >= 0 ? "+" : ""}${T.toFixed(2)}°)`);
+            gray.delete();
+            gray = rotated;
+            await delay(300);
+          } else {
+            console.log("✅ Text angle below deadband (|T| ≤ 1°), skipping rotation");
           }
-          if (maxContour && maxContour.rows >= 5) {
-            const rotatedRect = cv.minAreaRect(maxContour);
-            let angle = rotatedRect.angle;
-            if (rotatedRect.size.width < rotatedRect.size.height) {
-            } else {
-              angle += 90;
-            }
-            if (angle < -45) angle += 180;
-            if (angle > 45) angle -= 180;
-            if (Math.abs(angle) > 1.0) {
-              const center = new cv.Point(gray.cols / 2, gray.rows / 2);
-              const M = cv.getRotationMatrix2D(center, angle, 1.0);
-              const rotated = new cv.Mat();
-              cv.warpAffine(
-                gray,
-                rotated,
-                M,
-                new cv.Size(gray.cols, gray.rows),
-                cv.INTER_LINEAR,
-                cv.BORDER_CONSTANT,
-                new cv.Scalar(255, 255, 255, 255)
-              );
-              showIntermediate(rotated, `Deskewed (angle: ${angle.toFixed(2)}°)`);
-              gray.delete();
-              gray = rotated;
-              M.delete();
-              await delay(300);
-            } else {
-              console.log("✅ Angle too small, skipping rotation");
-            }
-          }
-          binary.delete();
-          hierarchy.delete();
-          contours.delete();
         }
         // Step 3: Perspective Correction
         if (perspectiveCorrection) {
@@ -431,6 +456,23 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
               const heightLeft = Math.hypot(orderedSrcPts[3].x - orderedSrcPts[0].x, orderedSrcPts[3].y - orderedSrcPts[0].y);
               const heightRight = Math.hypot(orderedSrcPts[2].x - orderedSrcPts[1].x, orderedSrcPts[2].y - orderedSrcPts[1].y);
               const maxHeight = Math.max(heightLeft, heightRight);
+              // v2.0.6: today's geometry coupling — on INTERSPORT the warp
+              // firing under the corrected (no deskew) frame was the BEST
+              // read ever (total exact 55.99 vs misread 59.99 shipped), on
+              // EUROSPIN the same firing garbles the totals zone (4,29 lost).
+              // A data-driven gate needs full-res quad measurements per
+              // capture — the panel stage images are ≤480px and cannot
+              // reproduce the full-res approxPolyDP decision (live probe
+              // evidence). So: measure and surface the quad geometry, no
+              // behavior change yet.
+              const quadSummary = {
+                w: Math.round(maxWidth),
+                h: Math.round(maxHeight),
+                aspect: +(maxHeight / maxWidth).toFixed(2),
+                areaFrac: +(((widthTop + widthBottom) / 2 * (heightLeft + heightRight) / 2) / (gray.cols * gray.rows)).toFixed(2),
+                hSkew: +(Math.abs(heightLeft - heightRight) / Math.max(heightLeft, heightRight)).toFixed(2),
+              };
+              console.log("📐 Perspective quad:", JSON.stringify(quadSummary));
               const dstPts = [
                 { x: 0, y: 0 },
                 { x: maxWidth - 1, y: 0 },
@@ -452,7 +494,7 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
               const M = cv.getPerspectiveTransform(srcTri, dstTri);
               const warped = new cv.Mat();
               cv.warpPerspective(gray, warped, M, new cv.Size(maxWidth, maxHeight));
-              showIntermediate(warped, "Perspective Corrected");
+              showIntermediate(warped, "Perspective Corrected (quad " + Math.round(maxWidth) + "×" + Math.round(maxHeight) + ", " + Math.round(quadSummary.areaFrac * 100) + "% of frame)");
               gray.delete();
               gray = warped;
               srcTri.delete();
