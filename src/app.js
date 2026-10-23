@@ -439,7 +439,7 @@ export default function App() {
           {stripRescue && <p className="evidence-note">
             Strip-repair cascade ran — recovered item evidence below.
           </p>}
-          <details>
+          <details open>
             <summary>Raw OCR text ({text ? text.split("\n").filter(l => l.trim()).length : 0} lines)</summary>
             <pre className="evidence-raw">{text || "(nothing scanned yet)"}</pre>
           </details>

@@ -384,7 +384,10 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
     /\bEUR\b/i,
     /\b[a-e0-9]:/i,
     /=\s*\d/,
-    /\d{1,2}[.,]\s{0,2}\d{1,2}[.,]\s{0,2}20\d{2}/,
+    // (matches "22.10.2026"-style rows even when OCR blurred a separator into
+    // a space — INTERSPORT phone real case: "…1363170) 16.09 2029 Zav" fused
+    // a date into the line and manufactured a bogus 16.09 item)
+    /\d{1,2}[.,]\s{0,2}\d{1,2}(?:[.,]|\s){0,2}20\d{2}/,
     /mat\.št/i,
     /osn\.kapital/i,
     /popust/i,
@@ -798,6 +801,23 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
           ? { ok: true, text: `tender ${tendered.toFixed(2)} − change ${change.toFixed(2)} = total ✓` }
           : { ok: false, text: `tender ${tendered.toFixed(2)} − change ${change.toFixed(2)} = ${implied.toFixed(2)} ≠ total ${total.toFixed(2)}` }
       );
+    }
+  }
+
+  // v2.0.2: payable-vs-paid conflict check (INTERSPORT phone real case): the
+  // printed "ZA PLAČILO 55,99" OCR-garbled into "59,99" while both the PAID
+  // line ("PLAČANO. TASTERCARU 55,99") and the DDV recap (45,89 + 10,10)
+  // carried the true payable. The tier system keeps the keyword total as-is;
+  // a total that disagrees with the paid amount surfaces as a failing check —
+  // genuinely ambiguous evidence, [?]-flagged, never silently overridden.
+  const paidLine = lines.find((l) => /^(?:pla[čc]ano|placano)\b/i.test(l));
+  if (paidLine && total != null) {
+    const paid = parseAmount("t", (extractLastAmountWithCurrency(paidLine) ?? [])[1]);
+    if (paid != null && Math.abs(paid - total) > 0.011) {
+      checks.push({
+        ok: false,
+        text: `payable ${total.toFixed(2)} ≠ paid ${paid.toFixed(2)} — one of them is misread; verify against photo [?]`,
+      });
     }
   }
 
