@@ -437,3 +437,8 @@ requested).
 - Method lesson: the signer "locked to the AWS vector" was necessary but insufficient — B2's S3 layer deviates from AWS in PUT query-auth. Empirical conformance probing against the REAL service is the actual gate; the vector test now encodes the B2 rule (64/64).
 - Diagnostics panel now: line 0 prints loaded bundle hash (stale-build detector), line 3 real presigned PUT with saved-config fallback (secret never re-typed). Errors name the fetch failure honestly ("may be a refused-without-CORS response").
 - Still open: phone-side end-to-end confirmation (push 943b8ca, rescan); then manifest comparison loop; then capture quality-gates (scores ride the manifest).
+## PHONE CASE #1 + #2 (2026-10-23, after sync fix landed)
+- Confirmed end-to-end: two phone jobs landed in bucket (rule-held diag probe too). Sync WORKS.
+- Case 1 photo is a computer MOUSE, not a receipt — garbage OCR → null parse is correct behavior; date line never OCR'd elsewhere either. No parser change warranted.
+- Case 2 (HOFER, 90° rotated): OCR read OK but (a) bulk selection dropped all but files[0] (found in code: no multiple attr, files[0] only) — fixed to sequential multi-file; (b) footer "HVALA ZA VAS NAKUP!" fused with barcode digits became a bogus 10,26 item that broke the sum check — line-anchored /^hvala\b/i guard; (c) date 22.10.26 17:56 never survived OCR (rotated read dropped that whole region) — null date stands, no overfitted rule; (d) "HOFER CENA" total tier was already correct via candidate ranking.
+- Locked with tests/fixtures/hofer-phone-real.txt + tests/phoneFixtures.test.js (phone OCR verbatim): 67/67.
