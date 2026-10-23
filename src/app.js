@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { processImage, processPDF, cleanAndMergeText } from "./ocrUtils";
 import { parseReceipt } from "./parseReceipt";
-import { loadSyncCfg, saveSyncCfg, clearSyncCfg, uploadScan } from "./sync";
+import { loadSyncCfg, saveSyncCfg, clearSyncCfg, uploadScan, presignS3 } from "./sync";
 
 export default function App() {
   const [text, setText] = useState("");
@@ -434,23 +434,48 @@ function SyncSetupPanel({ syncCfg, onSave, onClear }) {
     const bucket = (form.bucket || "").trim();
     const host = region ? `s3.${region}.backblazeb2.com` : "(no region)";
     lines.push(`endpoint: https://${host}/${bucket}/`);
-    // 1: unsigned simple GET to the bucket root (no preflight) — reachability
+    // 1: unsigned simple GET to the bucket root (no preflight) — ambiguous in
+    // throw terms too: unreachable host AND refused-without-ACAO look identical.
     try {
       const r = await fetch(`https://${host}/${bucket}/`);
-      lines.push(`1 GET bucket root: HTTP ${r.status} (403 expected — unsigned list is refused, but the connection + CORS layer work)`);
+      lines.push(`1 GET bucket root: HTTP ${r.status} (403 expected — connection + CORS layer OK)`);
     } catch (e) {
-      lines.push(`1 GET bucket root: THREW — browser never reached https://${host} (${e?.message})`);
+      lines.push(`1 GET bucket root: THREW (${e?.message}) — ambiguous: unreachable OR un-CORSed error response`);
     }
-    // 2: junk-signature PUT — exercises the full preflight + method path
+    // 2: junk-signature PUT — exercises the preflight path only. Its THREW is
+    // ambiguous: B2 may refuse unsigned/errors without CORS headers, which the
+    // browser surfaces as the same "Failed to fetch" as a dead network.
     try {
       const r = await fetch(`https://${host}/${bucket}/diagProbe.jpg`, {
         method: "PUT",
         body: new Blob(["diag"], { type: "image/jpeg" }),
         headers: { "Content-Type": "image/jpeg" },
       });
-      lines.push(`2 PUT (fake signature): HTTP ${r.status} (401/403 expected — CORS+preflight OK, signature refused as designed)`);
+      lines.push(`2 PUT (fake signature): HTTP ${r.status} (401/403 expected)`);
     } catch (e) {
-      lines.push(`2 PUT (fake signature): THREW — preflight/network layer failed from this page (${e?.message})`);
+      lines.push(`2 PUT (fake signature): THREW (${e?.message}) — ambiguous: network OR un-CORSed error response`);
+    }
+    // 3: REAL presigned PUT — the unambiguous one, identical to the scan path.
+    try {
+      const probeCfg = {
+        region,
+        bucket,
+        keyID: (form.keyID || "").trim(),
+        secretKey: (form.secretKey || "").trim(),
+        prefix: (form.prefix || "").trim(),
+      };
+      const key = `${probeCfg.prefix}diag-probe-${Date.now()}.jpg`;
+      const url = await presignS3(probeCfg, { method: "PUT", key, contentType: "image/jpeg", expires: 600 });
+      const r = await fetch(url, {
+        method: "PUT",
+        body: new Blob(["diag-upload-probe"], { type: "image/jpeg" }),
+        headers: { "Content-Type": "image/jpeg" },
+      });
+      lines.push(r.ok
+        ? `3 REAL presigned PUT: HTTP 200 — SYNC PATH WORKS (diag file stored as ${key})`
+        : `3 REAL presigned PUT: HTTP ${r.status} — ${(await r.text()).slice(0, 140)}`);
+    } catch (e) {
+      lines.push(`3 REAL presigned PUT: THREW (${e?.message}) — if 1+2 also threw: carrier/network blocks the endpoint; if only 3 throws: post-status CORS or key problem`);
     }
     setDiagLines(lines);
     setDiagRunning(false);
