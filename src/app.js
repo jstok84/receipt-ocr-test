@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { processImage, processPDF, cleanAndMergeText } from "./ocrUtils";
 import { parseReceipt } from "./parseReceipt";
+import { loadSyncCfg, saveSyncCfg, clearSyncCfg, uploadScan } from "./sync";
 
 export default function App() {
   const [text, setText] = useState("");
@@ -17,6 +18,13 @@ export default function App() {
   const [copied, setCopied] = useState(false);
   const [dragHover, setDragHover] = useState(false);
 
+  // debug/evidence layer + test sync channel state
+  const [showEvidence, setShowEvidence] = useState(false);
+  const [pipelineMs, setPipelineMs] = useState(null);
+  const [syncCfg, setSyncCfg] = useState(() => loadSyncCfg());
+  const [syncStatus, setSyncStatus] = useState(null); // null | uploading | {ok, photoKey} | error string
+  const [syncSetup, setSyncSetup] = useState(() => location.hash === "#sync");
+
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
 
@@ -24,6 +32,12 @@ export default function App() {
     navigator.mediaDevices?.enumerateDevices().then(devices => {
       setCameraAvailable(devices.some(d => d.kind === "videoinput"));
     });
+  }, []);
+
+  useEffect(() => {
+    const onHash = () => setSyncSetup(location.hash === "#sync");
+    addEventListener("hashchange", onHash);
+    return () => removeEventListener("hashchange", onHash);
   }, []);
 
   useEffect(() => {
@@ -49,9 +63,38 @@ export default function App() {
     } else {
       prepared = rawText.replace(/\n/g, " ");
     }
-    setParsed(parseReceipt(prepared, extraItems, corrections));
+    const result = parseReceipt(prepared, extraItems, corrections);
+    setParsed(result);
     // evidence for the strip-recovered item (null clears it)
     setStripRescue(rescue);
+    return result;
+  };
+
+  // Test sync: photo + manifest straight from the device to the user's
+  // B2 bucket (bucket-scoped key, keyed in localStorage) — dormant until
+  // configured via the #sync setup panel.
+  const maybeSync = async (blob, name, ocr, parsedNow, ms) => {
+    const cfg = syncCfg || loadSyncCfg();
+    if (!cfg || !blob) return;
+    setSyncStatus("uploading");
+    try {
+      const info = await uploadScan(cfg, {
+        blob,
+        ts: Date.now(),
+        device: cfg.device || "",
+        name,
+        text: ocr.text,
+        parsed: parsedNow,
+        rescue: ocr.rescue,
+        corrections: ocr.corrections,
+        ms,
+        ua: navigator.userAgent,
+      });
+      setSyncStatus({ ok: true, jsonKey: info.jsonKey });
+    } catch (err) {
+      console.warn("Sync failed:", err);
+      setSyncStatus("sync failed: " + (err?.message || err));
+    }
   };
 
   const handleCapture = async () => {
@@ -92,13 +135,14 @@ export default function App() {
         const ctx = canvas.getContext("2d");
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-        const dataUrl = canvas.toDataURL("image/jpeg");
-        setCapturedImage(dataUrl);
-
+        const t0 = performance.now();
         const result = await processImage(dataUrl);
         setText(result.text);
-        runParsing(result.text, result.extraItems, result.rescue, result.corrections, true);
+        const parsedNow = runParsing(result.text, result.extraItems, result.rescue, result.corrections, true);
+        setPipelineMs(Math.round(performance.now() - t0));
         setLoading(false);
+        // canvas-frame blob for the sync channel
+        maybeSync(await fetch(dataUrl).then(r => r.blob()), "camera-capture.jpg", result, parsedNow, Math.round(performance.now() - t0));
         return;
       }
 
@@ -108,10 +152,14 @@ export default function App() {
         const dataUrl = reader.result;
         setCapturedImage(dataUrl);
 
+        const t0 = performance.now();
         const result = await processImage(dataUrl);
         setText(result.text);
-        runParsing(result.text, result.extraItems, result.rescue, result.corrections, true);
+        const parsedNow = runParsing(result.text, result.extraItems, result.rescue, result.corrections, true);
+        const ms = Math.round(performance.now() - t0);
+        setPipelineMs(ms);
         setLoading(false);
+        maybeSync(blob, "camera-capture.jpg", result, parsedNow, ms);
       };
       reader.readAsDataURL(blob);
     } catch (err) {
@@ -135,9 +183,13 @@ export default function App() {
 
     try {
       if (isImage) {
+        const t0 = performance.now();
         const result = await processImage(file);
         setText(result.text);
-        runParsing(result.text, result.extraItems, result.rescue, result.corrections, true);
+        const parsedNow = runParsing(result.text, result.extraItems, result.rescue, result.corrections, true);
+        const ms = Math.round(performance.now() - t0);
+        setPipelineMs(ms);
+        maybeSync(file, file.name, result, parsedNow, ms);
       } else if (isPDF) {
         const { text: pdfText, previews } = await processPDF(file);
         setText(pdfText);
@@ -180,16 +232,33 @@ export default function App() {
     <div className="container">
       <header className="app-header">
         <h1>Receipt OCR</h1>
-        <button
-          className="btn ghost mini"
-          onClick={() => setUseFlatMode(!useFlatMode)}
-        >
-          {useFlatMode ? "Switch to line mode" : "Switch to flat mode"}
-        </button>
+        <div className="header-actions">
+          <button
+            className="btn ghost mini"
+            onClick={() => setShowEvidence(!showEvidence)}
+            title="raw OCR text, cascade attempts, pipeline timing"
+          >
+            evidence
+          </button>
+          <button
+            className="btn ghost mini"
+            onClick={() => setSyncSetup(!syncSetup)}
+            title="test sync channel setup (device-to-bucket)"
+          >
+            sync
+          </button>
+          <button
+            className="btn ghost mini"
+            onClick={() => setUseFlatMode(!useFlatMode)}
+          >
+            {useFlatMode ? "Switch to line mode" : "Switch to flat mode"}
+          </button>
+        </div>
       </header>
       <p className="app-status">
         Mode: {useFlatMode ? "flat (no line breaks)" : "line-based"} · everything is
-        processed locally in your browser
+        processed locally in your browser{syncCfg ? " · sync on" : ""}
+        {syncStatus ? ` · ${typeof syncStatus === "string" ? syncStatus : syncStatus.ok ? "synced ✓" : ""}` : ""}
       </p>
 
       <section
@@ -298,6 +367,90 @@ export default function App() {
           </div>)}
         </div>
       </details>}
+
+      {showEvidence && <section className="panel evidence">
+        <div className="panel-head">
+          <h2>Debug evidence</h2>
+          <span className="evidence-meta">
+            {pipelineMs != null
+              ? `pipeline ${pipelineMs} ms`
+              : "no pipeline timing yet"}
+            {" "}· {stripRescue?.attempts?.length || 0} cascade attempt(s)
+          </span>
+        </div>
+        <div className="evidence-body">
+          <p className="evidence-note">
+            Raw OCR text (post-cleanup, pre-parse). Cascade attempt lines appear
+            below whenever a strip-repair cascade ran.
+          </p>
+          <pre className="evidence-raw">{text || "(nothing scanned yet)"}</pre>
+          {stripRescue?.attempts.map((a, i) => <div className="attempt" key={i}>
+            <div className="attempt-label">
+              attempt {i + 1}: strip={a.stripKind}
+              {" "}band={Math.round(a.band[0] * 100)}–{Math.round(a.band[1] * 100)}%
+              {" "}{a.factor}× {a.kernel === "lanczos3" ? "lanczos3" : "catrom"}
+              {" "}PSM={a.psm}
+            </div>
+            {a.image && <img src={a.image} alt={`strip attempt ${i + 1}`} />}
+            <pre>{a.lines.join("\n")}</pre>
+          </div>)}
+        </div>
+      </section>}
+
+      {syncSetup && <SyncSetupPanel
+        syncCfg={syncCfg}
+        onSave={cfg => { saveSyncCfg(cfg); setSyncCfg(loadSyncCfg()); }}
+        onClear={() => { clearSyncCfg(); setSyncCfg(null); }}
+      />}
     </div>
   );
+}
+
+function SyncSetupPanel({ syncCfg, onSave, onClear }) {
+  const Empty = {
+    region: "eu-central-003",
+    bucket: "receipt-test",
+    keyID: "",
+    secretKey: "",
+    prefix: "receipts/S25/",
+    device: "S25",
+  };
+  const [form, setForm] = useState(() => ({
+    ...Empty,
+    ...(syncCfg ? { ...syncCfg, secretKey: "" } : {}),
+  }));
+  const field = (k, label, type = "text") => <label className="row">
+    <span className="field-label">{label}</span>
+    <input type={type} value={form[k]} onChange={e => setForm({ ...form, [k]: e.target.value })} />
+  </label>;
+  return <section className="panel setup">
+    <div className="panel-head"><h2>Test sync setup (device → your B2 bucket)</h2></div>
+    <div className="evidence-body">
+      <p className="evidence-note">
+        Paste the device application key (writeFiles, prefix-scoped). It is
+        stored only in this browser's localStorage — never in any bundle.
+        Secret shown as zero characters to others; keep it out of screenshots.
+      </p>
+      {field("region", "B2 region (e.g. eu-central-003 — fixed at signup)")}
+      {field("bucket", "Bucket name")}
+      {field("keyID", "Application key ID")}
+      {field("secretKey", "Application key secret", "password")}
+      {field("prefix", "File prefix")}
+      {field("device", "Device label (single short token)")}
+      <div className="actions">
+        <button className="btn primary" onClick={() => {
+          if (!form.region || !form.bucket || !form.keyID || !form.secretKey) return;
+          onSave({ ...form, prefix: form.prefix.replace(/\/?$/, "/") });
+          setForm(f => ({ ...f, secretKey: "" }));
+        }}>Save sync config</button>
+        <button className="btn ghost" onClick={() => { onClear(); setForm(Empty); }}>
+          Clear and disable
+        </button>
+      </div>
+      {syncCfg && <p className="evidence-note">
+        Active: prefix <code>{syncCfg.prefix}</code>, device{" "}
+        <code>{syncCfg.device}</code>, key <code>…{syncCfg.keyID.slice(-6)}</code>
+      </p>}
+    </div>
+  </section>;
 }

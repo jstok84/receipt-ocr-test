@@ -395,6 +395,71 @@ lives once, in the checks list below.
 
 /* ----- strip evidence ------------------------------------------------------ */
 
+/* ----- evidence (debug) panel -------------------------------------------- */
+
+.evidence-meta {
+  font: 11.5px var(--font-mono);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.evidence-note {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.evidence-raw {
+  margin: 0 0 12px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: var(--bg);
+  font: 12px/1.45 var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 40vh;
+  overflow: auto;
+}
+
+/* ----- sync setup panel --------------------------------------------------- */
+
+.setup .row {
+  display: block;
+  margin: 8px 0 0;
+}
+
+.setup .field-label {
+  display: block;
+  font-size: 11px;
+  color: var(--ink-2);
+  margin-bottom: 3px;
+}
+
+.setup input {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+  font: 12.5px var(--font-mono);
+}
+
+.setup .actions {
+  margin-top: 12px;
+}
+
+.setup code {
+  font: 12px var(--font-mono);
+  color: var(--ink-2);
+}
+
+.header-actions {
+  display: flex;
+  gap: 6px;
+}
+
+/* ----- OCR evidence (strip rescue) panel ---------------------------------- */
 .evidence summary {
   list-style: none;
   cursor: pointer;
