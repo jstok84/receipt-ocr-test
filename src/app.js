@@ -206,14 +206,18 @@ export default function App() {
   };
 
   const handleFileUpload = async e => {
-    await handleFiles(e.target.files?.[0]);
+    // Bulk selection: process every picked file sequentially — earlier builds
+    // took only files[0] and silently dropped the rest of a multi-selection.
+    for (const f of e.target.files) {
+      await handleFiles(f);
+    }
     e.target.value = ""; // allow re-selecting the same file
   };
 
   const handleDrop = e => {
     e.preventDefault();
-    const f = e.dataTransfer?.files?.[0];
-    if (f) handleFiles(f);
+    const files = Array.from(e.dataTransfer?.files ?? []);
+    if (files.length) return (async () => { for (const f of files) await handleFiles(f); })();
   };
 
   const handleDragOver = e => e.preventDefault();
@@ -271,7 +275,7 @@ export default function App() {
         <p>Photograph or saved PDF — processing stays on this device</p>
         <label className="btn primary file-label">
           Choose file
-          <input type="file" accept="image/*,.pdf" onChange={handleFileUpload} />
+          <input type="file" accept="image/*,.pdf" multiple onChange={handleFileUpload} />
         </label>
       </section>
 

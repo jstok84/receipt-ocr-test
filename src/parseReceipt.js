@@ -357,6 +357,10 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
     /(?:\s|^)\d+(?:\s\d+){4,}(?:\s|$)/,
     /\bdenar\b/i,
     /vra[čc]il[ao]/i,
+    // Gratitude footer (phone HOFER real case): "HVALA ZA VAS NAKUP!" OCR-fused
+    // with neighboring barcode digits ("HVALA Z 10,26 17. | SODNA" manufactured a
+    // bogus 10,26 item whose involvement breaks the items-sum check). Always machinery.
+    /^hvala\b/i,
     /\bcash\b/i,
     // VAT recap rows (HOFER real case: "Ca ok Neto 2,6900V 0,25" and
     // "B 22,0% Neto 1,47 …" — the DDV rekapitulacija with "Neto" surviving
