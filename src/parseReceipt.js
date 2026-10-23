@@ -473,9 +473,97 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
     items.push(extra);
   }
 
+  // v2.0.13: INTERSPORT qty×price format. The receipt prints the item name
+  // row and, UNDER it, a Količina × Cena Znesek row; two live readings of the
+  // same block exist:
+  //   phone-era fixture:  "=, 3849687 158° JAKNA W.poH SRIMFIELD 548" + "1 000 x 79,99 79.89 E"
+  //   current geometry:   "6438496671565 JAKNA M POH BRIMFIELD $48" + "1,000 x 79.99 (999"
+  // The name row's own price column is print-column garble ("548"/"$48" of the
+  // true 79,99) — a bare-int repair turns it into a phantom 5,48 item, while
+  // the MEASURED unit price only survives on the ×-row. Handle BOTH sides from
+  // the ×-row: it claims its PREDECESSOR as the name donor. Donor conditions
+  // (strict): passes the same guards the item loop applies, has a lettered
+  // name, and carries NO decimal amount of its own (its price is suspect; a
+  // cleanly priced line is never hijacked). The ×-row itself becomes the item;
+  // the donor never produces a fallback item.
+  const xRowByXLine = new Map();
+  const donorLines = new Set();
+  for (let xi = 1; xi < lines.length; xi++) {
+    const xm = lines[xi].match(
+      /^(\d+(?:[.,]\d{3})*(?:[ \u00A0]\d{3})*)\s*[x×]\s*(\d+[.,]\d{2}|\d+\.\d{3}[.,]\d{2})(?:\s+\d+[.,]\d{2})?/i
+    );
+    if (!xm) continue;
+    const donor = lines[xi - 1];
+    if ((donor.match(/[a-zA-ZčšžČŠŽ]{3,}/g) || []).length < 1) continue;
+    if (/\d[.,]\d/.test(donor)) continue;
+    if (
+      dateTimePattern.test(donor) ||
+      shouldExcludeLine(donor, excludeKeywords) ||
+      nonItemPatterns.some((pat) => pat.test(donor))
+    ) {
+      log(`  ×-row "${lines[xi]}" has no valid donor (guards failed on "${donor}")`);
+      continue;
+    }
+    const unit = parseFloat(xm[2].replace(",", "."));
+    if (!(unit > 0 && unit <= 10000)) continue;
+    // Quantity: "1,000" / "1 000" = one unit in a thousands grouping; a plain
+    // small integer stores as-is; anything else stays undefined (honest N/A).
+    let qty;
+    const compact = xm[1].replace(/[ \u00A0]/g, "");
+    const th = compact.match(/^(\d{1,3})[.,]\d{3}$/);
+    if (th) qty = parseInt(th[1], 10);
+    else if (/[ \u00A0]/.test(xm[1])) {
+      const grp = compact.match(/^(\d{1,2})\d{3}$/);
+      qty = grp ? parseInt(grp[1], 10) : undefined;
+    } else {
+      qty = parseInt(compact, 10);
+      if (isNaN(qty)) qty = undefined;
+    }
+    if (qty !== undefined && (qty <= 0 || qty >= 100)) qty = undefined;
+    // Name: strip leading figure/punctuation tokens (junk edge + SKU/qty
+    // column bleed) and trailing figure tokens (the garbled price column).
+    const nameToks = donor.trim().split(/\s+/).filter(Boolean);
+    while (nameToks.length > 1 && /^[\d.,%°$€§=]{1,16}$/.test(nameToks[0])) nameToks.shift();
+    while (
+      nameToks.length > 1 &&
+      /^[$€]?\d{1,3}[.,]?%?$/.test(nameToks[nameToks.length - 1])
+    ) {
+      nameToks.pop();
+    }
+    while (nameToks.length > 1 && /^[\d.,%°$€§]{1,16}$/.test(nameToks[0])) nameToks.shift();
+    const name = nameToks.join(" ");
+    if ((name.match(/[a-zA-ZčšžČŠŽ]/g) || []).length < 3) continue;
+    donorLines.add(donor);
+    if (!xRowByXLine.has(lines[xi])) xRowByXLine.set(lines[xi], { name, unit, qty, donor });
+  }
+
   // Parse items with support for Spar multi-column format and fallback generic parsing
-  for (const line of lines) {
+  for (let li = 0; li < lines.length; li++) {
+    const line = lines[li];
     log(`Checking line: "${line}"`);
+
+    // v2.0.13 ×-row (INTERSPORT): becomes the merged item straight from its
+    // precomputed donor (the ×-row's own "name" side is figures-only, it
+    // could never be a fallback item anyway).
+    if (xRowByXLine.has(line)) {
+      const xr = xRowByXLine.get(line);
+      log(
+        `  Detected item (qty×price row, donor "${xr.donor}"): name="${xr.name}", price=${xr.unit.toFixed(
+          2
+        )} ${currency}, quantity=${xr.qty ?? "N/A"}`
+      );
+      items.push({
+        name: xr.name,
+        price: `${xr.unit.toFixed(2)} ${currency}`,
+        quantity: xr.qty,
+      });
+      continue;
+    }
+
+    if (donorLines.has(line)) {
+      log("  Skipping donor line (merged with the qty×price row below).");
+      continue;
+    }
 
     // Skip lines with date/time metadata pattern
     if (dateTimePattern.test(line)) {

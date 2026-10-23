@@ -489,7 +489,53 @@ The user provided a manual crop of the EUROSPIN photo (Downloads\\scan-eurospinc
   HOFER: FULL CLEAN PARSE — all 3 items exact (Brioš 3.36, Skleda 8.49, Cola 0.29), total 12.14, and now a GREEN "items sum = total" check. Best result of the project on this photo.
 - LOOP EXIT (user-observed, recorded verbatim): I kept adjusting rotation inside the crop step (crop's own rotate → deadband fallback → tight-rotate → text-aligned selection) and verified each variant against cross-frame Hough readings that were not measuring the same content — sign "solutions" kept contradicting themselves because the deskew input frame differed per geometry and the mat/glare loaded the profiles differently. The exit was DESIGN-LEVEL, not Tuning: SELECTION and ROTATION are separate problems. Crop = selection only (profile cut, no rotation). Rotation = ONLY the deskew, driven by the trustable text angle with its 1° deadband. There is no crop-side angle left to fight about. The "rotated"/"rotatedFlip" autoCropMode options now behave identically (selection is the whole story) — accepted for legacy __OCR_OPTS scripts, documented retired.
 - FOLLOW-UPS (updated): (f) totals-zone parser: EU today shows the tag surviving and ONE DIGIT wobbling (4.29→4.20) — candidate: accept the amounts-zone value when the sum-check proves it (items sum 4.29 IS the total — the check literally computed the contradiction). (a)-(c),(e),(g) unchanged; (g) autoCropMode-default revisit is now MOOT: there is one crop rule.
-## HOFER-B REGRESSIONCHASED (2026-10-24, second HOFER capture identified + two parser fixes)
+## INTERSPORT items closed: qty×price format (2026-10-24, v2.0.13) + SPAR preprocessing A/B + lanczos-family taxonomy (user's three claims)
+
+- (1) "INTERSPORT has no items — regression!": honest history established first (git + phone-artifact
+  JSONs, `phone1/receipts_S25_*.json`): the OLD deployed build's 2 "items" were BOTH wrong —
+  phantom `"CO. RN aa 9- 1363170)" 16.09` (fused date) and `"JAKNA … 548" 5.48` (real item, price
+  misread). Today's 0 = no junk, but the REAL item was also missing → omission, not a pure defense.
+  THE FORMAT FACT: INTERSPORT prints the item name row and, UNDER it, a Količina × Cena Znesek row.
+  The name row's price column garbles to a bare figure ("548" fixture-era / "$48" current geometry)
+  while the MEASURED unit price 79,99 only survives on the ×-row ("1 000 x 79,99 79.89 E" /
+  "1,000 x 79.99 (999"). FIX (v2.0.13, `parseReceipt.js`): precompute ×-rows (start-anchored
+  `digits[x×]amount` with comma/space thousands-grouped qty, optional second amount, tail tolerated);
+  each ×-row claims its PREDECESSOR as name donor — donor must pass the item-loop guards
+  (dateTime/exclude/nonItem), have a lettered name, and carry NO decimal amount of its own (its
+  price is suspect; a cleanly priced row is never hijacked). Name = donor minus leading/trailing
+  figure tokens (SKU/junk edge/price garble); price+quantity from the ×-row ("1,000"/"1 000" → 1).
+  Fixture pins extended (qty×price merged item, SKU stripped, phantom 5.48 forbidden).
+  LIVE MATRIX after (all five captures re-run, standing rule): INTERSPORT **2 wrong/0 → 1 REAL item
+  ("JAKNA M POH BRIMFIELD" 79.99 ×1, measured) + total 55.99 exact + honest popust-sum flag**;
+  HOFER-A 3/12.14/green ✓; HOFER-B 3/3 (Krüger strip) /4.73/green ✓; EUROSPIN 3/4.20+flag ✓;
+  SPAR 26/51.61+popust flag ✓ (no false rescue). Tests 79/79 (78+1 new).
+- (2) "SPAR looks worse after opencv preprocessing — look into it": measured, both halves.
+  TEXT A/B (live, same file): contrast stretch OFF (via `__OCR_OPTS {contrastStretch:false}`) read
+  **26 items / total 51.61 / 61 OCR lines** vs stretch ON (default) **26 / 51.61 / 62 lines** —
+  identical outcomes; the stretch neither helps nor hurts SPAR's numbers (it is scan-class:
+  background 221-254 vs paper 236). VISUAL A/B (stage images side by side): preprocessed stage is
+  CRISPER — text darker, background whiter; the visible difference is the dot-matrix separator rows
+  ("****…") rendering heavier/messier and the print-through note getting stronger contrast. That is
+  a cosmetic judgment, not a data change. Guard history preserved: every measured-harmful knob
+  (adaptiveThresholding, CLAHE, denoise, unsharp, invert, thresholding) is OFF by default; the only
+  ON enhancement is the contrast stretch that measured +2 items/3 on EUROSPIN (`ocr-eurospin2`) —
+  so it CANNOT be globally removed without an evidence-based gate. No change made; if the heavier
+  separator rows bother you, say so and a scan-class-specific stretch gate can be explored WITH the
+  EUROSPIN-class counter-evidence respected.
+- (3) "it wasn't just hofer rescued with 'lanczos' family corrections" — CORRECT, taxonomy from the
+  ledger: the strip/band re-OCR machinery (resampling cascade: catrom default + lanczos3 as the
+  5th band-cascade attempt) has THREE documented receivers:
+  · HOFER-B Krüger 1,79 — top-strip rescue (v1.7.2; the strip design predates the
+    lanczos3 attempt, which the cascade later shared);
+  · EUROSPIN FROLLINI 1,55 — band re-OCR (v1.7.6), the case that PROVED no single kernel wins
+    (lanczos3 reads 1,55 at 40-75% band where catrom loses the row; catrom wins at 35-75%; sharp's
+    own lanczos3 flips 1,55→1,854 — hence the 5-attempt cascade, not a kernel swap);
+  · SPAR coupon — NEGATIVE receiver: the band rescue fired on SPAR's legit 57.35→51.61 coupon gap
+    and corrupt-4-items story (wrong-item fuzzy match, PSM-4 overwrites, popust-column swap) → the
+    v1.7.6 fix gates it: no band rescue when /popust|doplac/ markers present. SPAR today stays
+    honest-flag-only BY DESIGN, not by accident.
+  The user's point stands: this is corpus-wide machinery, not a HOFER one-off.
+
 User challenged "hofer is in regression" → I initially mis-attributed it (invented "new second capture" story). Corrected by following the git: `Downloads\hoferracun1.jpg` IS the HOFER EFT capture — in the corpus since v1.6.8/v1.7.2 as `tests/fixtures/hofer-scan-real.txt` + `hofer-eft-scan.txt` (`fab8ef0`, `25cb7bd`), physically DIFFERENT from HOFER-A (`hofer-phone.jpg`, the 3000×4000 full-frame shot — re-verified identical after every change today). Facts, all measured:
 - THE FILE: 1280×961 **AVIF container with .jpg extension** (magic `00 00 00 20 66 74 79 70 61 76 69 66`; the four B2 phone captures are true EXIF JPEGs). Receipt TAIL: top cut off, mirrored print-through text from the roll behind, washed top line (Krüger 1,79). Full-frame OCR garbles its price EVERYWHERE (fixture header: "unrecoverable"; live reads "oi 8"/"8" both geometries); the top-strip re-OCR at 3× is the designed recoverer (v1.7.2).
 - DEPLOYED SITE = morning commit `7e9342a` bundle (`183f67d5`): landmark-verified (profile cut in, ink-edge absent, evidence panel, HVALA/otovina, vmesna-vsota anchors absent). Its live HOFER-B outcome: 3/3 items (Krüger via strip rescue) + total 4,73 + green sum + provenance flag.
