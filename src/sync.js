@@ -26,8 +26,10 @@ export function loadSyncCfg() {
 }
 
 export function saveSyncCfg(cfg) {
-  if (!cfg.prefix.endsWith("/")) cfg.prefix += "/";
-  localStorage.setItem(CFG_KEY, JSON.stringify(cfg));
+  const clean = {};
+  for (const [k, v] of Object.entries(cfg)) clean[k] = String(v ?? "").trim();
+  if (!clean.prefix.endsWith("/")) clean.prefix += "/";
+  localStorage.setItem(CFG_KEY, JSON.stringify(clean));
 }
 
 export function clearSyncCfg() {
@@ -133,12 +135,21 @@ async function sha1Hex(buf) {
 }
 
 async function putObject(cfg, key, blob, contentType) {
+  const host = `s3.${cfg.region}.backblazeb2.com`;
   const url = await presignS3(cfg, { key, method: "PUT", contentType, expires: 1800 });
-  const res = await fetch(url, {
-    method: "PUT",
-    body: blob,
-    headers: { "Content-Type": contentType },
-  });
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "PUT",
+      body: blob,
+      headers: { "Content-Type": contentType },
+    });
+  } catch (err) {
+    // Browsers give this the opaque name "Failed to fetch"; the host is the
+    // actionable part — a DNS- dead region (typo) looks exactly like a CORS
+    // refusal from in-page diagnostics that only see this exception.
+    throw new Error(`network: cannot reach https://${host} (${err?.message || err})`);
+  }
   if (!res.ok) {
     const detail = (await res.text()).slice(0, 160);
     throw new Error(`B2 upload failed (HTTP ${res.status}): ${detail}`);

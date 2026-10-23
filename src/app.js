@@ -419,6 +419,43 @@ function SyncSetupPanel({ syncCfg, onSave, onClear }) {
     ...Empty,
     ...(syncCfg ? { ...syncCfg, secretKey: "" } : {}),
   }));
+  const [diagRunning, setDiagRunning] = useState(false);
+  const [diagLines, setDiagLines] = useState([]);
+
+  // Diagnostics run from THE PAGE, i.e. the same browser/network as the
+  // failing scan — external probes cannot see this network hop. Each line's
+  // shape identifies a different layer:
+  //   "…HTTP 403"  → connection + CORS layer both fine (B2 answered)
+  //   "…THREW…"    → browser never got a response: DNS/network/preTLS
+  const runDiagnostics = async () => {
+    setDiagRunning(true);
+    const lines = [];
+    const region = (form.region || "").trim();
+    const bucket = (form.bucket || "").trim();
+    const host = region ? `s3.${region}.backblazeb2.com` : "(no region)";
+    lines.push(`endpoint: https://${host}/${bucket}/`);
+    // 1: unsigned simple GET to the bucket root (no preflight) — reachability
+    try {
+      const r = await fetch(`https://${host}/${bucket}/`);
+      lines.push(`1 GET bucket root: HTTP ${r.status} (403 expected — unsigned list is refused, but the connection + CORS layer work)`);
+    } catch (e) {
+      lines.push(`1 GET bucket root: THREW — browser never reached https://${host} (${e?.message})`);
+    }
+    // 2: junk-signature PUT — exercises the full preflight + method path
+    try {
+      const r = await fetch(`https://${host}/${bucket}/diagProbe.jpg`, {
+        method: "PUT",
+        body: new Blob(["diag"], { type: "image/jpeg" }),
+        headers: { "Content-Type": "image/jpeg" },
+      });
+      lines.push(`2 PUT (fake signature): HTTP ${r.status} (401/403 expected — CORS+preflight OK, signature refused as designed)`);
+    } catch (e) {
+      lines.push(`2 PUT (fake signature): THREW — preflight/network layer failed from this page (${e?.message})`);
+    }
+    setDiagLines(lines);
+    setDiagRunning(false);
+  };
+
   const field = (k, label, type = "text") => <label className="row">
     <span className="field-label">{label}</span>
     <input type={type} value={form[k]} onChange={e => setForm({ ...form, [k]: e.target.value })} />
@@ -440,13 +477,25 @@ function SyncSetupPanel({ syncCfg, onSave, onClear }) {
       <div className="actions">
         <button className="btn primary" onClick={() => {
           if (!form.region || !form.bucket || !form.keyID || !form.secretKey) return;
-          onSave({ ...form, prefix: form.prefix.replace(/\/?$/, "/") });
+          onSave({
+            ...form,
+            region: form.region.trim(),
+            bucket: form.bucket.trim(),
+            keyID: form.keyID.trim(),
+            secretKey: form.secretKey.trim(),
+            prefix: form.prefix.trim().replace(/\/?$/, "/"),
+            device: form.device.trim(),
+          });
           setForm(f => ({ ...f, secretKey: "" }));
         }}>Save sync config</button>
-        <button className="btn ghost" onClick={() => { onClear(); setForm(Empty); }}>
+        <button className="btn ghost" onClick={() => { clearSyncCfg(); setSyncCfg(null); }}>
           Clear and disable
         </button>
+        <button className="btn ghost" disabled={diagRunning} onClick={runDiagnostics}>
+          {diagRunning ? "Testing…" : "Test connection"}
+        </button>
       </div>
+      {diagLines.length > 0 && <div className="evidence-note"><pre className="evidence-raw">{diagLines.join("\n")}</pre></div>}
       {syncCfg && <p className="evidence-note">
         Active: prefix <code>{syncCfg.prefix}</code>, device{" "}
         <code>{syncCfg.device}</code>, key <code>…{syncCfg.keyID.slice(-6)}</code>
