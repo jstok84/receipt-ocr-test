@@ -81,10 +81,12 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
       // late-stage cropToContent was measured harmful (fixed 240 BINARY_INV dark-mask ->
       // selected the BACKGROUND on cluttered photos and cropped into the receipt), so it
       // was disabled; the new crop isolates the paper before geometry stages run.
-      autoCropMode = "axis", // v2.0.3 candidate: "axis" (current, bounding box keeps tilted
-      // receipts' background), "rotated" / "rotatedFlip" (tight text-aligned rotate-crop —
-      // realigns the receipt as a side effect). Default stays "axis" until the live A/B
-      // on real photos decides; overridden via window.__OCR_OPTS for evidence runs.
+      autoCropMode = "axis", // v2.0.9: "axis" (default, bbox cut) or "rotated" — tight
+      // TEXT-ALIGNED selection (white background fill outside the paper's
+      // text-aligned quad, zero pixel rotation — see cropToReceipt). The old
+      // "rotatedFlip" sign channel is retired: the selection rotates nothing,
+      // so there is no sign left to flip; both names behave identically now
+      // (kept accepted for old __OCR_OPTS evidence scripts).
       // v2.0.5: the rotation angle comes from text-line direction (textAngleOf),
       // NOT minAreaRect — that one reported junk ~10° on a ~0° tilted receipt.
       // v2.0.5: rotation sign for the text-angle correction. NUMERICALLY
@@ -234,8 +236,8 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
       }
 
       function maskOf(m) {
-        // Otsu bright mask + closing: the paper is the brieright region
-        // (thermal paper is the bright region vs dark background); closing bridges fold shadows
+        // Otsu bright mask + closing: the paper is the bright region
+        // (thermal paper vs dark background); closing bridges fold shadows
         // that would otherwise split it into several blobs.
         const binary = new cv.Mat();
         cv.threshold(m, binary, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
@@ -248,88 +250,102 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
       }
 
       function cropToReceipt(mat, mode = "axis") {
-        // Isolate the paper from cluttered backgrounds (EUROSPIN real case:
-        // black mesh mat + keyboard). Otsu bright mask selects the paper,
-        // morphological closing bridges fold shadows that split it, then the
-        // largest bright region is bounded and cut with a small margin.
-        // Sanity guards leave the image untouched when no paper-sized region
-        // is found (no crop-below-threshold surprises).
-        // v2.0.5 "rotated"/"rotatedFlip": rotate the WHOLE frame so the TEXT
-        // is horizontal (angle from textAngleOf — the previous minAreaRect
-        // source reported ~10° on a ~0° tilted INTERSPORT receipt, realigning
-        // the text 10° off with the deskew unable to undo it), then cut the
-        // axis-aligned bounding box of the rotated mask. Below the 1° deadband
-        // or with no confident baselines it falls back to the plain axis crop
-        // — realigning by <1° was always a no-op for OCR. "rotatedFlip" keeps
-        // its role as the sign-verification channel by flipping the sign.
-        let frame = mat;
-        let owned = null; // rotated frame copy we must free
-        let closed = maskOf(frame);
-        const T = mode !== "axis" ? textAngleOf(frame) : null;
-        if (T !== null && Math.abs(T) > 1.0) {
-          let angle = (textAngleSign === "neg" ? -1 : 1) * T;
-          if (mode === "rotatedFlip") angle = -angle;
-          const center = new cv.Point(mat.cols / 2, mat.rows / 2);
-          owned = rotatedMat(frame, angle, center, true);
-          closed.delete();
-          closed = maskOf(owned);
-          frame = owned;
-          console.log("✂️ Receipt region (text-aligned): rotated", +angle.toFixed(2) + "° (text tilt " + +T.toFixed(2) + "°)");
-        } else if (mode !== "axis") {
-          console.log("↩️ Receipt region: text angle below 1° deadband or unmeasurable — axis crop" +
-            (T !== null ? " (tilt " + +T.toFixed(2) + "°)" : ""));
-          mode = "axis";
-        }
-        const imgArea = frame.rows * frame.cols;
+        // v2.0.10 PROJECTION-PROFILE CUT — selection only, NO rotation, NO
+        // contours (user's crop, validated live: the paper is the brightest
+        // surface, so at an absolute 160-threshold each COLUMN/ROW through
+        // the paper scores a high bright-fraction while desk/keyboard rows
+        // score ~0 despite glare speckle). History: contour-bbox selected
+        // paper+glare and kept 94% of the INTERSPORT frame; minAreaRect
+        // rotate-cuts sheared the text (entered the rotation-loop); the
+        // text-aligned selection-crop executed but its locator (Otsu blob)
+        // covered the paper everywhere it existed. On EU the cut reproduces
+        // the user's manual crop boundaries (live probe: x[234..901],
+        // y[386..~1490] vs measured paper edges y 390..~1480 via strip
+        // brightness), on INTERSPORT it is a ~no-op (full-frame paper ✓).
+        // Fail-safes: no qualifying band → fall back to the old contour
+        // bbox; profiles are smoothed (moving average, ~4% frame) so fold
+        // shadows inside the paper never split the band.
         let result = null;
-        const contours = new cv.MatVector();
-        const hierarchy = new cv.Mat();
-        cv.findContours(closed, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-        let maxContour = null;
-        let maxArea = 0;
-        for (let i = 0; i < contours.size(); i++) {
-          const contour = contours.get(i);
-          const area = cv.contourArea(contour);
-          if (area > maxArea) {
-            maxArea = area;
-            if (maxContour) maxContour.delete(); // replaced wrapper — free it
-            maxContour = contour;
-          } else {
-            contour.delete(); // non-max wrappers are unused — free them
-          }
-        }
-        if (maxContour) {
-          const rect = cv.boundingRect(maxContour);
-          const boxOk =
-            rect.width >= 0.25 * frame.cols &&
-            rect.height >= 0.25 * frame.rows &&
-            rect.width * rect.height >= 0.15 * imgArea;
-          if (boxOk) {
-            const mx = Math.round(frame.cols * 0.02);
-            const my = Math.round(frame.rows * 0.02);
-            const x = Math.max(0, rect.x - mx);
-            const y = Math.max(0, rect.y - my);
-            const w = Math.min(frame.cols - x, rect.width + 2 * mx);
-            const h = Math.min(frame.rows - y, rect.height + 2 * my);
-            const roi = frame.roi({ x, y, width: w, height: h });
+        try {
+          const W = mat.cols, H = mat.rows;
+          const binary = new cv.Mat();
+          cv.threshold(mat, binary, 160, 255, cv.THRESH_BINARY);
+          const cols = new cv.Mat(), rows = new cv.Mat();
+          cv.reduce(binary, cols, 0, cv.REDUCE_AVG, cv.CV_32F);
+          cv.reduce(binary, rows, 1, cv.REDUCE_AVG, cv.CV_32F);
+          const smooth = Math.max(11, Math.round(Math.min(W, H) * 0.04) | 1);
+          const findBand = (data, len, frac) => {
+            let a0 = -1, a1 = -1;
+            for (let i = 0; i < len; i++) {
+              let sum = 0, cnt = 0;
+              for (let q = Math.max(0, i - smooth); q <= Math.min(len - 1, i + smooth); q++) { sum += data[q]; cnt++; }
+              if (sum / cnt / 255 >= frac) { if (a0 < 0) a0 = i; a1 = i; }
+            }
+            return a0 < 0 ? null : [a0, a1];
+          };
+          // rows admit a slightly lower fraction than columns (shadowed
+          // paper edges thread the bottom rows: probe 0.63-0.85 bright).
+          const band = {
+            x: findBand(cols.data32F, W, 0.3),
+            y: findBand(rows.data32F, H, 0.2),
+          };
+          cols.delete(); rows.delete(); binary.delete();
+          if (band.x && band.y) {
+            const mx = Math.round(W * 0.02), my = Math.round(H * 0.02);
+            const x = Math.max(0, band.x[0] - mx);
+            const y = Math.max(0, band.y[0] - my);
+            const w = Math.min(W - x, band.x[1] - band.x[0] + 1 + 2 * mx);
+            const h = Math.min(H - y, band.y[1] - band.y[0] + 1 + 2 * my);
+            const roi = mat.roi({ x, y, width: w, height: h });
             result = roi.clone();
             roi.delete();
-            console.log(mode === "axis"
-              ? "✂️ Receipt region:" + " " + JSON.stringify({ x, y, w, h })
-              : "✂️ Receipt region (tight):" + " " + JSON.stringify({ x, y, w, h }));
-          } else {
-            console.log(mode === "axis"
-              ? "↩️ Receipt region too small, leaving frame untouched"
-              : "↩️ Receipt region (rotated) too small, leaving frame untouched");
+            console.log("✂️ Receipt region (profile cut, no rotation):",
+              JSON.stringify({ x: +(x / W).toFixed(3), y: +(y / H).toFixed(3), w, h }));
           }
+        } catch (e) {
+          console.log("↩️ profile cut failed, falling back to contour bbox:", e && e.message);
         }
-        contours.delete();
-        hierarchy.delete();
-        closed.delete();
-        if (owned) owned.delete();
+        if (!result) {
+          // fallback: previous default (largest-bright-blob bbox + margin).
+          let closed = maskOf(mat);
+          const contours = new cv.MatVector();
+          const hierarchy = new cv.Mat();
+          cv.findContours(closed, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+          let maxContour = null;
+          let maxArea = 0;
+          for (let i = 0; i < contours.size(); i++) {
+            const contour = contours.get(i);
+            const area = cv.contourArea(contour);
+            if (area > maxArea) {
+              maxArea = area;
+              maxContour = contour;
+            }
+          }
+          if (maxContour) {
+            const rect = cv.boundingRect(maxContour);
+            const imgArea = mat.rows * mat.cols;
+            const boxOk = rect.width >= 0.25 * mat.cols && rect.height >= 0.25 * mat.rows && rect.width * rect.height >= 0.15 * imgArea;
+            if (boxOk) {
+              const mx = Math.round(mat.cols * 0.02);
+              const my = Math.round(mat.rows * 0.02);
+              const x = Math.max(0, rect.x - mx);
+              const y = Math.max(0, rect.y - my);
+              const w = Math.min(mat.cols - x, rect.width + 2 * mx);
+              const h = Math.min(mat.rows - y, rect.height + 2 * my);
+              const roi = mat.roi({ x, y, width: w, height: h });
+              result = roi.clone();
+              roi.delete();
+              console.log("✂️ Receipt region (contour fallback):", JSON.stringify({ x, y, w, h }));
+            } else {
+              console.log("↩️ Receipt region too small, leaving frame untouched");
+            }
+          }
+          contours.delete();
+          hierarchy.delete();
+          closed.delete();
+        }
         return result;
       }
-
       const canvas = document.createElement("canvas");
       let scaleFactor = 1;
       if (img.width < 1000) {
