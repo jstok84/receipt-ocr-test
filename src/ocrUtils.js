@@ -1347,6 +1347,20 @@ export async function processImage(imageSrc, onProgress = () => {}) {
       }
     }
   }
+  // v2.0.28: the missing-item hunt and the price-correction hunt are two
+  // stories for the SAME failing sum check — a row the OCR dropped entirely
+  // (missing item) vs a row the OCR mispriced (correction). They used to be
+  // mutually exclusive (`if (missing != null) … else …`), which stranded the
+  // misread-price story whenever the gap came out positive: s25-hofer's
+  // "Skleda za mešanje 8,49" was read "3,49", the 5,00 gap armed the
+  // missing-item hunt, but this photo's items sit at ~45% of the paper so the
+  // top-25% strips read table texture — while the item-band re-OCR that DOES
+  // cover the row (40-75% band) measured "8,49" in the Node bench. Now: hunt
+  // the missing row first (the more specific story); when it measures
+  // nothing, fall through to the correction cascade. Both stay
+  // measurement-gated — the correction path's name-match, arithmetic-
+  // improvement and all-or-nothing guards are untouched.
+  let missingHuntResolved = false;
   if (missing != null) {
     missingBucket = missing;
     const alreadyParsed = finalParse.items.some(
@@ -1405,8 +1419,15 @@ export async function processImage(imageSrc, onProgress = () => {}) {
       } catch (err) {
         console.warn("🔁 Strip re-OCR failed, skipping rescue:", err);
       }
+      // a measured row ends the story; an empty hunt hands the same failing
+      // sum check to the item-band correction cascade below
+      if (rescueWinner) missingHuntResolved = true;
+    } else {
+      // an item already carries the gap amount — nothing to hunt for
+      missingHuntResolved = true;
     }
-  } else {
+  }
+  if (!missingHuntResolved) {
     // v1.7.6 item-band rescue (EUROSPIN real case): the items-sum check
     // [?] fires and ≥2 items parsed — the damaged region may be the ITEM
     // BLOCK ITSELF, not the top rows: eurospin's tall header pushed its items
@@ -1472,6 +1493,16 @@ export async function processImage(imageSrc, onProgress = () => {}) {
             while (end < tokens.length && !/\d/.test(tokens[end])) end++;
             let name = tokens.slice(0, end).join(" ");
             name = name.replace(/^[^a-zA-ZčšžČŠŽ]+\s*/, "").trim();
+            if ((name.match(/[a-zA-ZčšžČŠŽ]/g) || []).length < 4) {
+              // v2.0.28: HOFER rows lead with the EAN code ("736115 Skleda za
+              // mešanje 8,49 B"), so the "up to the first digit token" rule
+              // yields an empty name and the correction is dropped before it
+              // can ever match its item. Retry with everything before the
+              // trailing price (+VAT letter) — the same shape the parser
+              // itself keeps as the item name ("736115 Skleda za me$anje").
+              const m2 = line.match(/^(.*?)\s+\d{1,3}[.,]\d{2}\s*[A-Ea-e]?\s*$/);
+              if (m2) name = m2[1].replace(/^[^a-zA-ZčšžČŠŽ]+\s*/, "").trim();
+            }
             if ((name.match(/[a-zA-ZčšžČŠŽ]/g) || []).length < 4) continue;
             // best-matching item only (no brand-prefix first-match pairing)
             let target = null;

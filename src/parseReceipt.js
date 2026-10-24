@@ -488,6 +488,21 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
     /^vsi zneski so v/i,
   ];
 
+  // v2.0.28 pipe-tolerant exclusion test. The S25 phone family prints vertical
+  // rules down the receipt that OCR renders as a leading "|" — the live
+  // INTERSPORT-c capture reads the discount row as
+  // "| (30.0%) - SPORTNE ZVEZDE -24.00". The pipe defeated every
+  // start-anchored exclusion above (^\( rate-marker, ^plačano, ^dov:, …), so
+  // the discount row survived as a phantom +24,00 item: the items sum inflated
+  // to 103,99, and with it the pay-zone rescue derived items−POPUST = 79,99
+  // instead of the printed payable 55,99. A pipe is never part of a real item
+  // name, so the pipe-stripped line is tested against the same patterns.
+  const isNonItemLine = (line) => {
+    if (nonItemPatterns.some((pat) => pat.test(line))) return true;
+    const bare = line.replace(/^[|\s]+/, "");
+    return bare !== line && nonItemPatterns.some((pat) => pat.test(bare));
+  };
+
   // Detect total candidates from lines
   const totalCandidates = extractAllTotalCandidates(lines, isSlovenian);
   const pickedCandidate = pickTotalCandidate(totalCandidates);
@@ -564,7 +579,7 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
     if (
       dateTimePattern.test(donor) ||
       shouldExcludeLine(donor, excludeKeywords) ||
-      nonItemPatterns.some((pat) => pat.test(donor))
+      isNonItemLine(donor)
     ) {
       log(`  ×-row "${lines[xi]}" has no valid donor (guards failed on "${donor}")`);
       continue;
@@ -643,7 +658,7 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
       continue;
     }
 
-    if (nonItemPatterns.some((pat) => pat.test(line))) {
+    if (isNonItemLine(line)) {
       log("  Skipping due to non-item pattern.");
       continue;
     }

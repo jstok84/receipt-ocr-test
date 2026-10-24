@@ -32,6 +32,16 @@ const cases = {
     raw: readFileSync(join(here, "fixtures", "intersport-s25-rate-row-2400-real.txt"), "utf8"),
     phantom: "24.00",
   },
+  // v2.0.28: the same receipt re-captured on the v2.0.27 build — OCR now
+  // renders the receipt's vertical rule as a LEADING PIPE on the discount row
+  // ("| (30.0%) - SPORTNE ZVEZDE -24.00"), which defeated the ^\( anchor and
+  // put the phantom +24.00 item back. The pipe-stripped line must be tested
+  // against the same exclusions; the live sweep then measured 55,99 on the
+  // pay-zone strip, so the rescue cascade lands on the ledger total again.
+  pipeLed: {
+    raw: readFileSync(join(here, "fixtures", "intersport-s25-rate-row-2400-pipe-real.txt"), "utf8"),
+    phantom: "24.00",
+  },
 };
 
 for (const [label, { raw }] of Object.entries(cases)) {
@@ -73,3 +83,38 @@ for (const [label, { raw }] of Object.entries(cases)) {
     assert.equal(payableRescue(r, raw, 99.99), null, "printed misread must not confirm itself");
   });
 }
+
+// v2.0.28: the pipe fix must not over-exclude. A real merchandise row that
+// merely carries a leading rule ("| MLEKO …") keeps its item status — the
+// exclusions match machinery SHAPES, not the pipe itself.
+test("pipe tolerance: a real item row behind a leading pipe stays an item", () => {
+  const raw = [
+    "HOFER TRGOVINA D.O.O.",
+    "| 760801 Brioš marmo. kolač 3,36 A",
+    "| 736115 Skleda za mešanje 8,49 B",
+    "HOFER CENA 12.14",
+  ].join("\n");
+  const r = parseReceipt(raw);
+  const names = r.items.map((i) => i.name);
+  assert.ok(names.some((n) => /skleda/i.test(n)), `Skleda must survive: ${JSON.stringify(names)}`);
+  assert.ok(names.some((n) => /brio/i.test(n)), `Brioš must survive: ${JSON.stringify(names)}`);
+  assert.equal(r.items.length, 2, JSON.stringify(names));
+});
+
+// v2.0.28: the donor guard (qty×price row) reads the line ABOVE it. A
+// machinery line behind a pipe must not donate an item either.
+test("pipe tolerance: pipe-led machinery line never donates a qty×price item", () => {
+  const raw = [
+    "| SKUPAJ 79,99",
+    "1,000 x 79,99 79 99",
+    "6438496871585 JAKNA M. POH BRIMFIELD š48 |",
+    "1,000 x 79,99 79 99",
+  ].join("\n");
+  const r = parseReceipt(raw);
+  const names = r.items.map((i) => i.name);
+  assert.ok(
+    !names.some((n) => /skupaj/i.test(n)),
+    `SKUPAJ must not donate an item: ${JSON.stringify(names)}`
+  );
+  assert.ok(names.some((n) => /jakna/i.test(n)), `JAKNA must survive: ${JSON.stringify(names)}`);
+});
