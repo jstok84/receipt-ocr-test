@@ -377,6 +377,18 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
     /(?:\s|^)\d+(?:\s\d+){4,}(?:\s|$)/,
     /\bdenar\b/i,
     /vra[čc]il[ao]/i,
+    // INTERSPORT program-discount row (real capture 2026-10-24, new phone
+    // photo of the JAKNA receipt): "(30.0%) - ŠPORTNE ZVEZDE  -24,00" — OCR
+    // drops the minus sign, so the -24,00 discount reaches the parser as a
+    // positive 24,90 and manufactures a phantom item. Merchandise never opens
+    // with a parenthesised percent; closing paren not required (OCR noise).
+    /^\s*\(\s*\d{1,2}(?:[.,]\d{1,2})?\s*%/,
+    // "ZA PLAČILO" section header (same capture): the ruled separator
+    // OCR-fused into "ZAPLACILO eee _ 56,99" — a second phantom (56.99 was
+    // derived from the misread section header zone). "Plačilo" is payment
+    // vocabulary ("PLAČILO: MASTERCARD"), never product text.
+    /zapla[čc]ilo/i,
+    /\bpla[čc]ilo\b/i,
     // Gratitude footer (phone HOFER real case): "HVALA ZA VAS NAKUP!" OCR-fused
     // with neighboring barcode digits ("HVALA Z 10,26 17. | SODNA" manufactured a
     // bogus 10,26 item whose involvement breaks the items-sum check). Always machinery.
@@ -526,7 +538,9 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
     while (nameToks.length > 1 && /^[\d.,%°$€§=]{1,16}$/.test(nameToks[0])) nameToks.shift();
     while (
       nameToks.length > 1 &&
-      /^[$€]?\d{1,3}[.,]?%?$/.test(nameToks[nameToks.length - 1])
+      // "š48"/"S48"/"$48" = OCR variants of the 5438496871585 SKU tail (the
+      // 5's glyph degrades to š/s/$ on phone photos; new capture 2026-10-24).
+      /^[$€šs§]?\d{1,3}[.,]?%?$/.test(nameToks[nameToks.length - 1])
     ) {
       nameToks.pop();
     }

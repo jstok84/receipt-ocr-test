@@ -453,6 +453,45 @@ requested).
 - "INTERSPORT sum was 55,99" — USER CORRECT. Payable printed 55,99, OCR read 59,99; PLAČANO 55,99 and DDV recap 45,89+10,10=55,99 agree; 79,99−24,00 popust = 55,99. Parser had no payable-vs-paid conflict path for card receipts (tender/check only fired with cash change) — added one: 'payable X ≠ paid Y [?]' failing check, tier picking unchanged; ambiguity surfaced, never silently resolved (locked on the merged INTERSPORT fixture, 75/75).
 - Blinked date guard: '16.09 2029' (dot blurred to space) had escaped the date exclusion and manufactured a 16.09 item; separator before 20YY may now be a space. Regressions: none.
 
+## PHONE CASE #5 (2026-10-24): same INTERSPORT receipt, RE-PHOTOGRAPHED
+- Bucket pair `…e6df3018d80af5bc` (photo + manifest JSON, phone Chrome 155).
+  The user read it as "treated differently" — TWO stacked causes, both proven:
+- CAUSE 1 (environment): the deployed site still runs commit 7e9342a; five
+  local commits (bb7828b…760309a) incl. the INTERSPORT qty×price v2.0.13 parser
+  are un-pushed. Deployed parse of the new photo: 2 items (JAKNA + the discount
+  row as a phantom 24.90 item), total 99.99, sum check fail.
+- CAUSE 2 (photo): genuinely harder capture — backlit keyboard ground, fold
+  crease through the print, rotated. OCR misreads: BOTH printed 55,99 totals
+  (DDV "Skupaj" + PLAČANO MASTERCARD) read 99,99 — glyph 5↔9; every total zone
+  wrong the same way = unrecoverable by parsing (honest failing check stands);
+  "(30.0%) - ŠPORTNE ZVEZDE  -24,00" lost its minus → positive 24,90 phantom
+  item; "ZA PLAČILO" header fused with its ruled line → "ZAPLACILO eee _ 56,99"
+  second phantom; SKU tail 548 OCR'd as "š48" (5→š) so the v2.0.13 strip missed.
+- FIXES (v2.0.14 parser guards, src/parseReceipt.js):
+  (a) nonItem: line starting with parenthesised percent "(30.0%)" = program-
+      discount row, never merchandise (closing paren unrequired);
+  (b) nonItem: /zapla[čc]ilo/ and /\bpla[čc]ilo\b/ — payment-vocabulary
+      section headers, never products (total candidates scan does NOT use
+      nonItem patterns, so "za plačilo" tier discovery is untouched — verified
+      against the old fixture: total still resolves);
+  (c) qty×price donor name-trailing strip accepts š/s/§ SKU-tail variants of
+      the printed 5 ("š48"/"$48"/"548").
+- Locked: tests/fixtures/intersport-new-real.txt (verbatim OCR of THIS capture
+  from the local live run) + tests/intersportNewPhoto.test.js — 1 item
+  ("JAKNA M.POH BRIMFIELD" 79.99 ×1), no discount/header phantoms, date
+  2026-09-16, total stays 99.99 with exactly 1 failing sum check. 84/84 tests.
+- LIVE no-regression sweep (all seven real captures, post-change): SPAR 26/
+  51.61 identical; HOFER-B 3/4.73 + Krüger rescue intact; INTERSPORT old 1/
+  55.99 unchanged; EUROSPIN scan+phone both 3/4.29 unchanged; hofer-phone 3/
+  12.14 zero failing checks unchanged; intersport-new 1 item/79.99, total
+  99.99, one failing check = the pinned behavior.
+- LOCAL live parse of the new photo (local HEAD): total candidates 3 (99.99 /
+  79.39 / 85.99) → 99.99 final; total zones on THIS photo are misread on the
+  PHONE run too (its manifest: DDV "99,99", PLAČANO "99,99"). A candidate for
+  the future (not implemented): the mid-receipt "SKUPAJ 79,89 − POPUST
+  24,00 = 55,99" chain could DERIVE the payable — but per standing policy
+  arithmetic never silently becomes a total; only surfaced via checks if ever.
+
 ## PERSPECTIVE/CROP INVESTIGATION (2026-10-24, user-driven, ~8 live OCR runs)
 USER OBSERVATIONS FROM EVIDENCE PANEL: (1) "perspective applied incorrectly — wrong direction and too much"; (2) "cropped OCR looked better — can you crop receipts automatically". Findings, all evidence-backed:
 - The perspective warp (Step 3) NEVER fired on any of the 3 live real-photo scans (no "Perspective Corrected" stage in HOFER/EUROSPIN/INTERSPORT pre-experiment). It needs an exact 4-corner approxPolyDP of the Otsu largest contour. What DOES visibly rotate in the stage pictures is the DESKEW step (EUROSPIN 3.27°, INTERSPORT 9.89°, HOFER skipped <1°). The user's "wrong direction and too much" percept comes from a deskew-vs-nothing frame rotation, not the perspective warp itself.
