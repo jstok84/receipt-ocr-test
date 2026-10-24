@@ -124,10 +124,25 @@ export default function App() {
     // matches items − POPUST ±0.02 (decision logic in parseReceipt).
     const payFixed = payableRescue(result, prepared, payAmount);
     if (payFixed) result = payFixed;
-    // v2.0.22 date rescue: only a measured strip re-OCR reading (complete,
-    // calendar-valid) can fill the date, and ONLY when the parse itself
-    // extracted none — never a decomposition of an ambiguous garble.
-    if (result.date == null && dateOverride) result = { ...result, date: dateOverride };
+    // v2.0.22/v2.0.25 date rescue: only a measured strip re-OCR reading
+    // (complete, calendar-valid) can fill the date, and ONLY when the parse
+    // itself extracted none — never a decomposition of an ambiguous garble.
+    // v2.0.25: the measured date carries ITS OWN provenance check line,
+    // exactly like the pay-zone rescue's check and the item rescue's [?] —
+    // a value that came from re-measurement must never display as if it
+    // simply parsed. Appended into the final checks (ok:true — verified
+    // evidence, not a failing state).
+    let dateRescued = false;
+    if (result.date == null && dateOverride) {
+      result = { ...result, date: dateOverride };
+      dateRescued = true;
+    }
+    if (dateRescued) {
+      result = { ...result, checks: [...(result.checks || []), {
+        ok: true,
+        text: `date ${dateOverride} verified: MEASURED by strip re-OCR — the printed line was garbled, nothing invented`,
+      }] };
+    }
     // v2.0.23: surface "arm fired, no band measured" to the user (null clears it)
     setPayArmFail(payDebug || null);
     // v2.0.24: PAY-RESCUE decisions become part of the decision trail — until
@@ -136,6 +151,12 @@ export default function App() {
     // result ran on measured evidence. The appended lines close that gap;
     // wording names the source, never a browser.
     const rescueNotes = [];
+    // v2.0.25: the log above is the PRE-rescue parse — an explicit separator
+    // so stale-looking numbers ("date: null", "total 4.13") are never read as
+    // the final state.
+    if (payFixed || dateRescued) {
+      rescueNotes.push("— the lines above are the pre-rescue parse; rescue decisions applied afterwards follow —");
+    }
     if (payFixed) {
       rescueNotes.push(
         `💰 Rescue decision (applied after the log above): pay-zone re-OCR MEASURED ${Number(payAmount).toFixed(2)} € — total corrected to ${result.total}`
@@ -516,16 +537,24 @@ export default function App() {
             below, not derived from the items. This is the same rescue machinery as
             the strip evidence above — shown here so it is never silently invisible.
           </p>
-          {payRescueEvidence.attempts?.map((a, i) => <div className="attempt" key={i}>
-            <div className="attempt-label">
-              attempt {i + 1}: strip={a.stripKind}
-              {" "}band={Math.round(a.band[0] * 100)}–{Math.round(a.band[1] * 100)}%
-              {" "}{a.factor}× {a.kernel === "lanczos3" ? "lanczos3" : "catrom"}
-              {" "}PSM={a.psm}
-            </div>
-            {a.image && <img src={a.image} alt={`pay-zone strip attempt ${i + 1}`} />}
-            <pre>{a.lines.join("\n")}</pre>
-          </div>)}
+          {payRescueEvidence.attempts?.map((a, i) => {
+            const w = payRescueEvidence.winner;
+            const won = Boolean(a.won) || Boolean(
+              w && a.stripKind === w.stripKind && a.psm === w.psm && (a.kernel || w.kernel) === w.kernel &&
+              a.band[0] === w.band[0] && a.band[1] === w.band[1]
+            );
+            return <div className="attempt" key={i}>
+              <div className="attempt-label">
+                attempt {i + 1}: strip={a.stripKind}
+                {" "}band={Math.round(a.band[0] * 100)}–{Math.round(a.band[1] * 100)}%
+                {" "}{a.factor}× {a.kernel === "lanczos3" ? "lanczos3" : "catrom"}
+                {" "}PSM={a.psm}
+                {won && " ← WINNER (this band's reading was measured)"}
+              </div>
+              {a.image && <img src={a.image} alt={`pay-zone strip attempt ${i + 1}`} />}
+              <pre>{a.lines.join("\n")}</pre>
+            </div>;
+          })}
         </div>
       </details>}
 
@@ -536,7 +565,7 @@ export default function App() {
             {pipelineMs != null
               ? `pipeline ${pipelineMs} ms`
               : "no pipeline timing yet"}
-            {" "}· {(stripRescue?.attempts?.length || 0) + (payArmFail?.attempts?.length || 0)} cascade attempt(s)
+            {" "}· {(stripRescue?.attempts?.length || 0) + (payArmFail?.attempts?.length || 0) + (payRescueEvidence?.attempts?.length || 0)} cascade attempt(s)
           </span>
         </div>
         <div className="evidence-body">

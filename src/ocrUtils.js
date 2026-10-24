@@ -1618,12 +1618,17 @@ export async function processImage(imageSrc, onProgress = () => {}) {
             payRescue = {
               amount: measured15,
               winner: payWinner15,
-              attempts: stripEvidence.map((a) => ({
-                stripKind: a.stripKind, band: a.band, factor: a.factor, psm: a.psm, kernel: a.kernel, lines: a.lines,
-                image: payWinner15 && a.stripKind === payWinner15.stripKind && a.band[0] === payWinner15.band[0] &&
-                       a.band[1] === payWinner15.band[1] && a.factor === payWinner15.factor && a.psm === payWinner15.psm
-                  ? a.image : null,
-              })),
+              attempts: stripEvidence.map((a) => {
+                const won15 = payWinner15 && a.stripKind === payWinner15.stripKind && a.band[0] === payWinner15.band[0] &&
+                  a.band[1] === payWinner15.band[1] && a.factor === payWinner15.factor && a.psm === payWinner15.psm &&
+                  a.kernel === payWinner15.kernel;
+                return {
+                  stripKind: a.stripKind, band: a.band, factor: a.factor, psm: a.psm, kernel: a.kernel, lines: a.lines,
+                  won: won15 || null, // v2.0.25: winner marked at source — the panel
+                  // never re-infers identity across objects
+                  image: won15 ? a.image : null,
+                };
+              }),
             };
           }
         }

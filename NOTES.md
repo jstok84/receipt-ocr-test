@@ -968,3 +968,33 @@ REMAINING known difference: capture-layer OCR fidelity (Brave's protections feed
 Tesseract slightly different pixels -> different digit garbles). Response direction
 stays v2.0.20 doctrine:
 appended diversity + measured convergence, already proven by this pair converging.
+
+## CASE #12 — provenance/counter parity follow-ups (2026-10-24, v2.0.25, live-verified)
+User v2.0.24 Edge-vs-Brave pair showed outcome parity (both 3 items / 4.73 / 2025-03-11)
+but three legibility defects remained in the BRAVE capture:
+1) measured DATE displayed like a clean parse — no provenance, while the item rescue
+   carries [?] and the pay rescue has its own check line. Fixed: when the date rescue
+   applies, app.js injects a check line into the FINAL result:
+   "date YYYY-MM-DD verified: MEASURED by strip re-OCR — the printed line was garbled,
+   nothing invented" (ok:true — verified evidence, not a failing state; mirroring the
+   pay check's phrasing style). Appears in BOTH browsers whenever that rescue ran.
+2) winning attempt not identifiable among 13 pay attempts. Fixed at SOURCE (ocrUtils):
+   each payRescue attempt now carries `won` computed with the SAME equality that
+   selects the riding image; the pay panel marks "← WINNER (this band's reading was
+   measured)" on that attempt (render-time inference eliminated after debugging an
+   HMR stale bundle made the first attempt appear unmarked — the bundle-hash trap
+   again; dev server restart was required; the chip cannot detect app.js staleness).
+3) counter under-counted the successful pay arm (0 while 13 ran): the meta counter
+   now sums item-cascade + payArmFail + successful payRescue attempts.
+4) decision-trail separator: "— the lines above are the pre-rescue parse; rescue
+   decisions applied afterwards follow —" prepended before rescue notes, so
+   "date: null / total 4.13" can never be misread as final state.
+LIVE (chip v2.0.25, fresh bundle): all 10 real photos identical parse fields
+(S25 trio + intersport-new1/2 55.99 green WITH winner marked, hofer2 Kruger [?],
+spar coupon [?], both EUROSPINs 4.29 green, hofer-phone standing state — its date
+"-" has date!=null-candidate interplay documented in CASE #10 pins). tests 116/116.
+NOTE: the date-provenance check line itself could not be live-proven on corpus
+photos (none rescues a date — all parse dates); it rides any future capture whose
+printed date garbles (e.g. hoferracun1 in a farbled browser). Provenance logic is
+app-level, mirrored on the same injection path as the pay check, pinned conceptually
+by CASE #10 fixture pins.
