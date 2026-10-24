@@ -179,7 +179,18 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
       let match = extractLastAmountWithCurrency(line);
       if (!match) {
         const nextLine = lines[i + 1];
-        if (nextLine) {
+        // v2.0.21 (scan-eurospin real case, user run on deployed v2.0.20): a
+        // garbled DDV-recap header ("Lj! Us ova Dr Skupaj" from "Davek Osnova
+        // DDV Skupaj") carries the tier-2 "skupaj" keyword, and its VALUES row
+        // below ("? 2% 9 r 4,20" — the printed 4,29 misread) then became the
+        // picked total, outranking the printed "Skupaj (EUR): 4,29" ("naj
+        // (EUR): 4,29") purely by document order. A value line carrying a
+        // percent token is duty-recap machinery, never the payable. Strictly
+        // scoped to the below-line fetch: keyword lines owning their amount
+        // keep working ("Skupaj 4,29"; SPAR's "SKUPAJ DDV 1,40" false
+        // candidate is handled by later-line precedence as before), and all
+        // other tiers (za plačilo, payment markers) outrank this class anyway.
+        if (nextLine && !/%/.test(nextLine)) {
           match = extractLastAmountWithCurrency(nextLine);
           if (match) {
             const raw = match[1];

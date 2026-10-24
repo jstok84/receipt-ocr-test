@@ -840,3 +840,29 @@ v2.0.20 — measurement diversity + diagnosability:
   winning geometry instead of guessing.
 LIVE: full corpus re-run on the v2.0.20 build — all 10 photos identical outcomes (S25 pair
 green via pay rescue, hofer2 Krüger rescue, 8 baseline); tests 107/107.
+
+## CASE #9 — shard: EUROSPIN 4,20/4,29 recap theft (2026-10-25, v2.0.21, live-verified)
+User report "now eurospin one is not ok" on deployed v2.0.20 (their scan-eurospin.jpg showed
+"items sum 4.29 ≠ total 4.20"). NOT a regression — that flag was the standing state across
+v2.0.15–v2.0.20 sweeps — but the paste contained the whole story: items exact (1.55+1.29+1.45
+= 4.29), printed "Skupaj (EUR): 4,29" survived as "naj (EUR): 4,29", yet the picked total was
+4.20 from the GARBLED DDV-recap header ("Lj! Us ova Dr Skupaj" = "Davek Osnova DDV Skupaj")
+whose below-line VALUES row "? 2% 9 r 4,20" (printed 4,29 misread) supplied the amount. Tier-2
+"skupaj" matched the header; the below-line fetch (v-blah early-era mechanism) won by document
+order over the equally-weighted paren-EUR candidate.
+
+v2.0.21 — one scoped guard in extractAllTotalCandidates: in the BLOW-LINE amount fetch, a
+value line carrying "%" is duty-recap machinery and never supplies a payable total. STRICTLY
+the below-line path — keyword lines owning their amount are untouched ("Skupaj 4,29" rows,
+SPAR's "SKUPAJ DDV 1,40" false candidate still defers to later-line precedence). eurospin-
+scan-real.txt stays 4.29 via its "(ER): 4,29" candidate; scan-eurospin flips 4.20 -> 4.29,
+"items sum = total (4.29)" — ZERO failing checks, receipt simply green (no rescue needed).
+
+Fixture: tests/fixtures/scan-eurospin-user-real.txt (verbatim, user's v2.0.20 paste) + pins
+(tests/scanEurospinRecap.test.js): total 4.29, 3 exact items, sum check OK, and the guard pin
+("Gotovina/skupaj/%-row" text yields total null). Tests 109/109.
+
+LIVE (v2.0.21 dev build): eurospin + scan-eurospin GREEN 3/4.29; hofer2 Krüger [?] intact;
+SPAR [?] intact; hofer-phone green; intersport trio green. (First post-edit sweep ran on a
+stale v2.0.20 bundle — HMR didn't propagate the version bump; hard reload showed v2.0.21 and
+the correct results. Version-chip verification before sweeping is now mandatory.)
