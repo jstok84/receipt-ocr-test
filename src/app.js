@@ -22,6 +22,10 @@ export default function App() {
   const [pdfPreviews, setPdfPreviews] = useState([]);
   const [useFlatMode, setUseFlatMode] = useState(false);
   const [stripRescue, setStripRescue] = useState(null);
+  // v2.0.23: the pay arm derived a target but no strip attempt measured it.
+  // Browser-agnostic — no browser detection — just "the arm fired and the
+  // strips fell short", so the user is never left with silent under-reporting.
+  const [payArmFail, setPayArmFail] = useState(null);
   const [copied, setCopied] = useState(false);
   const [dragHover, setDragHover] = useState(false);
 
@@ -102,7 +106,7 @@ export default function App() {
   // (result.payRescue?.amount). processImage's own finalParse is discarded
   // here — app.js re-parses independently — so the rescue decision must be
   // re-applied on this side too, with the measurement carried over.
-  const runParsing = (rawText, extraItems = [], rescue = null, corrections = [], alreadyCleaned = false, payAmount = null, dateOverride = null) => {
+  const runParsing = (rawText, extraItems = [], rescue = null, corrections = [], alreadyCleaned = false, payAmount = null, dateOverride = null, payDebug = null) => {
     let prepared = rawText;
     if (!useFlatMode) {
       if (!alreadyCleaned) prepared = cleanAndMergeText(rawText);
@@ -118,6 +122,8 @@ export default function App() {
     // calendar-valid) can fill the date, and ONLY when the parse itself
     // extracted none — never a decomposition of an ambiguous garble.
     if (result.date == null && dateOverride) result = { ...result, date: dateOverride };
+    // v2.0.23: surface "arm fired, no band measured" to the user (null clears it)
+    setPayArmFail(payDebug || null);
     setParsed(result);
     // v2.0.2: the app-level parse is the last parseReceipt call of the scan,
     // so window.__OCR_LOG now holds exactly this scan's decision trail
@@ -230,7 +236,7 @@ export default function App() {
       const t0 = performance.now();
       const result = await processImage(dataUrl);
       setText(result.text);
-      const parsedNow = runParsing(result.text, result.extraItems, result.rescue, result.corrections, true, result.payRescue?.amount ?? null, result.dateRescue?.date ?? null);
+      const parsedNow = runParsing(result.text, result.extraItems, result.rescue, result.corrections, true, result.payRescue?.amount ?? null, result.dateRescue?.date ?? null, result.payDebug ?? null);
       const ms = Math.round(performance.now() - t0);
       setPipelineMs(ms);
       setLoading(false);
@@ -259,7 +265,7 @@ export default function App() {
         const t0 = performance.now();
         const result = await processImage(file);
         setText(result.text);
-        const parsedNow = runParsing(result.text, result.extraItems, result.rescue, result.corrections, true, result.payRescue?.amount ?? null, result.dateRescue?.date ?? null);
+        const parsedNow = runParsing(result.text, result.extraItems, result.rescue, result.corrections, true, result.payRescue?.amount ?? null, result.dateRescue?.date ?? null, result.payDebug ?? null);
         const ms = Math.round(performance.now() - t0);
         setPipelineMs(ms);
         jobDone(jobId, "done", `${ms} ms · ${parsedNow.items.length} items · ${parsedNow.checks.filter(c => !c.ok).length} failing checks`);
@@ -476,7 +482,7 @@ export default function App() {
             {pipelineMs != null
               ? `pipeline ${pipelineMs} ms`
               : "no pipeline timing yet"}
-            {" "}· {stripRescue?.attempts?.length || 0} cascade attempt(s)
+            {" "}· {(stripRescue?.attempts?.length || 0) + (payArmFail?.attempts?.length || 0)} cascade attempt(s)
           </span>
         </div>
         <div className="evidence-body">
@@ -498,6 +504,27 @@ export default function App() {
           {stripRescue && <p className="evidence-note">
             Strip-repair cascade ran — recovered item evidence below.
           </p>}
+          {payArmFail && <div className="evidence-note">
+            <p>
+              <strong>Rescue armed but not measured:</strong> the pay zone derived a target
+              {" "}{Number(payArmFail.target).toFixed(2)} € ({payArmFail.armedFrom}) from the parsed text, and{" "}
+              {payArmFail.attempts.length} strip re-OCR attempt{payArmFail.attempts.length === 1 ? "" : "s"} ran,
+              but no band read a matching amount. This can happen when browser privacy
+              protections (pixel-read shielding, adblock) degrade re-OCR measurement — the
+              app never bypasses them. Re-photographing or re-scanning this receipt may
+              resolve it; every band's readings are included in the sync evidence.
+            </p>
+            {payArmFail.attempts.map((a, i) => <div className="attempt" key={i}>
+              <div className="attempt-label">
+                pay attempt {i + 1}: strip={a.stripKind}
+                {" "}band={Math.round(a.band[0] * 100)}–{Math.round(a.band[1] * 100)}%
+                {" "}{a.factor}× {a.kernel === "lanczos3" ? "lanczos3" : "catrom"}
+                {" "}PSM={a.psm}
+                {a.hit ? " HIT" : ""}
+              </div>
+              <pre>{a.lines.join("\n")}</pre>
+            </div>)}
+          </div>}
           <details open>
             <summary>Raw OCR text ({text ? text.split("\n").filter(l => l.trim()).length : 0} lines)</summary>
             <pre className="evidence-raw">{text || "(nothing scanned yet)"}</pre>

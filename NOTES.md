@@ -899,3 +899,36 @@ hoferracun1-class real photo still needs a USER RESCAN to prove the measured dat
 the strip band list has not been validated on ITS pixels; if no band measures a valid date,
 date stays "—" exactly as today (no regression either way). If it measures, we learn which
 band won from the manifest's dateRescue field.
+
+## v2.0.23 — privacy compliance + no-gap requirement (user directive, 2026-10-24)
+User challenge "you are not allowed to use fingerprinting... you introduced fingerprinting
+again!" — audited, not argued. Audit: NO identity/fingerprint code exists in the repo
+(canvas getImageData/toDataURL reads are the receipt OCR pipeline itself: crop/upscale/
+preprocess/strip re-draws of the user's own photo; getUserMedia/enumerateDevices are
+camera-picker only; crypto.subtle signs the user's own S3 uploads). Two genuine
+compliance items found and fixed:
+- ua HARVEST REMOVED: app.js maybeSync sent navigator.userAgent in every sync manifest
+  (predates this week; sync.js carried scan.ua). Deleted on both sides — no browser-
+  identifier data leaves the device anymore. Existing bucket manifests keep the old field.
+- MY nascent "detect Brave" idea for the notice RETRACTED (browser identification = the
+  thing forbidden); replaced with a browser-AGNOSTIC notice.
+BROWSER-AGNOSTIC FAILURE NOTICE (silent under-reporting is not acceptable): payDebug
+(playRescue armed, no band measured) now surfaces in the Debug-evidence panel — target,
+armedFrom, per-attempt band/psm/kernel/lines — with neutral wording ("browser privacy
+protections (pixel-read shielding, adblock) can degrade re-OCR; the app never bypasses
+them"). runParsing gains payDebug param; both processImage call sites pass
+result.payDebug; the misleading "0 cascade attempt(s)" counter now sums missing-item +
+pay-arm attempts. No browser detection anywhere; wording knows nothing about Brave.
+PRIVACY RULES CODIFIED in project AGENTS.md (three bullets: no identification in any
+code path; canvas reads only for receipt image processing; NO BEHAVIOR GAP BETWEEN
+BROWSERS — any cross-browser gap is a defect to analyze together with the user, fixed
+by robustness on our side, never fingerprinting-adjacent code).
+LIVE (chip verified v2.0.23): all 10 real photos identical baseline (S25/intersport
+trio 55.99 green, both EUROSPINs 4.29 green, hofer2 Kruger [?] + spar coupon [?]
+intact, hofer-phone standing state); no spurious notices; tests 116/116.
+Brave gap: STILL UNCONFIRMED on device — user test pending (Shields fingerprinting
+Allow + rescan hoferracun1; console lines to look for: "Pay-zone rescue armed",
+10x "Pay-zone re-OCR (", "Canvas pixel read blocked"). If the Shields-off test fires
+the rescue, the gap is Brave's protection interacting with pixel reads, and the fix
+direction is appended denoised attempts (v2.0.24 candidate) — designed from the
+manifest payDebug data, never from browser type.
