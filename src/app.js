@@ -26,6 +26,12 @@ export default function App() {
   // Browser-agnostic — no browser detection — just "the arm fired and the
   // strips fell short", so the user is never left with silent under-reporting.
   const [payArmFail, setPayArmFail] = useState(null);
+  // v2.0.24: successful pay-zone re-OCR evidence (amount + winner + per-attempt
+  // strip readings). Until now this rescue only surfaced as a check text —
+  // no panel — so a browser whose capture is rescued via measurement (e.g.
+  // Brave on the HOFER class) LOOKED like it ran no rescue flow while Edge's
+  // item rescue showed a full one. Same machinery, equal display.
+  const [payRescueEvidence, setPayRescueEvidence] = useState(null);
   const [copied, setCopied] = useState(false);
   const [dragHover, setDragHover] = useState(false);
 
@@ -124,15 +130,34 @@ export default function App() {
     if (result.date == null && dateOverride) result = { ...result, date: dateOverride };
     // v2.0.23: surface "arm fired, no band measured" to the user (null clears it)
     setPayArmFail(payDebug || null);
+    // v2.0.24: PAY-RESCUE decisions become part of the decision trail — until
+    // now the log was captured INSIDE parseReceipt (before any rescue), so
+    // "Extracted date: null / Final total: 4.13" printed while the displayed
+    // result ran on measured evidence. The appended lines close that gap;
+    // wording names the source, never a browser.
+    const rescueNotes = [];
+    if (payFixed) {
+      rescueNotes.push(
+        `💰 Rescue decision (applied after the log above): pay-zone re-OCR MEASURED ${Number(payAmount).toFixed(2)} € — total corrected to ${result.total}`
+      );
+    }
+    if (dateOverride && result.date === dateOverride) {
+      rescueNotes.push(
+        `🗓 Rescue decision (applied after the log above): date MEASURED ${dateOverride} by strip re-OCR (the logged parse date was null)`
+      );
+    }
     setParsed(result);
     // v2.0.2: the app-level parse is the last parseReceipt call of the scan,
     // so window.__OCR_LOG now holds exactly this scan's decision trail
     if (window.__OCR_DEBUG) {
-      setParserLog([...(window.__OCR_LOG || [])]);
+      setParserLog([...(window.__OCR_LOG || []), ...rescueNotes]);
       setStages([...(window.__OCR_STAGES || [])]);
     }
     // evidence for the strip-recovered item (null clears it)
     setStripRescue(rescue);
+    // v2.0.24: stale pay-zone evidence cleared at parse start; the processImage
+    // call sites re-set it as soon as their result arrives
+    setPayRescueEvidence(null);
     return result;
   };
 
@@ -237,6 +262,7 @@ export default function App() {
       const result = await processImage(dataUrl);
       setText(result.text);
       const parsedNow = runParsing(result.text, result.extraItems, result.rescue, result.corrections, true, result.payRescue?.amount ?? null, result.dateRescue?.date ?? null, result.payDebug ?? null);
+      setPayRescueEvidence(result.payRescue ?? null);
       const ms = Math.round(performance.now() - t0);
       setPipelineMs(ms);
       setLoading(false);
@@ -266,6 +292,7 @@ export default function App() {
         const result = await processImage(file);
         setText(result.text);
         const parsedNow = runParsing(result.text, result.extraItems, result.rescue, result.corrections, true, result.payRescue?.amount ?? null, result.dateRescue?.date ?? null, result.payDebug ?? null);
+        setPayRescueEvidence(result.payRescue ?? null);
         const ms = Math.round(performance.now() - t0);
         setPipelineMs(ms);
         jobDone(jobId, "done", `${ms} ms · ${parsedNow.items.length} items · ${parsedNow.checks.filter(c => !c.ok).length} failing checks`);
@@ -470,6 +497,33 @@ export default function App() {
               {" "}PSM={a.psm}
             </div>
             {a.image && <img src={a.image} alt={`strip attempt ${i + 1}`} />}
+            <pre>{a.lines.join("\n")}</pre>
+          </div>)}
+        </div>
+      </details>}
+
+      {payRescueEvidence && <details className="panel evidence">
+        <summary>
+          Pay-zone re-OCR evidence — measured{" "}
+          {Number(payRescueEvidence.amount).toFixed(2)} €
+          {payRescueEvidence.winner?.band
+            ? ` from band ${Math.round(payRescueEvidence.winner.band[0] * 100)}–${Math.round(payRescueEvidence.winner.band[1] * 100)}%`
+            : ""}
+        </summary>
+        <div className="evidence-body">
+          <p>
+            The total was <strong>measured by OCR</strong> from the pay-zone strip
+            below, not derived from the items. This is the same rescue machinery as
+            the strip evidence above — shown here so it is never silently invisible.
+          </p>
+          {payRescueEvidence.attempts?.map((a, i) => <div className="attempt" key={i}>
+            <div className="attempt-label">
+              attempt {i + 1}: strip={a.stripKind}
+              {" "}band={Math.round(a.band[0] * 100)}–{Math.round(a.band[1] * 100)}%
+              {" "}{a.factor}× {a.kernel === "lanczos3" ? "lanczos3" : "catrom"}
+              {" "}PSM={a.psm}
+            </div>
+            {a.image && <img src={a.image} alt={`pay-zone strip attempt ${i + 1}`} />}
             <pre>{a.lines.join("\n")}</pre>
           </div>)}
         </div>

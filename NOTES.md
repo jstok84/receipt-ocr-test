@@ -932,3 +932,39 @@ Allow + rescan hoferracun1; console lines to look for: "Pay-zone rescue armed",
 the rescue, the gap is Brave's protection interacting with pixel reads, and the fix
 direction is appended denoised attempts (v2.0.24 candidate) — designed from the
 manifest payDebug data, never from browser type.
+
+## CASE #11 — cross-browser DISPLAY gap closed (2026-10-24, v2.0.24, live-verified)
+User pasted SAME hoferracun1.jpg scan from EDGE and BRAVE on v2.0.23 and challenged:
+"there is still a gap between brave and edge ... the rescue flow is not displayed ...
+parser decision there is still gap". Analysis of the two captures:
+
+EDGE: item top-strip rescue fired (Kruger row garbled -> guarded) -> full "Strip re-OCR
+evidence" panel; date read intact 11.03.2025 -> 2025-03-11; total consistent 4.73; the
+expected [?] recovery provenance carried. BRAVE: items all read exact (no item rescue),
+vsota misread 4,13 -> pay arm ARMED and MEASURED 4.73 (provenance check text), date
+garbled (103.2025) -> DATE RESCUE (v2.0.22) MEASURED 2025-03-11 -> 0 failing checks.
+NEITHER browser's rescue flow was visible in BRAVE because the SUCCESSFUL pay-zone
+rescue had NO evidence panel (only check text) and the Parser-decisions log is captured
+INSIDE parseReceipt BEFORE rescues apply — so Brave printed "date: null / total 4.13"
+while the displayed result ran on measured evidence. Outcome-level parity held (both
+browsers: 3 items / 4.73 / 2025-03-11; decision layer closed the capture-level
+difference: deskew -2.01 vs -2.70 deg, appendix garbles differ — consistent with
+pixel-read protection feeding Tesseract slightly different pixels).
+
+v2.0.24 — display/evidence parity, no computation changes:
+- Pay-zone evidence panel (app.js): successful payRescue now renders "Pay-zone re-OCR
+  evidence — measured X € from band A–B%" with EVERY attempt's strip/psm/kernel/lines,
+  mirroring the existing item strip panel; state threaded from both processImage call
+  sites, cleared per scan (PDF path too).
+- Rescue decisions appended to Parser decisions: "pay-zone re-OCR MEASURED ... — total
+  corrected to ..." / "date MEASURED ... by strip re-OCR" — the trail now records the
+  post-parse rescue decisions instead of printing pre-rescue state only. Wording
+  names the source, never a browser (AGENTS.md no-gap rule).
+LIVE (chip verified v2.0.24): all 10 real photos identical baseline; S25 pair +
+intersport-new1/new2 now SHOW the pay panel (measured 55.99 band 55-100%) and the
+appended decision line; hofer2 keeps its strip panel; eurospin/spar/hofer-phone show
+none (no rescue ran). tests 116/116.
+REMAINING known difference: capture-layer OCR fidelity (Brave's protections feed
+Tesseract slightly different pixels -> different digit garbles). Response direction
+stays v2.0.20 doctrine:
+appended diversity + measured convergence, already proven by this pair converging.
