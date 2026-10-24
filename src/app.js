@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { processImage, processPDF, cleanAndMergeText } from "./ocrUtils";
 import { parseReceipt, payableRescue } from "./parseReceipt";
 import { scanVerdict } from "./scanVerdict";
+import { detectFileKind, toProcessableSource } from "./imageInput";
 import { loadSyncCfg, saveSyncCfg, clearSyncCfg, uploadScan, presignS3 } from "./sync";
 import { APP_VERSION } from "./version";
 
@@ -297,20 +298,28 @@ export default function App() {
 
   const handleFiles = async (file, jobId = null) => {
     if (!file) return;
-    const isImage = file.type.startsWith("image/");
-    const isPDF = file.type === "application/pdf";
-    const preview = isImage ? URL.createObjectURL(file) : null;
+    // Classify from the file's own bytes. Chromium reports an EMPTY file.type
+    // for .heic, so the old `file.type.startsWith("image/")` gate rejected every
+    // iPhone photo as "unsupported file type"; it also mislabelled a HEIF/AVIF
+    // renamed to .jpg. Bytes are the only reliable signal.
+    const kind = await detectFileKind(file);
+    const isImage = kind === "image";
+    const isPDF = kind === "pdf";
     setCapturedImage(null);
     setText(isImage ? "Processing image file..." : isPDF ? "Processing PDF..." : "");
-    setUploadedPreview(isImage ? preview : null);
+    setUploadedPreview(null);
     setPdfPreviews([]);
     setParsed(null);
     setLoading(true);
 
     try {
       if (isImage) {
+        // HEIC/HEIF are decoded to a PNG data URL here. JPEG/PNG/WebP/AVIF pass
+        // through untouched — the same File object as before this change.
+        const prepared = await toProcessableSource(file);
+        setUploadedPreview(prepared.previewURL);
         const t0 = performance.now();
-        const result = await processImage(file);
+        const result = await processImage(prepared.src);
         setText(result.text);
         const parsedNow = runParsing(result.text, result.extraItems, result.rescue, result.corrections, true, result.payRescue?.amount ?? null, result.dateRescue?.date ?? null, result.payDebug ?? null);
         setPayRescueEvidence(result.payRescue ?? null);
@@ -411,7 +420,7 @@ export default function App() {
         <p>Photograph or saved PDF — processing stays on this device</p>
         <label className="btn primary file-label">
           Choose file
-          <input type="file" accept="image/*,.pdf" multiple onChange={handleFileUpload} />
+          <input type="file" accept="image/*,.pdf,.heic,.heif" multiple onChange={handleFileUpload} />
         </label>
       </section>
 
