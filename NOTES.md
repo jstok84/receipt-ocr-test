@@ -766,3 +766,56 @@ ERRORS CAUGHT DURING THIS TASK (for future sessions):
   "restore from git" cost the uncommitted ocrUtils work; re-applied cleanly via edit tool.)
 - RULE going forward: never edit src files via shell text tools; the edit tool only, byte
   checks via node scripts when needed.
+
+## PHONE CASE #8 — HOFER ECHO/RECAP PHANTOMS + INTERSPORT RATE-ROW (2026-10-24, v2.0.19, live-verified)
+User re-scanned hoferracun1.jpg on deployed v2.0.18 — the drift MORPHED: total zone read
+"Vmesna vsota 4,73" RIGHT this time, but the machinery went hostile: "AR | Znesel-BFT ER: 1 -
+4.73" (EFT payable echo) became a phantom 4.73 item and the DDV-recap tail "Se RI 5 Wal CARR A
+3,94" became a phantom 3.94 item, while the garbled EFT appendix produced "WIEN VISA Mm 4.13"
+(a tier-3 payment-marker candidate that correctly outranks the tier-1 vsota per SPAR pin).
+Parse: 4 items / sum 11.61 ≠ total 4.13 — no rescue derivable. Locked verbatim as
+tests/fixtures/hofer-echo-drift-real.txt.
+
+v2.0.19 guards at the SOURCE (parseReceipt.js):
+- nonItem echo family: /\bz(?:nes|res)[a-z]{0,8}[-–—|(]?\s*(?:[ef]ft|bft)\b/i — Znesel-BFT /
+  Zresek-BFT / Znesek-EFT shapes; "EFT Ref-No:" unaffected (no znes/res stem).
+- neto-tail rule: the line DIRECTLY BELOW a /\bneto\b/ recap row is machinery tail (recap
+  blocks are contiguous; items never sit under a Neto row).
+- rate-row guard (INTERSPORT S25 captures, 2026-10-24, beide from the sync bucket): the
+  discount row "(30,0%) - ŠPORTNE ZVEZDE -24,00" crashed to "(30.0%) - SPORTNE ZVEZDE 24,90"
+  (minus + label position lost) → phantom 24.90/24.00 item poisoned the sum 104.89 ≠ 99.99.
+  New guard: an item row never STARTS with a parenthesised rate percentage
+  (/^\(\s*\d{1,3}(?:[.,]\d{1,3})?\s*%/). (POPUST 24,00 label itself survived in both.)
+
+ocrUtils changes (same measurement-first acceptance):
+- v2.0.12 missing-arm retarget: when t − sum is NOT a positive gap AND a TOTAL-KEYWORD line
+  (vsota|skupaj|skupna vrednost|za plačilo|končni znesek, NO card/EFT marker) reads V with
+  V > t + 0.02 AND V > sum → strip target = V − sum (real: vsota 4,73 > visa-misread 4.13,
+  items 2.94 → target 1.79 = the Krüger row). SPAR loyalty trap safe: "Tocke zvestobe-vsota
+  5.00" fails V > total; EUROSPIN "za plačilo 4,29" fails V > sum (equal); INTERSPORT garbled
+  "ZA PLACILO 59,99" fails V > sum (items 79.99).
+- pay-zone arm: also allowed AFTER a successful top-strip rescue (rescueWinner set) — the
+  leftover sum mismatch is then by definition a misread-total-zone story — and the decision is
+  evaluated on the CORRECTED parse parseReceipt(cleaned, extraItems, corrections), exactly the
+  parse app.js builds, so decision(measured) here and in runParsing provably agree.
+- Whole chain for hoferracun1 now composes: phantoms killed → items 0.85 + 2.09 → arm target
+  1.79 → Krüger row rescued (measured) → items 4.73 ≠ 4.13 → pay arm (post-rescue) → strip
+  MEASURES vsota 4,73 → payableRescue → green, provenance "measured 4.73 — matches items
+  sum 4.73 … no discount line".
+
+BUCKET PAIRS AS REAL-DATA FIXTURES (new pattern worth keeping): pulled both S25 jpgs+json
+(1792805512758, 1792804560531) via the read-only key; OCR text locked verbatim as
+tests/fixtures/intersport-s25-rate-row-2400-real.txt / …-2490-real.txt; live run on the dev
+server: both resolves GREEN — 1 item (JAKNA 79.99), total 55.99 "pay-zone re-OCR measured
+55.99 — matches items 79.99 − POPUST 24.00 (printed pay lines read 99.99, misread)". The
+01:31 capture previously failed because ZA PLAČILO lost its amount AND the rate-row phantom
+made D unmeasurable — both fixed by the guard + existing v2.0.15 arm.
+
+LIVE SWEEP (final build, all 10 real photos): 8 baseline captures identical to known-good
+(hofer2 3/4.73 + Krüger [?], hofer-phone green, SPAR [?], EUROSPIN [?] ×2, intersport trio
+green) + 2 S25 captures newly green. Tests 107/107 (5 pins in hoferEchoDrift.test.js, 6 in
+intersportRateRow.test.js).
+
+DISCIPLINE RECALL: fixtures carry verbatim OCR only, decisions pinned in test files;
+a bucket manifest's ocr.text is verbatim OCR — copy via node script into the fixture, or via
+edit tool, never via shell string surgery on source (rule recorded in CASE #7).

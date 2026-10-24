@@ -1266,7 +1266,36 @@ export async function processImage(imageSrc, onProgress = () => {}) {
       if (sumCheck && finalParse.total) {
         const t = parseFloat((finalParse.total.match(/([\d.,]+)/) || [])[1]?.replace(",", "."));
         const sum = parseFloat(sumCheck.text.match(/items sum ([\d.]+)/)[1]);
-        if (!isNaN(t) && !isNaN(sum) && t - sum > 0.004) missing = +(t - sum).toFixed(2);
+        if (!isNaN(t) && !isNaN(sum) && t - sum > 0.004) {
+          missing = +(t - sum).toFixed(2);
+        } else if (!isNaN(t) && !isNaN(sum)) {
+          // v2.0.19 (real case, user capture of the HOFER EFT tail on deployed
+          // v2.0.18): the picked total came from an EFT/card line the garbled
+          // EFT appendix produced ("WIEN VISA Mm 4.13" for 4,73) while the
+          // clean TOTAL-KEYWORD line read higher ("Vmesna vsota 4,73") and the
+          // item rows read exact but fewer (0.85 + 2.09 = 2.94). The naive gap
+          // t − sum (1.19) would send the strip re-OCR hunting a row that
+          // does not exist. The printed keyword total supplies the target:
+          // missing = V − sum, still MEASUREMENT-gated — the strip must
+          // re-OCR a row reading exactly V − sum ±0.02. Strict guards:
+          // keyword line WITHOUT any card/EFT marker, only the same tier
+          // keywords the total picker honors, V > t + 0.02 AND V > sum —
+          // SPAR's loyalty trap ("Tocke zvestobe-vsota 5.00", 5.00 < total
+          // 51.61) and EUROSPIN's equal "za plačilo 4,29" both fail V > sum;
+          // INTERSPORT's garbled "ZA PLACILO 59,99" fails V > sum (items 79.99).
+          let vKey = null;
+          for (const ln of cleaned.split("\n")) {
+            if (!/\b(?:vsota|skupaj|skupna vrednost|za pla[čc]ilo|za placilo|kon[čc]ni znesek|koncni znesek)\b/i.test(ln)) continue;
+            if (/masterca|maest[rc]|kartic|visa|\beft\b|\bbft\b|h[o0]fer\s+cena/i.test(ln)) continue;
+            const amts = [...ln.matchAll(/\d{1,3}[.,]\d{1,2}/g)].map((mm) => parseFloat(mm[0].replace(",", ".")));
+            const last = amts[amts.length - 1];
+            if (last != null && (vKey == null || last > vKey)) vKey = last;
+          }
+          if (vKey != null && vKey > t + 0.02 && vKey > sum) {
+            missing = +(vKey - sum).toFixed(2);
+            console.log("🔁 Total-keyword line reads", vKey, "> picked total", t, "— strip target = V − items =", missing);
+          }
+        }
       }
     }
   }
@@ -1479,14 +1508,32 @@ export async function processImage(imageSrc, onProgress = () => {}) {
   // lives in parseReceipt.payableRescue (Node-tested); this block only
   // supplies the measurement. Armed only when the missing-item rescue is not
   // (missing == null) and no VAT-recap bucket check exists — different
-  // failure stories, never both on one receipt.
+  // failure stories, never both on one receipt. v2.0.19: ALSO armed after a
+  // SUCCESSFUL top-strip rescue (rescueWinner set): the leftover sum mismatch
+  // is then by definition a misread-total-zone story, and the decision must
+  // be evaluated on the CORRECTED parse — exactly the parse app.js will
+  // build (parseReceipt(cleaned, extraItems, corrections)) so the decision
+  // here and in runParsing provably agree. payableRescue's own gates still
+  // apply, so every other failure story aborts unchanged.
   let payRescue = null;
-  if (missing == null) {
-    const sumMismatchPay = finalChecks.find(
+  if (missing == null || rescueWinner != null) {
+    let payParse = finalParse;
+    let payChecks = finalChecks;
+    if (rescueWinner != null) {
+      try {
+        payParse = parseReceipt(cleaned, extraItems, corrections);
+        payChecks = payParse.checks || [];
+      } catch (errPayPost) {
+        console.warn("🔁 Pay-zone corrected re-parse failed:", errPayPost);
+        payParse = finalParse;
+        payChecks = finalChecks;
+      }
+    }
+    const sumMismatchPay = payChecks.find(
       (c) => !c.ok && /items sum ([\d.]+) ≠ total ([\d.]+)/.test(c.text)
     );
     const discountPresent15 = /pop[ou]st|kupon|dopla[cč]il/i.test(cleaned);
-    const bucketHintPay15 = finalChecks.some((c) => /missing item ≈/.test(c.text));
+    const bucketHintPay15 = payChecks.some((c) => /missing item ≈/.test(c.text));
     if (sumMismatchPay && !bucketHintPay15) {
       const I15 = parseFloat(sumMismatchPay.text.match(/items sum ([\d.]+)/)[1]);
       const T15 = parseFloat(sumMismatchPay.text.match(/≠ total ([\d.]+)/)[1]);
@@ -1537,7 +1584,7 @@ export async function processImage(imageSrc, onProgress = () => {}) {
           }
         }
         if (measured15 != null) {
-          const res15 = payableRescue(finalParse, cleaned, measured15);
+          const res15 = payableRescue(payParse, cleaned, measured15);
           if (res15) {
             Object.assign(finalParse, res15);
             payRescue = {

@@ -417,6 +417,15 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
     // line start (or stray parenthesised currency remnant + colon), so real
     // items ("MLEKO ALPSKO 3,5%", "REZINA ... 17% DT ...") can't match.
     /^[a-z]{1,2},?\s*\d{1,2}(?:[.,]\d{1,2})?\s*%/i,
+    // v2.0.19 parenthesised rate-marker rows (INTERSPORT S25 real captures,
+    // 2026-10-24, user's phone re-shots): the discount row prints
+    // "(30,0%) - ŠPORTNE ZVEZDE -24,00" and OCR drops BOTH the minus sign and
+    // its guard-word position, so the row manufactured a phantom +24.90/+24.00
+    // item and poisoned the sum. An item row never STARTS with a
+    // parenthesised rate percentage — that opening shape belongs to duty/
+    // discount recap machinery. ("MLEKO ALPSKO 3,5%" starts with a word and
+    // remains untouched by this anchor.)
+    /^\(\s*\d{1,3}(?:[.,]\d{1,3})?\s*%/,
     /\(e?u?r?\)\s*:/i,
     // Standalone EUR token = currency remnant, not a product name (EUROSPIN
     // real case: "mov “ EUR 13,00" — the Gotovina line with its word ground
@@ -451,6 +460,16 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
     /^kartica/i,
     /^date[: ]?/i,
     /^znesek\s*—?\s*\d+[,.]/i,
+    // v2.0.19 EFT-echo family (HOFER hoferracun1 real case, user capture on
+    // deployed v2.0.18): the EFT device echoes the payable back and OCR adds a
+    // lead garble — "AR | Znesel-BFT ER: 1 - 4.73", "Zresek-BFT EUR 4.73",
+    // "Znesek-EFT EUR 4.73". The start-anchored guard above misses these
+    // because the echo label is no longer line-initial. Root: z+nes/res stem,
+    // up to 8 OSB letters, optional separator, EFT/BFT. The echo amount is the
+    // PAYABLE (feeding total candidates via payment markers), never an item.
+    // "EFT Ref-No: …" never matches (no znes/res stem); its exclusion stays in
+    // other rules.
+    /\bz(?:nes|res)[a-z]{0,8}\s*[-–—|(]?\s*(?:[ef]ft|bft)\b/i,
     /^a\s+\d{1,2}[,.]\d+\s+\d+[,.]/i,
     /^[a-z]?\s*\d{1,2}[,.]\d+\s+\d+[,.]/i,
     /^,?\d{1,3}[,.]\d{2}\s*—?\s*\d{1,3}[,.]\d{2}/,
@@ -598,6 +617,17 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
 
     if (nonItemPatterns.some((pat) => pat.test(line))) {
       log("  Skipping due to non-item pattern.");
+      continue;
+    }
+
+    // v2.0.19 DDV-recap tail rule (HOFER EFT-tail real case, user capture on
+    // deployed v2.0.18): the recap rows read "SOR seni of Ey Neto | 2,99 DOV
+    // 0,25" and the line DIRECTLY BELOW a neto row is the recap's continuing
+    // garble ("Se RI 5 Wal CARR A 3,94 IE odi …") whose trailing amount
+    // manufactured a phantom item. Items never sit under a "Neto" row —
+    // recap blocks are contiguous and precede the EFT appendix.
+    if (li > 0 && /\bneto\b/i.test(lines[li - 1])) {
+      log("  Skipping: line directly follows a DDV-recap (neto) row — machinery tail.");
       continue;
     }
 
