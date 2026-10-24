@@ -41,15 +41,50 @@ export default function App() {
   // zero feedback on a multi-pick (second file appeared to "not even OCR").
   const [jobs, setJobs] = useState([]);
   const jobSeq = useRef(0);
+  // Per-scan history (session-only). Clicking a queue row replays that scan's
+  // snapshot into the SAME state a live scan leaves behind, so every panel
+  // shows the selected scan without any duplicate rendering logic. Deliberately
+  // no persistence, no export and no controls yet — the user wants to see
+  // whether this shape is the right one before it grows.
+  const [viewJobId, setViewJobId] = useState(null);
+  // Values produced by the most recent runParsing call (its decision log and
+  // the stage captures), so a snapshot can carry exactly what the panels got.
+  const lastRunMeta = useRef({ parserLog: [], stages: [] });
   const newJob = name => {
     const id = ++jobSeq.current;
-    setJobs(q => [...q, { id, name, status: "running", sync: null }]);
+    setJobs(q => [...q, { id, name, status: "running", sync: null, at: Date.now() }]);
     return id;
   };
   const jobDone = (id, status, note = "") =>
     setJobs(q => q.map(j => (j.id === id ? { ...j, status, note } : j)));
   const jobSync = (id, patch) =>
     setJobs(q => q.map(j => (j.id === id ? { ...j, sync: { ...(j.sync || {}), ...patch } } : j)));
+
+  /** Attach a finished scan's data to its queue row. */
+  const jobSnapshot = (id, snap) =>
+    setJobs(q => q.map(j => (j.id === id ? { ...j, snap } : j)));
+
+  /**
+   * Replay a stored scan into the live panels. This intentionally performs the
+   * same setState calls a real scan ends with, so every existing panel (parsed,
+   * checks, strip evidence, pay evidence, decision trail, stage images) shows
+   * the selected scan with zero extra rendering code.
+   */
+  const showJob = id => {
+    const j = jobs.find(x => x.id === id);
+    if (!j || !j.snap) return;
+    setViewJobId(id);
+    setText(j.snap.text ?? "");
+    setParsed(j.snap.parsed ?? null);
+    setStripRescue(j.snap.stripRescue ?? null);
+    setPayArmFail(j.snap.payArmFail ?? null);
+    setPayRescueEvidence(j.snap.payRescueEvidence ?? null);
+    setParserLog(j.snap.parserLog || []);
+    setStages(j.snap.stages || []);
+    setPipelineMs(j.snap.ms ?? null);
+    setUploadedPreview(j.snap.preview ?? null);
+    setPdfPreviews([]);
+  };
   const runningJobs = jobs.filter(j => j.status === "running");
   const runningIndex = jobs.findIndex(j => j.status === "running");
   const activeJob = runningJobs[0] || null;
@@ -180,6 +215,13 @@ export default function App() {
     // v2.0.24: stale pay-zone evidence cleared at parse start; the processImage
     // call sites re-set it as soon as their result arrives
     setPayRescueEvidence(null);
+    // Capture what the panels just received, for the per-scan history snapshot
+    // (includes the rescue notes appended above, so a replayed scan shows the
+    // same decision trail the live one did).
+    lastRunMeta.current = {
+      parserLog: window.__OCR_DEBUG ? [...(window.__OCR_LOG || []), ...rescueNotes] : [],
+      stages: window.__OCR_DEBUG ? [...(window.__OCR_STAGES || [])] : [],
+    };
     return result;
   };
 
@@ -326,6 +368,20 @@ export default function App() {
         const ms = Math.round(performance.now() - t0);
         setPipelineMs(ms);
         jobDone(jobId, "done", `${ms} ms · ${parsedNow.items.length} items · ${parsedNow.checks.filter(c => !c.ok).length} failing checks`);
+        // Store this scan on its row so the row can be clicked later.
+        jobSnapshot(jobId, {
+          at: Date.now(),
+          ms,
+          text: result.text,
+          parsed: parsedNow,
+          stripRescue: result.rescue ?? null,
+          payArmFail: result.payDebug ?? null,
+          payRescueEvidence: result.payRescue ?? null,
+          parserLog: lastRunMeta.current.parserLog,
+          stages: lastRunMeta.current.stages,
+          preview: prepared.previewURL,
+        });
+        setViewJobId(jobId);
         maybeSync(file, file.name, result, parsedNow, ms, jobId);
       } else if (isPDF) {
         // no OpenCV photo pipeline on the PDF path — clear stale stage images
@@ -333,9 +389,22 @@ export default function App() {
         if (window.__OCR_DEBUG === true) window.__OCR_STAGES = [];
         const { text: pdfText, previews } = await processPDF(file);
         setText(pdfText);
-        runParsing(pdfText);
+        const pdfParsed = runParsing(pdfText);
         setPdfPreviews(previews);
         jobDone(jobId, "done", "PDF text below");
+        jobSnapshot(jobId, {
+          at: Date.now(),
+          ms: null,
+          text: pdfText,
+          parsed: pdfParsed,
+          stripRescue: null,
+          payArmFail: null,
+          payRescueEvidence: null,
+          parserLog: lastRunMeta.current.parserLog,
+          stages: [],
+          preview: null,
+        });
+        setViewJobId(jobId);
       } else {
         setText("Unsupported file type");
         jobDone(jobId, "error", "unsupported file type");
@@ -441,7 +510,17 @@ export default function App() {
       </div>}
 
       {jobs.length > 0 && <div className="queue" aria-label="scan queue">
-        {jobs.map(j => <div className={`queue-row ${j.status}`} key={j.id}>
+        {jobs.map(j => <div
+          className={`queue-row ${j.status}${j.snap ? " clickable" : ""}${viewJobId === j.id ? " selected" : ""}`}
+          key={j.id}
+          onClick={() => showJob(j.id)}
+          role={j.snap ? "button" : undefined}
+          tabIndex={j.snap ? 0 : undefined}
+          aria-pressed={j.snap ? viewJobId === j.id : undefined}
+          title={j.snap ? "Show this scan's parsed data and decision trail" : undefined}
+          onKeyDown={e => {
+            if (j.snap && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); showJob(j.id); }
+          }}>
           <span className={`mark ${j.status === "running" ? "pulse" : ""}`}>
             {j.status === "done" ? "✓" : j.status === "error" ? "!" : "·"}
           </span>
@@ -450,6 +529,9 @@ export default function App() {
           {j.sync?.state === "uploading" && <span className="qsync">sync…</span>}
           {j.sync?.state === "ok" && <span className="qsync ok">synced ✓</span>}
           {j.sync?.state === "failed" && <span className="qsync bad" title={j.sync.msg}>sync failed</span>}
+          <span className="qtime">
+            {new Date(j.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+          </span>
         </div>)}
       </div>}
 
