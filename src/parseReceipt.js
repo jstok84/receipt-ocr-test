@@ -496,6 +496,23 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
   if (total != null) totalSource = "keyword";
   let currency = (pickedCandidate?.currency) ?? "€";
 
+  // v2.1 STRUCTURAL GUARD — merchandise precedes the payable total.
+  // Any line BELOW the line that supplied the total is totals/tender/change/
+  // loyalty/footer machinery, never an item. Keyword guards are not enough:
+  // the payable line can garble past every one of them, and the garble shape
+  // depends on the pixels, so it changes with the resampler and per browser —
+  //   canvas upscale      "na) (FUR): 4,29"   (caught by the (EUR)/(FUR) rule)
+  //   cv INTER_CUBIC      "p- Lall% 2 r 4.20" (no keyword left)
+  //   cv INTER_LINEAR     "PLACILOMELR) 6.20" (keyword fused, no word boundary)
+  // A positional rule does not care how the line garbles.
+  // Scope guard: only active when the total sits past the first quarter of the
+  // receipt, so an inverted layout (total printed above the items) can never be
+  // silently emptied.
+  const totalLineIndex =
+    pickedCandidate && typeof pickedCandidate.index === "number" ? pickedCandidate.index : null;
+  const postTotalGuardActive =
+    totalLineIndex != null && totalLineIndex > Math.floor(lines.length * 0.25);
+
   // Attempt fallback total from VAT net+vat summary
   const fallbackTotal = tryFallbackTotal(lines, isSlovenian);
   if (fallbackTotal) {
@@ -628,6 +645,13 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
 
     if (nonItemPatterns.some((pat) => pat.test(line))) {
       log("  Skipping due to non-item pattern.");
+      continue;
+    }
+
+    // v2.1: below the payable total = tender / change / loyalty / footer. This
+    // catches pay-zone lines whose keyword the OCR destroyed or fused.
+    if (postTotalGuardActive && li > totalLineIndex) {
+      log("  Skipping: line sits after the payable total — tender/footer machinery, never merchandise.");
       continue;
     }
 
