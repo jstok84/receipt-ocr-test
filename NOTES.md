@@ -723,3 +723,46 @@ reconciliation, new1/new2 via the pay-zone measured rescue; total identical ever
 26/51.61 [?], HOFER-B 3/4.73 + Krüger [?], EUROSPIN 3/4.20 [?] ×2, hofer-phone 3/12.14 green —
 byte-identical to the pre-change baseline. intersport-phone re-run once more for drift: same
 green outcome both times ("POPUST 24.00" + "ZA PLACILO 55,99" legible on both passes).
+
+## PHONE CASE #7 — HOFER TOTAL-DRIFT CLASS GAP (2026-10-24, v2.0.18, live-verified)
+User: "hofer is regression .13 instead of .73" — reported off their run ON THE DEPLOYED v2.0.17
+site (sync off, no bucket pair). Their boolean: the pasted evidence-panel OCR text is the
+ground truth and is LOCKED as tests/fixtures/hofer-total-drift-real.txt: ALL THREE item rows
+read EXACT (Kruger 1,79, šumeče 0,85, Barcaffe 2,09 = 4,73) while the printed total zone read
+"j Vmesna vsota 4,13" and the EFT echo "> 413" — digit 7→1 drift in BOTH first-pass readings of
+the total zone. Parse: total 4.13, flag "items sum 4.73 ≠ total 4.13" — honest red, but
+UNRESOLVABLE: v1.7.2 arm needs missing > 0 (here negative), v2.0.15 arm needs a POPUST line
+(no discount on HOFER). A class gap, not a regression: nothing in the sweep corpus exhibits
+both "all rows exact" AND "total misread downward". (Locally, the same hofer2.jpg ran 4.73 +
+Krüger rescue 3× on deployed v2.0.17 — drift is per-capture, not per-build.)
+
+v2.0.18 — payableRescue generalized (decision node in parseReceipt.js, Node-tested):
+- No-discount path: P-set EMPTY and NO discount markers at all → derived target D = items sum
+  itself (the only coherent story: all rows read, total misread). One distinct P → items − P
+  (v2.0.15 path unchanged). Ambiguity (SPAR 3-number coupon) aborts.
+- NEW GATE: any "missing item ≈" VAT-recap bucket check forces abort — a lost-row story is the
+  top-strip rescue's; pulling the total down to a deficient items sum would silently accept
+  the loss. (Also ocrUtils arming: pay-zone requires !bucketHintPay15 alongside missing==null.)
+- Measurement side (ocrUtils): target derivation now via the SHARED exported discountAmounts()
+  (decision and measurement provably derive the SAME D); stripper vocab gains vsota|znesek
+  (HOFER total line is "Vmesna vsota"); cascade gains prep 0.4-0.75 PSM6 (mid-receipt band for
+  vsota-line geometry). Exactly as before: the strip must MEASURE D ±0.02 in a pay-vocab line;
+  the drifted first-pass reading (4,13) can never re-confirm itself.
+
+PINS (tests/hoferTotalDrift.test.js, on the user's real text): parse keeps 3 exact items + the
+red flag and invents NO negative "missing item" bucket; rescue fires only on measured 4.73
+(provenance names "pay measured 4.73 — matches items sum 4.73" + "printed total read 4.13,
+misread; no discount line"); the drifted re-read (4.13) and any other amount stay rejected;
+bucket-gate abort pinned. LIVE: after the ocrUtils repair, full corpus re-sweep cold+warm —
+hofer2 3/4.73 + Krüger [?] rescue (missing-positive path intact), hofer-phone 3/12.14 green,
+SPAR 26/51.61 [?], EUROSPIN 3/4.20 [?] ×2 (their no-discount branch armed but the strip did
+not measure 4.29 — flag stands, nothing invented), intersport-phone green via reconciliation,
+new1/new2 green via measured pay rescue. Tests 98/98.
+
+ERRORS CAUGHT DURING THIS TASK (for future sessions):
+- A PowerShell Get-Content/Set-Content brace-removal operation on src/ocrUtils.js displayed
+  mojibake (Ã/â sequences) that turned out to be a PowerShell CONSOLE display artifact, not
+  file corruption — byte-verify with node before assuming either direction. (Initial panic
+  "restore from git" cost the uncommitted ocrUtils work; re-applied cleanly via edit tool.)
+- RULE going forward: never edit src files via shell text tools; the edit tool only, byte
+  checks via node scripts when needed.

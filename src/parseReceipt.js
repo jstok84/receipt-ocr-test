@@ -1019,7 +1019,7 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
  * "KUPON POPUST 10.00% od 57.35 -5.74" carries three numbers and can never
  * reduce to one P).
  */
-function discountAmounts(text, cap) {
+function discountAmounts(text, cap) { // exported below — used by ocrUtils for target derivation
   const pset = new Set();
   for (const ln of String(text).split(/\r?\n/)) {
     if (!/\b(?:pop[ou]st|kupon|dopla[cč]il)/i.test(ln)) continue;
@@ -1030,25 +1030,34 @@ function discountAmounts(text, cap) {
   }
   return [...pset];
 }
+export { discountAmounts };
 
 /**
- * v2.0.15 pay-zone payable rescue (INTERSPORT re-photo real case, 2026-10-24).
- * The receipt prints the payable (55,99) in three places (ZA PLAČILO, DDV
- * recap "Skupaj", PLAČANO MASTERCARD) and OCR misread the dotted-bold "55"
- * glyph as "99" in EVERY zone — across three increasingly good photographs.
- * A printed-total-never-overridden-by-arithmetic policy leaves such receipts
- * permanently red, with no better capture able to fix it. The resolution
- * follows the SAME policy as the item rescues (v1.7.2): arithmetic only
- * DERIVES the target (items − POPUST), and the value is only accepted when a
- * MEASURED pay-zone re-OCR reading matches it (±0.02). This function holds
- * the decision logic, testable in Node; ocrUtils supplies the measurement.
+ * v2.0.15 pay-zone payable rescue (INTERSPORT re-photo real case, 2026-10-24),
+ * generalized in v2.0.18 (HOFER total-drift real case, user capture on
+ * deployed v2.0.17, 2026-10-24): receipt printed 4,73, both first-pass
+ * readings of the total zone read it 4,13 while ALL item rows read exact
+ * (1.79 + 0.85 + 2.09 = 4.73) — sum flag "items 4.73 ≠ total 4.13" stayed red
+ * because every existing rescue arm requires a POSITIVE missing-item gap.
+ * v2.0.18 covers the "no discount, no missing rows, total misread downward"
+ * story: the derived target is the items sum itself, and the value is still
+ * only accepted when a MEASURED pay-zone re-OCR reading equals it (±0.02).
+ * Same policy as v1.7.2/v2.0.15 throughout: arithmetic derives the target,
+ * a measurement confirms it, nothing is invented. (v2.0.15 origin: the
+ * receipt prints the payable 55,99 in three places — ZA PLAČILO, DDV recap,
+ * PLAČANO MASTERCARD — and OCR misread the dotted-bold "55" glyph as "99" in
+ * every zone across three increasingly good photographs.) This function
+ * holds the decision logic, testable in Node; ocrUtils supplies the
+ * measurement.
  *
  * Fire conditions (all strict):
  *  - a failing "items sum I ≠ total T" check exists,
- *  - an explicit discount line (popust / kupon / doplačilo) carries exactly
- *    ONE distinct amount P (ambiguity → abort; SPAR's multi-amount coupon
- *    line "KUPON POPUST 10.00% od 57.35 -5.74" can never fire this),
- *  - the derived payable D = I − P disagrees with the picked total T,
+ *  - NO "missing item ≈" VAT-recap bucket check exists (a lost-row story is
+ *    the top-strip rescue's, not this one's),
+ *  - discount-labelled lines carry: exactly ONE distinct amount P →
+ *    D = I − P (v2.0.15 path), or NO discount markers at all → D = I
+ *    (v2.0.18 path; ambiguity, e.g. SPAR's 3-number coupon, aborts),
+ *  - the derived payable D disagrees with the picked total T,
  *  - `measured` (the pay-zone re-OCR reading) equals D ± 0.02.
  *
  * On fire: total becomes D, the old sum-mismatch check is REPLACED with an
@@ -1059,29 +1068,44 @@ export function payableRescue(parse, text, measured) {
   if (!parse || !Array.isArray(parse.checks) || typeof text !== "string") return null;
   const sumCheck = parse.checks.find((c) => !c.ok && /^items sum ([\d.]+) ≠ total ([\d.]+)/.test(c.text));
   if (!sumCheck) return null;
+  // v2.0.18: a VAT-recap "missing item ≈" bucket check means the evidence
+  // says a row was lost — that is the top-strip item rescue's story. Blindly
+  // pulling the total down to the (deficient) items sum here would silently
+  // accept the loss.
+  if (parse.checks.some((c) => /missing item ≈/.test(c.text))) return null;
   const m = sumCheck.text.match(/^items sum ([\d.]+) ≠ total ([\d.]+)/);
   const I = parseFloat(m[1]);
   const T = parseFloat(m[2]);
   if (!(I > 0) || !(T > 0)) return null;
   // P: explicit discount-labelled lines only; every distinct amount aborts.
   const parr = discountAmounts(text, I);
-  if (parr.length !== 1) return null;
-  const P = parr[0];
-  const D = +(I - P).toFixed(2);
+  let P = null;
+  let D;
+  if (parr.length === 1) {
+    P = parr[0];
+    D = +(I - P).toFixed(2);
+  } else if (parr.length === 0 && !/\b(?:pop[ou]st|kupon|dopla[cč]il)/i.test(text)) {
+    D = +I.toFixed(2); // v2.0.18: no discount story at all — target is the items sum
+  } else {
+    return null; // ambiguous discount amounts (SPAR coupon class)
+  }
   if (!(D > 0)) return null;
-  if (Math.abs(D - T) <= 0.02) return null; // total already consistent with items−popust
+  if (Math.abs(D - T) <= 0.02) return null; // total already consistent
   if (measured == null || Math.abs(measured - D) > 0.02) return null; // unmeasured arithmetic never fires
   const currency = (parse.total || "").split(" ")[1] || "€";
   const checks = parse.checks.slice();
   const idx = checks.indexOf(sumCheck);
+  const provenance = P != null
+    ? `matches items ${I.toFixed(2)} − POPUST ${P.toFixed(2)} (printed pay lines read ${T.toFixed(2)}, misread)`
+    : `matches items sum ${I.toFixed(2)} (printed total read ${T.toFixed(2)}, misread; no discount line)`;
   checks.splice(idx, 1, {
     ok: true,
-    text:
-      `total ${D.toFixed(2)} verified: pay-zone re-OCR measured ${measured.toFixed(2)} — ` +
-      `matches items ${I.toFixed(2)} − POPUST ${P.toFixed(2)} (printed pay lines read ${T.toFixed(2)}, misread)`,
+    text: `total ${D.toFixed(2)} verified: pay-zone re-OCR measured ${measured.toFixed(2)} — ${provenance}`,
   });
   if (typeof console !== "undefined" && console.log) {
-    console.log("💰 payableRescue: total", T.toFixed(2), "->", D.toFixed(2), "(items−POPUST, pay zone measured", measured.toFixed(2) + ")");
+    console.log("💰 payableRescue: total", T.toFixed(2), "->", D.toFixed(2), P != null
+      ? "(items−POPUST, pay zone measured " + measured.toFixed(2) + ")"
+      : "(items sum, pay zone measured " + measured.toFixed(2) + ")");
   }
   return {
     version: parse.version,
