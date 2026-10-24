@@ -1516,6 +1516,11 @@ export async function processImage(imageSrc, onProgress = () => {}) {
   // here and in runParsing provably agree. payableRescue's own gates still
   // apply, so every other failure story aborts unchanged.
   let payRescue = null;
+  // v2.0.20: strip-reading diagnostics for the pay arm — non-null ONLY when
+  // the arm fired (a target was derivable) and NO band measured it. Rides
+  // into the sync manifest so a future capture's failed band readings are
+  // evidence, not silence (the HOFER 4,73->4,13 dotted-bold class).
+  let payDebug = null;
   if (missing == null || rescueWinner != null) {
     let payParse = finalParse;
     let payChecks = finalChecks;
@@ -1549,33 +1554,55 @@ export async function processImage(imageSrc, onProgress = () => {}) {
       }
       if (D15 != null && D15 > 0 && !isNaN(T15) && Math.abs(D15 - T15) > 0.02) {
         console.log("🔁 Pay-zone rescue armed: items", I15, p15.length === 1 ? "− POPUST" + pLabel15 : "(no discount)", "=", D15, "≠ read total", T15);
+        // v2.0.20 diagnostics: every executed band's readings are evidence —
+        // on a rescue they are abandoned (payRescue carries the same info),
+        // on a miss they ride to the manifest.
+        payDebug = { target: D15, armedFrom: p15.length === 1 ? `items ${I15} − POPUST ${pLabel15}` : `items sum ${I15} (no discount)`, attempts: [] };
         let measured15 = null;
         let payWinner15 = null;
-        outer15: for (const [stripKind, band, factor, psm] of [
-          ["prep", [0.55, 1.0], 2, "6"],
-          ["prep", [0.4, 0.75], 2, "6"],
-          ["raw", [0.55, 1.0], 2, "6"],
-          ["prep", [0.55, 1.0], 2, "4"],
-          ["prep", [0.75, 1.0], 2, "6"],
+        // v2.0.20: appended diversity — kernel sweep lesson (scripts/
+        // ocr-eurospin-kernel-sweep.mjs: catrom vs lanczos3 flip the same
+        // row's digits), ×3 zoom, PSM 7 single-line mode. Everything AFTER
+        // the five proven attempts, so every previously-winning band still
+        // comes first: receipts that already resolve take the identical
+        // early-exit path.
+        outer15: for (const [stripKind, band, factor, psm, payKernel15] of [
+          ["prep", [0.55, 1.0], 2, "6", "catrom"],
+          ["prep", [0.4, 0.75], 2, "6", "catrom"],
+          ["raw", [0.55, 1.0], 2, "6", "catrom"],
+          ["prep", [0.55, 1.0], 2, "4", "catrom"],
+          ["prep", [0.75, 1.0], 2, "6", "catrom"],
+          ["prep", [0.4, 0.75], 3, "6", "lanczos3"],
+          ["prep", [0.4, 0.75], 2, "6", "lanczos3"],
+          ["raw", [0.4, 0.75], 3, "6", "lanczos3"],
+          ["prep", [0.5, 0.9], 3, "7", "catrom"],
+          ["raw", [0.55, 1.0], 3, "7", "catrom"],
         ]) {
           try {
             const base15 = stripKind === "raw" ? imageSrc : (prePerspectiveDataURL || preprocessedDataURL);
             const strip15 = stripKind === "raw"
-              ? await rawStripDataURL(base15, band, factor)
-              : await topStripDataURL(base15, band, factor);
+              ? await rawStripDataURL(base15, band, factor, payKernel15)
+              : await topStripDataURL(base15, band, factor, payKernel15);
             await worker.setParameters({ ...tessParams, tessedit_pageseg_mode: psm });
             const res15 = await worker.recognize(strip15);
             await worker.setParameters(tessParams);
             const lines15 = cleanAndMergeText(res15.data.text).split("\n").filter(Boolean);
-            console.log("🔁 Pay-zone re-OCR (", stripKind, band.join("-"), "psm", psm, "):", lines15);
-            stripEvidence.push({ stripKind, band, factor, psm, kernel: "catrom", lines: lines15, image: strip15 });
+            console.log("🔁 Pay-zone re-OCR (", stripKind, band.join("-"), factor + "x", payKernel15, "psm", psm, "):", lines15);
+            const hit15 = lines15.some(
+              (line) =>
+                /pla[čc]ano|placano|za pla|zapla|master|osnova|davek|ddv|skupaj|vsota|znesek/i.test(line) &&
+                [...line.matchAll(/\d{1,3}[.,]\d{1,2}/g)].length &&
+                Math.abs(parseFloat([...line.matchAll(/\d{1,3}[.,]\d{1,2}/g)].pop()[0].replace(",", ".")) - D15) <= 0.02
+            );
+            payDebug.attempts.push({ stripKind, band, factor, psm, kernel: payKernel15, lines: lines15, hit: hit15 });
+            stripEvidence.push({ stripKind, band, factor, psm, kernel: payKernel15, lines: lines15, image: strip15 });
             for (const line of lines15) {
               if (!/pla[čc]ano|placano|za pla|zapla|master|osnova|davek|ddv|skupaj|vsota|znesek/i.test(line)) continue;
               const amts15 = [...line.matchAll(/\d{1,3}[.,]\d{1,2}/g)].map((mm) => parseFloat(mm[0].replace(",", ".")));
               const last15 = amts15[amts15.length - 1];
               if (last15 != null && Math.abs(last15 - D15) <= 0.02) {
                 measured15 = last15;
-                payWinner15 = { stripKind, band, factor, psm, line };
+                payWinner15 = { stripKind, band, factor, psm, kernel: payKernel15, line };
                 break outer15;
               }
             }
@@ -1584,6 +1611,7 @@ export async function processImage(imageSrc, onProgress = () => {}) {
           }
         }
         if (measured15 != null) {
+          payDebug = null; // resolved — nothing to diagnose
           const res15 = payableRescue(payParse, cleaned, measured15);
           if (res15) {
             Object.assign(finalParse, res15);
@@ -1613,6 +1641,7 @@ export async function processImage(imageSrc, onProgress = () => {}) {
     extraItems,
     corrections,
     payRescue,
+    payDebug,
     rescue: rescued
       ? {
           missing: missingBucket,

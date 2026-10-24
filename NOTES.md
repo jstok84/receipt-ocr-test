@@ -819,3 +819,24 @@ intersportRateRow.test.js).
 DISCIPLINE RECALL: fixtures carry verbatim OCR only, decisions pinned in test files;
 a bucket manifest's ocr.text is verbatim OCR — copy via node script into the fixture, or via
 edit tool, never via shell string surgery on source (rule recorded in CASE #7).
+
+### FOLLOW-UP (v2.0.20, 2026-10-24 evening): the OTHER drift shape returned — no measurement, no evidence
+User's evening re-scan of hoferracun1 (OCR text pasted; NOT synced — bucket has no pair for it)
+produced the hofer-total-drift shape again: item rows EXACT (1.79 + 0.85 + 2.09), "j Vmesna
+vsota 4,13" (misread), "Znesek-EFT| EUR: pp. > 413" (no decimal -> cannot be a total candidate),
+total candidates: 1 -> 4.13. Flag items 4.73 ≠ total 4.13 — the v2.0.18 pay arm derives D=4.73
+correctly, so the ONLY explanation is: the strip re-OCR could not MEASURE 4.73 on this photo
+(the dotted-bold "4,73" glyphs keep reading 4,13 across all band attempts — same glyph-family
+story as INTERSPORT's 55->99). Diagnosis via bucket impossible without the photo bytes.
+
+v2.0.20 — measurement diversity + diagnosability:
+- pay-zone cascade gains appended attempts (deterministic early-exit order preserved, so
+  receipts that already resolve take the identical path): factor 3 + lanczos3 kernel variants
+  (kernel sweep lesson: catrom vs lanczos3 flips the same digits), narrower bands, PSM 7.
+- payDebug: when the pay arm derives a target but NO band measures it, the OCR result carries
+  { target, armedFrom, attempts: [{stripKind, band, factor, psm, kernel, lines, hit}] } (text
+  only) and sync.js manifests it as payDebug. Next rescan WITH SYNC ON turns "the strips could
+  not measure" into data: I see what every band read on the user's photo and can pin the
+  winning geometry instead of guessing.
+LIVE: full corpus re-run on the v2.0.20 build — all 10 photos identical outcomes (S25 pair
+green via pay rescue, hofer2 Krüger rescue, 8 baseline); tests 107/107.

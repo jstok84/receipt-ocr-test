@@ -198,6 +198,7 @@ export async function uploadScan(cfg, scan) {
       winner: scan.payRescue?.winner ? { ...scan.payRescue.winner, image: null } : null,
       attempts: scan.payRescue?.attempts ?? null, // strip texts; images stay out of the manifest
     },
+    payDebug: scan.payDebug ?? null, // v2.0.20: pay arm fired but no band measured the target — every band's readings ride along
     corrections: scan.corrections,
     timings: { totalMs: scan.ms ?? null },
     ua: scan.ua ?? null,

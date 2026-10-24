@@ -153,6 +153,7 @@ export default function App() {
               attempts: ocr.payRescue.attempts,
             }
           : undefined,
+        payDebug: ocr.payDebug ?? undefined,
         corrections: ocr.corrections,
         ms,
         ua: navigator.userAgent,
