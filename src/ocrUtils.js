@@ -2,6 +2,11 @@ import { createWorker } from "tesseract.js";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 import pdfWorker from "pdfjs-dist/build/pdf.worker.js";
 import { parseReceipt, namesScore, namesSimilar, payableRescue, discountAmounts, findDateCandidate, validDateFromReading } from "./parseReceipt";
+// v2.1: canvas-free decode + preprocess. The pixels Tesseract sees are produced
+// deterministically (WebCodecs / libheif decode → OpenCV Mats). The ONLY canvas
+// touch is the final PNG encoding step, which keeps image sizes small enough for
+// Tesseract to ingest (a raw 8000×6000 BMP is 144 MB and chokes the worker).
+import { decodeToRGBA, rgbaToMat } from "./pixels";
 
 GlobalWorkerOptions.workerSrc = pdfWorker;
 
@@ -102,10 +107,15 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
       // (ocr-eurospin2): contrast-stretched OCR read 3/3 item amounts (1,55/1,29/1,45),
       // unstretched read 0-2/3. Thermal print contrast is naturally low after crops.
     } = options;
-    const img = new Image();
-    img.crossOrigin = "Anonymous";
-    img.onload = async () => {
-      console.log("🖼️ Image loaded:", img.width, "x", img.height);
+    // v2.1: decode through WebCodecs / libheif — deterministic, no canvas.
+    // The old path used new Image() + canvas.drawImage + cv.imread(canvas);
+    // that canvas readback is what Brave's fingerprinting protection perturbs.
+    const img = {};
+    (async () => {
+      const decoded = options.decoded || (await decodeToRGBA(imageSrc));
+      img.width = decoded.width;
+      img.height = decoded.height;
+      console.log("🖼️ Image decoded:", img.width, "x", img.height, "via", decoded.via);
       // v1.7.7: intermediate stage previews + pacing sleeps are DEV-ONLY
       // (same switch as the parser: window.__OCR_DEBUG). Previously every
       // scan appended a fresh container to document.body that was never
@@ -398,19 +408,24 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
         }
         return result;
       }
-      const canvas = document.createElement("canvas");
-      let scaleFactor = 1;
-      if (img.width < 1000) {
-        scaleFactor = 2.0;
-      }
-      canvas.width = img.width * scaleFactor;
-      canvas.height = img.height * scaleFactor;
-      const ctx = canvas.getContext("2d");
-      ctx.scale(scaleFactor, scaleFactor);
-      ctx.drawImage(img, 0, 0);
+      // Pixels -> Mat directly. The old path drew the image onto a canvas and
+      // read it back with cv.imread(); that readback is exactly what Brave's
+      // fingerprinting protection perturbs, profile by profile.
       let src, gray, sharpened, smoothed, thresh, kernel;
       try {
-        src = cv.imread(canvas);
+        src = rgbaToMat(decoded.data, decoded.width, decoded.height);
+        // Preserve the historical pre-scale: photos narrower than 1000px used to
+        // be drawn 2× onto the canvas before imread. Same intent, now a Mat
+        // resize. The kernel must stay BILINEAR: the old canvas draw used
+        // Chromium's default smoothing (bilinear); INTER_CUBIC here resampled
+        // differently and measurably changed OCR on the two sub-1000px corpus
+        // photos (eurospin-cropped 5→2 items, spar-2024-12-14 10→8).
+        if (decoded.width < 1000) {
+          const up = new cv.Mat();
+          cv.resize(src, up, new cv.Size(decoded.width * 2, decoded.height * 2), 0, 0, cv.INTER_LINEAR);
+          src.delete();
+          src = up;
+        }
         console.log("📥 Step 0: Image read into OpenCV");
         // Step 1: Grayscale
         if (grayscale) {
@@ -676,26 +691,42 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
         // cropped into the receipt on cluttered photos; bright-mask crop runs
         // early now, before deskew)
 
-        // Final canvas output
+        // v2.1 final encoding: one canvas touch, at the very end, for PNG only.
+        // Decode + preprocess are canvas-free; the PNG step keeps Tesseract's
+        // input small (uncompressed 8000×6000 BMP = 144 MB and crashes the worker).
         const finalCanvas = document.createElement("canvas");
         finalCanvas.width = gray.cols;
         finalCanvas.height = gray.rows;
-        const ctxFinal = finalCanvas.getContext("2d");
-        ctxFinal.clearRect(0, 0, finalCanvas.width, finalCanvas.height);
         cv.imshow(finalCanvas, gray);
+        const dataURL = finalCanvas.toDataURL("image/png");
+
+        // 2× upscale for Tesseract — same as the old upscaleDataURL path,
+        // now on a canvas created from the processed Mat.
+        const up = new cv.Mat();
+        cv.resize(gray, up, new cv.Size(gray.cols * 2, gray.rows * 2), 0, 0, cv.INTER_CUBIC);
+        const tesseractCanvas = document.createElement("canvas");
+        tesseractCanvas.width = up.cols;
+        tesseractCanvas.height = up.rows;
+        cv.imshow(tesseractCanvas, up);
+        const tesseractURL = tesseractCanvas.toDataURL("image/png");
+        up.delete();
+
+        // Capture the output geometry BEFORE the mats are freed — reading
+        // .cols/.rows on a deleted Mat throws a BindingError (this cost a
+        // full debugging round: the error surfaced two lines below, with
+        // every preceding stage looking healthy).
+        const outWidth = gray.cols, outHeight = gray.rows;
         gray.delete();
         src.delete();
-        resolve(finalCanvas.toDataURL("image/png"));
+        resolve({ tesseractURL, dataURL, width: outWidth, height: outHeight });
       } catch (err) {
-        console.error("❌ Error during preprocessing:", err);
+        console.error("❌ Error during preprocessing:", err.name || "Error", err.message || "", err.stack?.slice(0, 300) || "");
         if (src) src.delete();
         if (kernel) kernel.delete();
         if (gray) gray.delete();
         reject(err);
       }
-    };
-    img.onerror = (e) => reject(new Error("Failed to load image: " + e.message));
-    img.src = typeof imageSrc === "string" ? imageSrc : URL.createObjectURL(imageSrc);
+    })();
   });
 }
 
@@ -1188,16 +1219,14 @@ export async function processImage(imageSrc, onProgress = () => {}) {
     Object.assign(preOpts, window.__OCR_OPTS);
     console.log("🧪 evidence-run preprocessing override:", window.__OCR_OPTS);
   }
-  const preprocessedDataURL = await preprocessWithOpenCV(imageSrc, preOpts);
+  const pre = await preprocessWithOpenCV(imageSrc, preOpts);
+  const preprocessedDataURL = pre.dataURL;
   if (window.__OCR_DEBUG === true) {
-    await pushStageDataURL("after OpenCV preprocessing", preprocessedDataURL);
-  }
-  const upscaled = await upscaleDataURL(preprocessedDataURL);
-  if (window.__OCR_DEBUG === true) {
-    await pushStageDataURL("upscaled 2× — exact pixels fed to Tesseract", upscaled);
+    await pushStageDataURL("after OpenCV preprocessing", pre.dataURL);
+    await pushStageDataURL("upscaled 2× — exact pixels fed to Tesseract", pre.tesseractURL);
   }
   const worker = await getWorker();
-  const result = await worker.recognize(upscaled);
+  const result = await worker.recognize(pre.tesseractURL);
   let cleaned = cleanAndMergeText(result.data.text);
 
   // v1.7.1 adaptive second pass: if the first OCR parse has no total or no
@@ -1213,7 +1242,7 @@ export async function processImage(imageSrc, onProgress = () => {}) {
     try {
       freshWorker = await createWorker("slv+eng", 1, {});
       await freshWorker.setParameters(tessParams);
-      const secondResult = await freshWorker.recognize(upscaled);
+      const secondResult = await freshWorker.recognize(pre.tesseractURL);
       const secondCleaned = cleanAndMergeText(secondResult.data.text);
       const secondParse = parseReceipt(secondCleaned);
       if (scoreParse(secondParse) > scoreParse(firstParse)) {
