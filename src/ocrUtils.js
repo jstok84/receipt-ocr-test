@@ -1140,12 +1140,22 @@ function pushStageDataURL(label, srcURL) {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
-      const w = Math.min(480, img.width);
-      const h = Math.max(1, Math.round(img.height * (w / img.width)));
+      // Stage via a native-size canvas first, then downscale. Drawing the
+      // decoded Image element straight to the ≤480 thumbnail produced a soft
+      // result on its first draw when scale < 0.5 (Chrome first-draw decode path
+      // measured live: lapVar 1852/3897 vs 8411 via the canvas route on the same
+      // PNG; warm repeats all give 8411). recordStage has always used the
+      // canvas→canvas route and was never affected.
+      const big = document.createElement("canvas");
+      big.width = img.naturalWidth;
+      big.height = img.naturalHeight;
+      big.getContext("2d").drawImage(img, 0, 0);
+      const w = Math.min(480, big.width);
+      const h = Math.max(1, Math.round(big.height * (w / big.width)));
       const small = document.createElement("canvas");
       small.width = w;
       small.height = h;
-      small.getContext("2d").drawImage(img, 0, 0, w, h);
+      small.getContext("2d").drawImage(big, 0, 0, w, h);
       buf.push({ label, dataURL: small.toDataURL("image/png") });
       resolve();
     };

@@ -531,6 +531,40 @@ The user provided a manual crop of the EUROSPIN photo (Downloads\\scan-eurospinc
   visibly blurry/soft with doubled letter edges. Verdict: the preprocessing is not the cause of any
   "worse" reading on SPAR — it is idle-to-helpful there and materially improves the OCR input image;
   no default changes justified.
+
+EVIDENCE-PANEL STAGE-SOFTENING ROOT-CAUSED AND FIXED (2026-10-24, v2.0.14):
+  User's eye: stage 5 "Perspective Corrected" looks best; stage 6 "after OpenCV
+  preprocessing" looks worse. Stage-metric instrument (page-side cv.Laplacian
+  mean-of-squares on the same items-region of the ≤480px stage thumbnails, SPAR
+  default run): Grayscale 6356 → crop 7639 → stretch 10885 → pre-warp 10885
+  (identical pixels; deskew is a no-op on SPAR — absdiff 0.00) → warp 8411
+  (real resample softening from the ≤962-wide warp cap, −20%) → st.6 1852 →
+  st.7 1927. The 5→6 drop (5.6×) is IMPOSSIBLE from the code: st.5 and st.6
+  source the same warped mat (optional post-warp stages all default-off), and
+  finalCanvas = cv.imshow(canvas, gray) at the same native size.
+  MECHANISM (instrumented live, three probes): pushStageDataURL sources were
+  patched and byte-compared — the string used for st.6 IS byte-identical to the
+  finalCanvas PNG (equalsFinalCanvasPNG: true), and an idle-time re-derivation
+  of that same PNG through the identical decode→drawImage path reproduces the
+  crisp 8411 thumb. The soft result only happens on the FIRST draw of a freshly
+  decoded Image element when the downscale factor is < 0.5 (480/962 = 0.499):
+  first draws gave 1852/2508/3897 (raising imageSmoothingQuality does not
+  rescue), warm repeats give 8411 deterministically; drawing from a native-size
+  canvas (recordStage's route) is crisp on the very first draw at the same
+  factor/route. So the pipeline never softens anything — st.6/st.7 thumbnails
+  were degraded purely by the Chrome first-draw decode path in the evidence
+  capture. st.7's source is the 2× upscale (1924×4658), scale 0.25, same trap.
+  Ground truth for OCR is unaffected: Tesseract eats the crisp upscale of the
+  crisp warp output; OCR deltas were never real (26/51.61 identical throughout).
+  FIX (v2.0.14, src/ocrUtils.js pushStageDataURL): stage the decoded Image on a
+  native-size canvas first, then downscale — same route as recordStage, immune
+  to the first-draw quirk. Validation: SPAR st.6 thumb now lapVar 8411 and
+  pixel-identical to st.5 (absdiff 0.00), st.7 7910; OCR outcome unchanged
+  (26 items / 51.61 / 62 lines / 9 keywords). No-regression sweep live: HOFER-B
+  3 items / 4.73 with Krüger strip rescue intact; INTERSPORT 1 item / 55.99
+  (qty×price v2.0.13 intact); EUROSPIN 3 items / 4.29 vs 4.20 as before. Node
+  tests 79/79. The change only touches the debug/evidence capture path; no OCR
+  pixels change.
 - (3) "it wasn't just hofer rescued with 'lanczos' family corrections" — CORRECT, taxonomy from the
   ledger: the strip/band re-OCR machinery (resampling cascade: catrom default + lanczos3 as the
   5th band-cascade attempt) has THREE documented receivers:
