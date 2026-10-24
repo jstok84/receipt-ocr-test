@@ -456,10 +456,15 @@ requested).
 ## PHONE CASE #5 (2026-10-24): same INTERSPORT receipt, RE-PHOTOGRAPHED
 - Bucket pair `…e6df3018d80af5bc` (photo + manifest JSON, phone Chrome 155).
   The user read it as "treated differently" — TWO stacked causes, both proven:
-- CAUSE 1 (environment): the deployed site still runs commit 7e9342a; five
-  local commits (bb7828b…760309a) incl. the INTERSPORT qty×price v2.0.13 parser
-  are un-pushed. Deployed parse of the new photo: 2 items (JAKNA + the discount
-  row as a phantom 24.90 item), total 99.99, sum check fail.
+- CORRECTION (user pushback, same day): "not true — deployed was NOT stale."
+  USER IS RIGHT, my CAUSE 1 was wrong. git log + the manifest's own evidence
+  prove it: origin/main was already at 760309a (v2.0.13 + panel fix) when this
+  photo was scanned, and the deployed manifest shows the MERGED JAKNA item
+  with quantity:1 — v2.0.13 behavior; a pre-13 parser cannot produce that
+  merge. My error was asserting the deployed version from a stale working
+  note ("deployed = 7e9342a") instead of re-checking origin first. The ONLY
+  difference was the photo itself (CAUSE 2 below), plus the then-missing
+  v2.0.14 guards (75ff9c7), which the user pushed afterwards (deploy CI green).
 - CAUSE 2 (photo): genuinely harder capture — backlit keyboard ground, fold
   crease through the print, rotated. OCR misreads: BOTH printed 55,99 totals
   (DDV "Skupaj" + PLAČANO MASTERCARD) read 99,99 — glyph 5↔9; every total zone
