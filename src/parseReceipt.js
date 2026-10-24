@@ -1105,6 +1105,70 @@ export { discountAmounts };
  * ok:true provenance check naming every number involved (the photo's pay
  * lines were misread, that fact is preserved, never hidden).
  */
+/**
+ * v2.0.22 date-rescue decision helpers (pure, node-testable — the strip work
+ * lives in ocrUtils.js/app.js, but ARM and ACCEPT rules are decisions, so
+ * they sit beside payableRescue):
+ *   findDateCandidate      — does ANY line look like a dot-fused date the
+ *                            parser couldn't read (arm condition)?
+ *   validDateFromReading   — does a strip re-OCR line contain a COMPLETE,
+ *                            calendar-valid date (accept condition)?
+ * Policy: never decompose an ambiguous digit run ("103.2025" → 1.03 / 10.3 /
+ * 11.03 is a three-way coin flip). The printed date physically exists on the
+ * paper, so when OCR garbles it we re-MEASURE the pixels (strip + zoom +
+ * kernel diversity, same lesson as the pay arm) and accept only a clean,
+ * valid reading. No valid reading → the field stays "—" (no evidence).
+ */
+
+/**
+ * Arm: exactly one fused group.1..3 digits + 20xx-year via a single dot,
+ * WITH a time anchor (HH:MM) on the same line — the HOFER-EFT appendix
+ * shape ("a 103.2025 08:11" from "11.03.2025 08:11"). Two-dot date lines
+ * ("18. 09. 2025") need NO candidate: extractDate already handles them;
+ * the caller only arms when parse.date came back null.
+ * Returns the candidate LINE (or null) — the arm decision (date==null) is
+ * made by the caller on the parsed result.
+ */
+export function findDateCandidate(text) {
+  if (typeof text !== "string") return null;
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  for (const line of lines) {
+    if (/\b\d{1,3}\s*\.\s*20\d{2}\b/.test(line) && /\b[0-2]?\d:[0-5]\d\b/.test(line)) return line;
+  }
+  return null;
+}
+
+/**
+ * Accept: a COMPLETE dotted (dot or space separated) calendar date from a
+ * strip re-OCR reading. Year must be 20xx (receipt era; also keeps junk
+ * digit runs out). Calendar validity enforced (no 30.02). Returns ISO
+ * "YYYY-MM-DD" or null — null is the normal outcome for a garbled reading,
+ * the caller then simply has no measurement.
+ */
+export function validDateFromReading(rawLines) {
+  const lines = Array.isArray(rawLines) ? rawLines : typeof rawLines === "string" ? String(rawLines).split("\n") : [];
+  const regexes = [
+    /\b(0?[1-9]|[12][0-9]|3[01])\s*\.\s*(0?[1-9]|1[0-2])\s*\.\s*(20\d{2})\b/,
+    /\b(0?[1-9]|[12][0-9]|3[01])\s*[.,]\s*(0?[1-9]|1[0-2])\s*[.,]\s*(20\d{2})\b/,
+    /\b(0?[1-9]|[12][0-9]|3[01])\s+(0?[1-9]|1[0-2])\s+(20\d{2})\b/,
+  ];
+  for (const raw of lines) {
+    const line = String(raw);
+    for (const re of regexes) {
+      const m = line.match(re);
+      if (!m) continue;
+      const day = parseInt(m[1], 10);
+      const month = parseInt(m[2], 10);
+      const year = parseInt(m[3], 10);
+      const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+      const dim = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+      if (day > dim) continue;
+      return year + "-" + String(month).padStart(2, "0") + "-" + String(day).padStart(2, "0");
+    }
+  }
+  return null;
+}
+
 export function payableRescue(parse, text, measured) {
   if (!parse || !Array.isArray(parse.checks) || typeof text !== "string") return null;
   const sumCheck = parse.checks.find((c) => !c.ok && /^items sum ([\d.]+) ≠ total ([\d.]+)/.test(c.text));

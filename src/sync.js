@@ -199,9 +199,12 @@ export async function uploadScan(cfg, scan) {
       attempts: scan.payRescue?.attempts ?? null, // strip texts; images stay out of the manifest
     },
     payDebug: scan.payDebug ?? null, // v2.0.20: pay arm fired but no band measured the target — every band's readings ride along
+    dateRescue: scan.dateRescue ?? null, // v2.0.22: date rescued by strip re-OCR (measured reading + winner + attempt texts)
     corrections: scan.corrections,
     timings: { totalMs: scan.ms ?? null },
-    ua: scan.ua ?? null,
+    // ua field REMOVED (v2.0.23, user privacy directive): navigator.userAgent
+    // is browser-identifier data and must never leave the device. Existing
+    // manifests on the bucket may still carry the old field; new uploads do not.
   };
   await putObject(
     cfg,

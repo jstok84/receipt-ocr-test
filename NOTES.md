@@ -866,3 +866,36 @@ LIVE (v2.0.21 dev build): eurospin + scan-eurospin GREEN 3/4.29; hofer2 Krüger 
 SPAR [?] intact; hofer-phone green; intersport trio green. (First post-edit sweep ran on a
 stale v2.0.20 bundle — HMR didn't propagate the version bump; hard reload showed v2.0.21 and
 the correct results. Version-chip verification before sweeping is now mandatory.)
+
+## CASE #10 — date rescue, measurement-first (2026-10-24, v2.0.22, live-verified)
+User question "the date is not picked up because you are omitting the transaction area, the
+only date is there?" — audited: extractDate scans ALL lines incl. the EFT appendix (the
+"Skipping due to invalid description" skips are item-detection, unrelated). The real cause:
+OCR garbles "11.03.2025 08:11" into "a 103.2025 08:11" (single-dot fused form) which matches
+NO date regex — and NO arithmetic decomposition is allowed (3-way coin flip 1.03/10.3/11.03,
+same sin as arithmetic totals). User approved the measured alternative: "if there is date
+candidate shouldn't we do zoom and apply zancoz or similar?"
+
+v2.0.22 — date rescue, pay-arm machinery, measurement-not-decomposition:
+- parseReceipt.js: PURE exported helpers (node-testable, decisions pinned):
+  findDateCandidate(text) — arm: a line with fused \d{1,3}.20xx-year + HH:MM time anchor;
+  validDateFromReading(lines) — accept: COMPLETE 20xx calendar date (dot/space forms,
+  Feb-29 validity enforced) from strip readings; anything ambiguous/null is the normal miss.
+- ocrUtils.js: date arm AFTER the pay arm, fires ONLY when parse.date == null AND the
+  candidate exists; 7 attempts prep/raw x bands [0.25-0.6..0.45-0.9] x catrom/lanczos3 x
+  psm 6/7, appended-diversity order; first COMPLETE valid reading wins; result rides as
+  result.dateRescue {date, winner, attempts(text)}; otherwise date stays null ("—").
+- app.js: runParsing gains dateOverride (applied ONLY when parse.date == null);
+  maybeSync manifests dateRescue.
+- Pins tests/dateRescue.test.js (7): candidate arms on hofer-total-drift-real verbatim;
+  junk lines no-arm; EUROSPIN parseable-date interplay pinned (text-level candidate exists
+  but date!=null -> no arm); clean reading accepted; fused/garbled/stray-amounts null;
+  Feb 30/31.04 rejected, 29.02 leap ok. Tests 116/116.
+LIVE (chip verified v2.0.22): all 10 real photos identical baseline in items/total/checks;
+dates: EUROSPIN 2025-09-18 green receipts unchanged, intersport trio 55.99, hofer2 Kruger
+[?] intact, spar-coupon [?] intact. Console: ZERO date-arm lines across the sweep (the arm
+stays silent everywhere it should — verified via tools.browser.console, 372 messages).
+hoferracun1-class real photo still needs a USER RESCAN to prove the measured date fills —
+the strip band list has not been validated on ITS pixels; if no band measures a valid date,
+date stays "—" exactly as today (no regression either way). If it measures, we learn which
+band won from the manifest's dateRescue field.

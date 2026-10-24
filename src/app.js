@@ -102,7 +102,7 @@ export default function App() {
   // (result.payRescue?.amount). processImage's own finalParse is discarded
   // here — app.js re-parses independently — so the rescue decision must be
   // re-applied on this side too, with the measurement carried over.
-  const runParsing = (rawText, extraItems = [], rescue = null, corrections = [], alreadyCleaned = false, payAmount = null) => {
+  const runParsing = (rawText, extraItems = [], rescue = null, corrections = [], alreadyCleaned = false, payAmount = null, dateOverride = null) => {
     let prepared = rawText;
     if (!useFlatMode) {
       if (!alreadyCleaned) prepared = cleanAndMergeText(rawText);
@@ -114,6 +114,10 @@ export default function App() {
     // matches items − POPUST ±0.02 (decision logic in parseReceipt).
     const payFixed = payableRescue(result, prepared, payAmount);
     if (payFixed) result = payFixed;
+    // v2.0.22 date rescue: only a measured strip re-OCR reading (complete,
+    // calendar-valid) can fill the date, and ONLY when the parse itself
+    // extracted none — never a decomposition of an ambiguous garble.
+    if (result.date == null && dateOverride) result = { ...result, date: dateOverride };
     setParsed(result);
     // v2.0.2: the app-level parse is the last parseReceipt call of the scan,
     // so window.__OCR_LOG now holds exactly this scan's decision trail
@@ -154,9 +158,11 @@ export default function App() {
             }
           : undefined,
         payDebug: ocr.payDebug ?? undefined,
+        dateRescue: ocr.dateRescue
+          ? { date: ocr.dateRescue.date, winner: ocr.dateRescue.winner, attempts: ocr.dateRescue.attempts }
+          : undefined,
         corrections: ocr.corrections,
         ms,
-        ua: navigator.userAgent,
       });
       setSyncStatus({ ok: true, jsonKey: info.jsonKey });
       if (jobId != null) jobSync(jobId, { state: "ok", key: info.photoKey });
@@ -224,7 +230,7 @@ export default function App() {
       const t0 = performance.now();
       const result = await processImage(dataUrl);
       setText(result.text);
-      const parsedNow = runParsing(result.text, result.extraItems, result.rescue, result.corrections, true, result.payRescue?.amount ?? null);
+      const parsedNow = runParsing(result.text, result.extraItems, result.rescue, result.corrections, true, result.payRescue?.amount ?? null, result.dateRescue?.date ?? null);
       const ms = Math.round(performance.now() - t0);
       setPipelineMs(ms);
       setLoading(false);
@@ -253,7 +259,7 @@ export default function App() {
         const t0 = performance.now();
         const result = await processImage(file);
         setText(result.text);
-        const parsedNow = runParsing(result.text, result.extraItems, result.rescue, result.corrections, true, result.payRescue?.amount ?? null);
+        const parsedNow = runParsing(result.text, result.extraItems, result.rescue, result.corrections, true, result.payRescue?.amount ?? null, result.dateRescue?.date ?? null);
         const ms = Math.round(performance.now() - t0);
         setPipelineMs(ms);
         jobDone(jobId, "done", `${ms} ms · ${parsedNow.items.length} items · ${parsedNow.checks.filter(c => !c.ok).length} failing checks`);

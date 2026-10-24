@@ -1,7 +1,7 @@
 import { createWorker } from "tesseract.js";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 import pdfWorker from "pdfjs-dist/build/pdf.worker.js";
-import { parseReceipt, namesScore, namesSimilar, payableRescue, discountAmounts } from "./parseReceipt";
+import { parseReceipt, namesScore, namesSimilar, payableRescue, discountAmounts, findDateCandidate, validDateFromReading } from "./parseReceipt";
 
 GlobalWorkerOptions.workerSrc = pdfWorker;
 
@@ -1631,6 +1631,63 @@ export async function processImage(imageSrc, onProgress = () => {}) {
     }
   }
 
+  // v2.0.22 date rescue — measurement, not decomposition (policy: the printed
+  // date physically exists on the paper; an ambiguous garble like
+  // "103.2025" is a three-way coin flip ONLY for arithmetic, never for the
+  // pixels). Arms ONLY when the parse extracted NO date AND a fused
+  // date-candidate line survives (tight form: group.20xx + HH:MM — the
+  // HOFER-EFT appendix). Accepts a COMPLETE calendar-valid reading from any
+  // strip attempt; otherwise the date stays null ("—") exactly as before,
+  // so every previously-resolving receipt is untouched.
+  let dateRescue = null;
+  if (finalParse.date == null) {
+    const candidate22 = findDateCandidate(cleaned);
+    if (candidate22) {
+      console.log("🗓 Date candidate (fused, no parseable date):", JSON.stringify(candidate22), "— strip re-OCR armed");
+      const attempts22 = [];
+      let dISO22 = null;
+      let dWin22 = null;
+      outer22: for (const [stripKind22, band22, factor22, psm22, kernel22] of [
+        ["prep", [0.3, 0.75], 2, "6", "catrom"],
+        ["prep", [0.3, 0.75], 3, "6", "lanczos3"],
+        ["raw", [0.3, 0.75], 2, "6", "catrom"],
+        ["prep", [0.25, 0.6], 3, "6", "lanczos3"],
+        ["prep", [0.45, 0.9], 2, "6", "catrom"],
+        ["prep", [0.3, 0.75], 3, "7", "catrom"],
+        ["raw", [0.3, 0.75], 3, "7", "lanczos3"],
+      ]) {
+        try {
+          const base22 = stripKind22 === "raw" ? imageSrc : (prePerspectiveDataURL || preprocessedDataURL);
+          const strip22 = stripKind22 === "raw"
+            ? await rawStripDataURL(base22, band22, factor22, kernel22)
+            : await topStripDataURL(base22, band22, factor22, kernel22);
+          await worker.setParameters({ ...tessParams, tessedit_pageseg_mode: psm22 });
+          const res22 = await worker.recognize(strip22);
+          await worker.setParameters(tessParams);
+          const lines22 = cleanAndMergeText(res22.data.text).split("\n").filter(Boolean);
+          const iso22 = validDateFromReading(lines22);
+          console.log("🗓 Date re-OCR (", stripKind22, band22.join("-"), factor22 + "x", kernel22, "psm", psm22, "):", lines22, "->", iso22);
+          attempts22.push({ stripKind: stripKind22, band: band22, factor: factor22, psm: psm22, kernel: kernel22, lines: lines22, hit: Boolean(iso22) });
+          if (iso22) {
+            dISO22 = iso22;
+            dWin22 = { stripKind: stripKind22, band: band22, factor: factor22, psm: psm22, kernel: kernel22, line: lines22.find((l) => l === candidate22 || validDateFromReading([l])) || "" };
+            break outer22;
+          }
+        } catch (errDate) {
+          console.warn("🗓 Date re-OCR attempt failed:", errDate);
+        }
+      }
+      if (dISO22) {
+        console.log("🗓 Date rescue: measured", dISO22, "on strip band", dWin22.band.join("-"), dWin22.kernel, "— parsed OCR text carried no date");
+        dateRescue = {
+          date: dISO22,
+          winner: dWin22,
+          attempts: attempts22, // text evidence only; images dropped
+        };
+      }
+    }
+  }
+
   updateOCRProgressUI("OCR complete", 1);
   setTimeout(() => updateOCRProgressUI("", 0), 2000);
   // The winning attempt's strip image rides along for the evidence panel;
@@ -1642,6 +1699,7 @@ export async function processImage(imageSrc, onProgress = () => {}) {
     corrections,
     payRescue,
     payDebug,
+    dateRescue,
     rescue: rescued
       ? {
           missing: missingBucket,
