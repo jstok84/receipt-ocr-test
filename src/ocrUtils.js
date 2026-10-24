@@ -998,8 +998,9 @@ function rawStripDataURL(imageSrc, band = [0, 0.25], factor = 3, mode = "catrom"
  * approximate the sharp bench result (lanczos3).
  */
 function upscaleCanvasProgressive(src, totalFactor) {
+  const factor = clampStripFactor(src.width, src.height, totalFactor);
   let out = src;
-  let remaining = totalFactor;
+  let remaining = factor;
   while (remaining > 1.0001) {
     const step = Math.min(remaining, 2);
     const c = document.createElement("canvas");
@@ -1021,6 +1022,23 @@ function upscaleCanvasProgressive(src, totalFactor) {
  * pica died on exactly this at import. Fallback: progressive drawImage
  * upscale (no pixel reads), which never crashed anything.
  */
+/**
+ * Strip pixel budget. Live evidence (2026-10-24, s25-hofer sweep): a 3x upscale
+ * of a 3000x4000 phone photo's top band is ~16.5 MP of table texture, and
+ * Tesseract PSM 6 ground 164 s on it (the scan that should take seconds). The
+ * validated small-photo strips sit far under these bounds (hofer ~2.3 MP,
+ * eurospin ~1.2 MP), so the budget only ever bites on phone-photo receipts —
+ * where it is the difference between a 26 s scan and a 190 s one.
+ */
+const STRIP_MAX_W = 3000;
+const STRIP_MAX_AREA = 9e6;
+function clampStripFactor(sw, sh, factor) {
+  let f = factor;
+  if (sw * f > STRIP_MAX_W) f = STRIP_MAX_W / sw;
+  if (sw * sh * f * f > STRIP_MAX_AREA) f = Math.sqrt(STRIP_MAX_AREA / (sw * sh));
+  return Math.max(0.5, f);
+}
+
 function bicubicUpscaleGrayCanvas(srcCanvas, factor, mode = "catrom") {
   let sd;
   try {
@@ -1032,6 +1050,7 @@ function bicubicUpscaleGrayCanvas(srcCanvas, factor, mode = "catrom") {
   }
   const sw = srcCanvas.width;
   const sh = srcCanvas.height;
+  factor = clampStripFactor(sw, sh, factor);
   const dw = Math.round(sw * factor);
   const dh = Math.round(sh * factor);
   const out = new ImageData(dw, dh);
@@ -1351,7 +1370,7 @@ export async function processImage(imageSrc, onProgress = () => {}) {
           // garble under the warp (live evidence), while the unwrapped crop
           // is what the Node benchmarks read correctly. "raw" attempts bypass
           // resampling entirely (canvas gray+stretch math == sharp params).
-          const base = stripKind === "raw" ? imageSrc : (prePerspectiveDataURL || preprocessedDataURL);
+          const base = prePerspectiveDataURL || (stripKind === "raw" ? imageSrc : preprocessedDataURL);
           strip = stripKind === "raw" ? await rawStripDataURL(base, band) : await topStripDataURL(base, band);
           await worker.setParameters({ ...tessParams, tessedit_pageseg_mode: psm });
           const stripResult = await worker.recognize(strip);
@@ -1426,7 +1445,7 @@ export async function processImage(imageSrc, onProgress = () => {}) {
         ["prep", [0.4, 0.75], 2, "6", "lanczos3"],
       ]) {
         try {
-          const base = stripKind === "raw" ? imageSrc : (prePerspectiveDataURL || preprocessedDataURL);
+          const base = prePerspectiveDataURL || (stripKind === "raw" ? imageSrc : preprocessedDataURL);
           const strip = stripKind === "raw"
             ? await rawStripDataURL(base, band, factor, kernel)
             : await topStripDataURL(base, band, factor, kernel);
@@ -1608,7 +1627,7 @@ export async function processImage(imageSrc, onProgress = () => {}) {
           ["raw", [0.55, 1.0], 3, "7", "catrom"],
         ]) {
           try {
-            const base15 = stripKind === "raw" ? imageSrc : (prePerspectiveDataURL || preprocessedDataURL);
+            const base15 = prePerspectiveDataURL || (stripKind === "raw" ? imageSrc : preprocessedDataURL);
             const strip15 = stripKind === "raw"
               ? await rawStripDataURL(base15, band, factor, payKernel15)
               : await topStripDataURL(base15, band, factor, payKernel15);
@@ -1691,7 +1710,7 @@ export async function processImage(imageSrc, onProgress = () => {}) {
         ["raw", [0.3, 0.75], 3, "7", "lanczos3"],
       ]) {
         try {
-          const base22 = stripKind22 === "raw" ? imageSrc : (prePerspectiveDataURL || preprocessedDataURL);
+          const base22 = prePerspectiveDataURL || (stripKind22 === "raw" ? imageSrc : preprocessedDataURL);
           const strip22 = stripKind22 === "raw"
             ? await rawStripDataURL(base22, band22, factor22, kernel22)
             : await topStripDataURL(base22, band22, factor22, kernel22);

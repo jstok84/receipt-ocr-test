@@ -42,6 +42,74 @@ async function toBytes(input) {
 const MIME = { jpeg: "image/jpeg", png: "image/png", avif: "image/avif", webp: "image/webp" };
 
 /**
+ * EXIF orientation tag (IFD0 0x0112) from a JPEG's APP1 segment.
+ * Returns 1-8, or 1 when absent/unreadable. Only JPEG is parsed — PNG eXif
+ * chunks and HEIC rotation boxes do not occur in this app's inputs (measured:
+ * the one HEIC in the corpus carries no irot/imir/Exif box at all).
+ */
+function parseExifOrientation(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let i = 2; // skip SOI
+  while (i < bytes.length - 4) {
+    if (bytes[i] !== 0xFF) { i++; continue; }
+    const marker = bytes[i + 1];
+    if (marker === 0xD9 || marker === 0xDA) break; // EOI / SOS — no EXIF before here
+    const len = dv.getUint16(i + 2);
+    if (marker === 0xE1 && len > 8 &&
+        bytes[i + 4] === 0x45 && bytes[i + 5] === 0x78 && bytes[i + 6] === 0x69 && bytes[i + 7] === 0x66) {
+      const tiff = i + 10; // skip "Exif\0\0"
+      const le = bytes[tiff] === 0x49; // "II" = little endian
+      const g16 = (o) => dv.getUint16(tiff + o, le);
+      const ifd = tiff + dv.getUint32(tiff + 4, le);
+      const n = g16(ifd - tiff);
+      for (let k = 0; k < n; k++) {
+        const e = ifd + 2 + k * 12;
+        if (g16(e - tiff) === 0x0112) {
+          const o = g16(e - tiff + 8);
+          return o >= 1 && o <= 8 ? o : 1;
+        }
+      }
+      return 1;
+    }
+    i += 2 + len;
+  }
+  return 1;
+}
+
+/**
+ * Rearrange a raw (coded-order) RGBA frame into its EXIF display orientation.
+ * Iterates destination coordinates and maps back to source — the direction that
+ * was pixel-verified against the canvas decode on the corpus (max 7/255 diff,
+ * pure ICC noise; every other transform measured >98% diff).
+ * `w`/`h` are the SOURCE (coded) dimensions.
+ */
+function applyExifOrientation(src, w, h, o) {
+  if (o === 1) return { data: src, width: w, height: h };
+  const swap = o >= 5;
+  const ow = swap ? h : w;
+  const oh = swap ? w : h;
+  const dst = new Uint8ClampedArray(src.length);
+  for (let y = 0; y < oh; y++) {
+    for (let x = 0; x < ow; x++) {
+      let sx, sy;
+      switch (o) {
+        case 2: sx = w - 1 - x; sy = y; break;         // mirror horizontal
+        case 3: sx = w - 1 - x; sy = h - 1 - y; break; // rotate 180
+        case 4: sx = x;         sy = h - 1 - y; break; // mirror vertical
+        case 5: sx = y;         sy = x; break;         // transpose
+        case 6: sx = y;         sy = h - 1 - x; break; // rotate 90 CW
+        case 7: sx = h - 1 - y; sy = w - 1 - x; break; // transverse
+        case 8: sx = w - 1 - y; sy = x; break;         // rotate 90 CCW
+      }
+      const si = (sy * w + sx) * 4;
+      const di = (y * ow + x) * 4;
+      dst[di] = src[si]; dst[di + 1] = src[si + 1]; dst[di + 2] = src[si + 2]; dst[di + 3] = src[si + 3];
+    }
+  }
+  return { data: dst, width: ow, height: oh };
+}
+
+/**
  * Decode any accepted input to raw RGBA without touching a canvas.
  * Returns { data: Uint8ClampedArray, width, height, type, via }.
  * `via` records which decoder ran — useful in evidence, never used for
@@ -77,6 +145,16 @@ export async function decodeToRGBA(input) {
   if (mime && typeof ImageDecoder !== "undefined") {
     const dec = new ImageDecoder({ data: bytes, type: mime });
     const { image } = await dec.decode();
+    // ImageDecoder reports the EXIF-rotated display geometry but hands out the
+    // RAW coded frame — copyTo does not apply the rotation, it is metadata only
+    // (image.rotation). Reading the buffer as displayWidth x displayHeight
+    // shears the image and destroys OCR: every orientation-6 photo in the
+    // corpus (all six 4000x3000 s25 shots) went from a tight receipt crop to a
+    // full-frame noise cut and a 152 s Tesseract grind. Apply the transform
+    // here so the bytes match what the canvas decode produced — the baseline
+    // was recorded with canvas, which applies EXIF by default.
+    const rawW = image.codedWidth, rawH = image.codedHeight;
+    const rotation = image.rotation;
     const width = image.displayWidth;
     const height = image.displayHeight;
     // VideoFrame's native format is NOT RGBA — decoded JPEG/PNG frames come back
@@ -86,6 +164,18 @@ export async function decodeToRGBA(input) {
     const rgba = new Uint8ClampedArray(width * height * 4);
     await image.copyTo(rgba, { format: "RGBA" });
     image.close();
+    let orientation = parseExifOrientation(bytes);
+    // The transform must land exactly on the browser's display geometry. If the
+    // tag and the decoder disagree (stale/corrupt tag), trust the decoder's own
+    // rotation — it defines the geometry — and drop the mirror it can't report.
+    const swaps = orientation >= 5;
+    if ((swaps ? rawH : rawW) !== width || (swaps ? rawW : rawH) !== height) {
+      orientation = rotation === 90 ? 6 : rotation === 270 ? 8 : rotation === 180 ? 3 : 1;
+    }
+    if (orientation !== 1) {
+      const fixed = applyExifOrientation(rgba, rawW, rawH, orientation);
+      return { data: fixed.data, width: fixed.width, height: fixed.height, type, via: "webcodecs" };
+    }
     return { data: rgba, width, height, type, via: "webcodecs" };
   }
 
