@@ -3,6 +3,12 @@ import { processImage, processPDF, cleanAndMergeText } from "./ocrUtils";
 import { parseReceipt, payableRescue } from "./parseReceipt";
 import { scanVerdict } from "./scanVerdict";
 import { loadSyncCfg, saveSyncCfg, clearSyncCfg, uploadScan, presignS3 } from "./sync";
+import { APP_VERSION } from "./version";
+
+// Version marker (user request 2026-10-24): the header shows the exact app
+// version so scan disputes can never again be about "which bundle is
+// deployed". Also exposed for console probes and written into sync manifests.
+if (typeof window !== "undefined") window.__APP_VERSION = APP_VERSION;
 
 export default function App() {
   const [text, setText] = useState("");
@@ -136,6 +142,7 @@ export default function App() {
         name,
         text: ocr.text,
         parsed: parsedNow,
+        version: APP_VERSION,
         rescue: ocr.rescue,
         payRescue: ocr.payRescue
           ? {
@@ -326,7 +333,9 @@ export default function App() {
         </div>
       </header>
       <p className="app-status">
-        Mode: {useFlatMode ? "flat (no line breaks)" : "line-based"} · everything is
+        <span className="app-version" title="app version marker — compare this against the expected release version">{APP_VERSION}</span>
+        {" · Mode: "}
+        {useFlatMode ? "flat (no line breaks)" : "line-based"} · everything is
         processed locally in your browser{syncCfg ? " · sync on" : ""}
         {syncStatus ? ` · ${typeof syncStatus === "string" ? syncStatus : syncStatus.ok ? "synced ✓" : ""}` : ""}
       </p>

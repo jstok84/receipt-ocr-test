@@ -186,6 +186,7 @@ export async function uploadScan(cfg, scan) {
 
   const manifest = {
     v: 1,
+    version: scan.version ?? null, // app version marker (v2.0.16+) — which bundle produced this scan
     uploadedAt: scan.ts,
     device: scan.device || null,
     image: { sha1_16, bytes: scan.blob.size, name: scan.name || null },
