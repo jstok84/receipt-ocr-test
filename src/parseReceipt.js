@@ -39,6 +39,147 @@ export function namesSimilar(candidate, itemName) {
   return namesScore(candidate, itemName) >= 0.75;
 }
 
+  const nonItemPatterns = [
+    /^plačano/i,
+    /^c\s+\d{1,2},\d{1,2}\s*%\s+[\d\s.,]+—?\s*[\d\s.,]+/i,
+    /^[a-zA-Z]\s*\d{1,2}[,.]\d{1,2}%\s+\d+[,.]\d+\s+\d+[,.]\d+/i,
+    /^dov:/i,
+    /^bl:/i,
+    /^eor[: ]/i,
+    /^zol[: ]/i,
+    /^spar plus/i,
+    /s.?upaj/i,
+    /zvesto[bnh]e/i,
+    /masterca/i,
+    // Tender-side lines (EUROSPIN real case): "Gotovina EUR 13,00" garbles as
+    // "otovina"/"stovina"/"Jt ovina" (all retain "ovina") — cash HANDED OVER,
+    // never an item; "Vrnjen denar EUR 8,71" keeps "denar" intact even garbled
+    // ("rnjen denar") — change given back, never an item. "Vračilo" = same role.
+    /ovin/i,
+    // "FUR" = garbled "EUR" (EUROSPIN real case: "s - 3 FUR 13,0" — the
+    // Gotovina line with its currency mangled into a name-like token).
+    /\bfur\b/i,
+    // Asterisk-row separator garbles (EUROSPIN real case: "***…" read as
+    // "F336 36 36.30.30 96 36 …"): ≥5 single-space-delimited pure digit runs.
+    // Real multi-column item rows separate columns with 2+ spaces, so they
+    // can't match; "MLEKO ALPSKO 3,5%"-style items have no digit runs at all.
+    /(?:\s|^)\d+(?:\s\d+){4,}(?:\s|$)/,
+    /\bdenar\b/i,
+    /vra[čc]il[ao]/i,
+    // INTERSPORT program-discount row (real capture 2026-10-24, new phone
+    // photo of the JAKNA receipt): "(30.0%) - ŠPORTNE ZVEZDE  -24,00" — OCR
+    // drops the minus sign, so the -24,00 discount reaches the parser as a
+    // positive 24,90 and manufactures a phantom item. Merchandise never opens
+    // with a parenthesised percent; closing paren not required (OCR noise).
+    /^\s*\(\s*\d{1,2}(?:[.,]\d{1,2})?\s*%/,
+    // "ZA PLAČILO" section header (same capture): the ruled separator
+    // OCR-fused into "ZAPLACILO eee _ 56,99" — a second phantom (56.99 was
+    // derived from the misread section header zone). "Plačilo" is payment
+    // vocabulary ("PLAČILO: MASTERCARD"), never product text.
+    /zapla[čc]ilo/i,
+    /\bpla[čc]ilo\b/i,
+    // Phone-number line (INTERSPORT second re-photo 2026-10-24): "Tel: 00386
+    // (0)51 285 125" — the standalone 3-digit repair turned the trailing
+    // "125" into "1.25" and manufactured a phantom item. SI country-code and
+    // "Tel:"-labelled lines are machinery; items never carry them.
+    /^\s*te[ld]\b/i,
+    /\b00[0 ]?386\b/,
+    // Gratitude footer (phone HOFER real case): "HVALA ZA VAS NAKUP!" OCR-fused
+    // with neighboring barcode digits ("HVALA Z 10,26 17. | SODNA" manufactured a
+    // bogus 10,26 item whose involvement breaks the items-sum check). Always machinery.
+    // Desktop variant reads the same footer as "S HVALA Z 10,26 17: | SODNA" —
+    // the word match survives the extra garble token (v2.0.2, live decision log).
+    /\bhvala\b/i,
+    /\bcash\b/i,
+    // VAT recap rows (HOFER real case: "Ca ok Neto 2,6900V 0,25" and
+    // "B 22,0% Neto 1,47 …" — the DDV rekapitulacija with "Neto" surviving
+    // OCR; a "Neto" token never appears in real item names on SI receipts).
+    /\bneto\b/i,
+    // Trailing 4+ digit run = terminal/EFT echo bleed, never a real item row
+    // (HOFER real case: "ACH HEE i BER 5.0 41501" — the ghost "41501" made
+    // the parser manufacture a 5,00 item from the line's "5.0" fragment).
+    // SPAR multi-column rows always END in a VAT code letter ("… 1.92 B"),
+    // so a bare digit tail is machinery, not merchandise.
+    /\s\d{4,}\s*$/,
+    // Garbled VAT-code / summary fragments (EUROSPIN real case: "kd, 0% ? 4,29"
+    // and "mat (ER): 4,29" from "Skupaj (EUR):"). Anchored short rate-code at
+    // line start (or stray parenthesised currency remnant + colon), so real
+    // items ("MLEKO ALPSKO 3,5%", "REZINA ... 17% DT ...") can't match.
+    /^[a-z]{1,2},?\s*\d{1,2}(?:[.,]\d{1,2})?\s*%/i,
+    // v2.0.19 parenthesised rate-marker rows (INTERSPORT S25 real captures,
+    // 2026-10-24, user's phone re-shots): the discount row prints
+    // "(30,0%) - ŠPORTNE ZVEZDE -24,00" and OCR drops BOTH the minus sign and
+    // its guard-word position, so the row manufactured a phantom +24.90/+24.00
+    // item and poisoned the sum. An item row never STARTS with a
+    // parenthesised rate percentage — that opening shape belongs to duty/
+    // discount recap machinery. ("MLEKO ALPSKO 3,5%" starts with a word and
+    // remains untouched by this anchor.)
+    /^\(\s*\d{1,3}(?:[.,]\d{1,3})?\s*%/,
+    /\(e?u?r?\)\s*:/i,
+    // Standalone EUR token = currency remnant, not a product name (EUROSPIN
+    // real case: "mov “ EUR 13,00" — the Gotovina line with its word ground
+    // down to noise keeps the currency fragment on its own token).
+    /\bEUR\b/i,
+    /\b[a-e0-9]:/i,
+    /=\s*\d/,
+    // (matches "22.10.2026"-style rows even when OCR blurred a separator into
+    // a space — INTERSPORT phone real case: "…1363170) 16.09 2029 Zav" fused
+    // a date into the line and manufactured a bogus 16.09 item)
+    /\d{1,2}[.,]\s{0,2}\d{1,2}(?:[.,]|\s){0,2}20\d{2}/,
+    /mat\.št/i,
+    /osn\.kapital/i,
+    /popust/i,
+    /dopla[cč]il/i,
+    /discount/i,
+    /splošni pogoji/i,
+    /vaše današnje ugodnosti/i,
+    /točke zvestobe/i,
+    // "Vmesna vsota" = interim/subtotal label (HOFER-B real capture: OCR line
+    // "Vmesna vsota 4,73" was the ONLY clean Slovenian token in the whole
+    // garbled text, yet language detection failed on it and the line became
+    // a phantom ITEM while the true total 4,73 stayed unfound). Dinner's
+    // classifications: never an item; its amount IS the interim total and
+    // already feeds pickTotal via the existing tier-1 "vsota" keyword.
+    /vsota/,
+    /v(?:m|n)esna/,
+    /številka naročila/i,
+    /datum naročila/i,
+    /datum računa/i,
+    /skupaj eur/i,
+    /^kartica/i,
+    /^date[: ]?/i,
+    /^znesek\s*—?\s*\d+[,.]/i,
+    // v2.0.19 EFT-echo family (HOFER hoferracun1 real case, user capture on
+    // deployed v2.0.18): the EFT device echoes the payable back and OCR adds a
+    // lead garble — "AR | Znesel-BFT ER: 1 - 4.73", "Zresek-BFT EUR 4.73",
+    // "Znesek-EFT EUR 4.73". The start-anchored guard above misses these
+    // because the echo label is no longer line-initial. Root: z+nes/res stem,
+    // up to 8 OSB letters, optional separator, EFT/BFT. The echo amount is the
+    // PAYABLE (feeding total candidates via payment markers), never an item.
+    // "EFT Ref-No: …" never matches (no znes/res stem); its exclusion stays in
+    // other rules.
+    /\bz(?:nes|res)[a-z]{0,8}\s*[-–—|(]?\s*(?:[ef]ft|bft)\b/i,
+    /^a\s+\d{1,2}[,.]\d+\s+\d+[,.]/i,
+    /^[a-z]?\s*\d{1,2}[,.]\d+\s+\d+[,.]/i,
+    /^,?\d{1,3}[,.]\d{2}\s*—?\s*\d{1,3}[,.]\d{2}/,
+    /^obračunsko obdobje/i,
+    /^vsi zneski so v/i,
+  ];
+
+  // v2.0.28 pipe-tolerant exclusion test. The S25 phone family prints vertical
+  // rules down the receipt that OCR renders as a leading "|" — the live
+  // INTERSPORT-c capture reads the discount row as
+  // "| (30.0%) - SPORTNE ZVEZDE -24.00". The pipe defeated every
+  // start-anchored exclusion above (^\( rate-marker, ^plačano, ^dov:, …), so
+  // the discount row survived as a phantom +24,00 item: the items sum inflated
+  // to 103,99, and with it the pay-zone rescue derived items−POPUST = 79,99
+  // instead of the printed payable 55,99. A pipe is never part of a real item
+  // name, so the pipe-stripped line is tested against the same patterns.
+  export const isNonItemLine = (line) => {
+    if (nonItemPatterns.some((pat) => pat.test(line))) return true;
+    const bare = line.replace(/^[|\s]+/, "");
+    return bare !== line && nonItemPatterns.some((pat) => pat.test(bare));
+  };
 export function parseReceipt(text, extraItems = [], corrections = []) {
   const PARSER_VERSION = "v1.6.9";
   // Set window.__OCR_DEBUG = true to restore verbose parser diagnostics.
@@ -361,147 +502,6 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
         "validity",
       ];
 
-  const nonItemPatterns = [
-    /^plačano/i,
-    /^c\s+\d{1,2},\d{1,2}\s*%\s+[\d\s.,]+—?\s*[\d\s.,]+/i,
-    /^[a-zA-Z]\s*\d{1,2}[,.]\d{1,2}%\s+\d+[,.]\d+\s+\d+[,.]\d+/i,
-    /^dov:/i,
-    /^bl:/i,
-    /^eor[: ]/i,
-    /^zol[: ]/i,
-    /^spar plus/i,
-    /s.?upaj/i,
-    /zvesto[bnh]e/i,
-    /masterca/i,
-    // Tender-side lines (EUROSPIN real case): "Gotovina EUR 13,00" garbles as
-    // "otovina"/"stovina"/"Jt ovina" (all retain "ovina") — cash HANDED OVER,
-    // never an item; "Vrnjen denar EUR 8,71" keeps "denar" intact even garbled
-    // ("rnjen denar") — change given back, never an item. "Vračilo" = same role.
-    /ovin/i,
-    // "FUR" = garbled "EUR" (EUROSPIN real case: "s - 3 FUR 13,0" — the
-    // Gotovina line with its currency mangled into a name-like token).
-    /\bfur\b/i,
-    // Asterisk-row separator garbles (EUROSPIN real case: "***…" read as
-    // "F336 36 36.30.30 96 36 …"): ≥5 single-space-delimited pure digit runs.
-    // Real multi-column item rows separate columns with 2+ spaces, so they
-    // can't match; "MLEKO ALPSKO 3,5%"-style items have no digit runs at all.
-    /(?:\s|^)\d+(?:\s\d+){4,}(?:\s|$)/,
-    /\bdenar\b/i,
-    /vra[čc]il[ao]/i,
-    // INTERSPORT program-discount row (real capture 2026-10-24, new phone
-    // photo of the JAKNA receipt): "(30.0%) - ŠPORTNE ZVEZDE  -24,00" — OCR
-    // drops the minus sign, so the -24,00 discount reaches the parser as a
-    // positive 24,90 and manufactures a phantom item. Merchandise never opens
-    // with a parenthesised percent; closing paren not required (OCR noise).
-    /^\s*\(\s*\d{1,2}(?:[.,]\d{1,2})?\s*%/,
-    // "ZA PLAČILO" section header (same capture): the ruled separator
-    // OCR-fused into "ZAPLACILO eee _ 56,99" — a second phantom (56.99 was
-    // derived from the misread section header zone). "Plačilo" is payment
-    // vocabulary ("PLAČILO: MASTERCARD"), never product text.
-    /zapla[čc]ilo/i,
-    /\bpla[čc]ilo\b/i,
-    // Phone-number line (INTERSPORT second re-photo 2026-10-24): "Tel: 00386
-    // (0)51 285 125" — the standalone 3-digit repair turned the trailing
-    // "125" into "1.25" and manufactured a phantom item. SI country-code and
-    // "Tel:"-labelled lines are machinery; items never carry them.
-    /^\s*te[ld]\b/i,
-    /\b00[0 ]?386\b/,
-    // Gratitude footer (phone HOFER real case): "HVALA ZA VAS NAKUP!" OCR-fused
-    // with neighboring barcode digits ("HVALA Z 10,26 17. | SODNA" manufactured a
-    // bogus 10,26 item whose involvement breaks the items-sum check). Always machinery.
-    // Desktop variant reads the same footer as "S HVALA Z 10,26 17: | SODNA" —
-    // the word match survives the extra garble token (v2.0.2, live decision log).
-    /\bhvala\b/i,
-    /\bcash\b/i,
-    // VAT recap rows (HOFER real case: "Ca ok Neto 2,6900V 0,25" and
-    // "B 22,0% Neto 1,47 …" — the DDV rekapitulacija with "Neto" surviving
-    // OCR; a "Neto" token never appears in real item names on SI receipts).
-    /\bneto\b/i,
-    // Trailing 4+ digit run = terminal/EFT echo bleed, never a real item row
-    // (HOFER real case: "ACH HEE i BER 5.0 41501" — the ghost "41501" made
-    // the parser manufacture a 5,00 item from the line's "5.0" fragment).
-    // SPAR multi-column rows always END in a VAT code letter ("… 1.92 B"),
-    // so a bare digit tail is machinery, not merchandise.
-    /\s\d{4,}\s*$/,
-    // Garbled VAT-code / summary fragments (EUROSPIN real case: "kd, 0% ? 4,29"
-    // and "mat (ER): 4,29" from "Skupaj (EUR):"). Anchored short rate-code at
-    // line start (or stray parenthesised currency remnant + colon), so real
-    // items ("MLEKO ALPSKO 3,5%", "REZINA ... 17% DT ...") can't match.
-    /^[a-z]{1,2},?\s*\d{1,2}(?:[.,]\d{1,2})?\s*%/i,
-    // v2.0.19 parenthesised rate-marker rows (INTERSPORT S25 real captures,
-    // 2026-10-24, user's phone re-shots): the discount row prints
-    // "(30,0%) - ŠPORTNE ZVEZDE -24,00" and OCR drops BOTH the minus sign and
-    // its guard-word position, so the row manufactured a phantom +24.90/+24.00
-    // item and poisoned the sum. An item row never STARTS with a
-    // parenthesised rate percentage — that opening shape belongs to duty/
-    // discount recap machinery. ("MLEKO ALPSKO 3,5%" starts with a word and
-    // remains untouched by this anchor.)
-    /^\(\s*\d{1,3}(?:[.,]\d{1,3})?\s*%/,
-    /\(e?u?r?\)\s*:/i,
-    // Standalone EUR token = currency remnant, not a product name (EUROSPIN
-    // real case: "mov “ EUR 13,00" — the Gotovina line with its word ground
-    // down to noise keeps the currency fragment on its own token).
-    /\bEUR\b/i,
-    /\b[a-e0-9]:/i,
-    /=\s*\d/,
-    // (matches "22.10.2026"-style rows even when OCR blurred a separator into
-    // a space — INTERSPORT phone real case: "…1363170) 16.09 2029 Zav" fused
-    // a date into the line and manufactured a bogus 16.09 item)
-    /\d{1,2}[.,]\s{0,2}\d{1,2}(?:[.,]|\s){0,2}20\d{2}/,
-    /mat\.št/i,
-    /osn\.kapital/i,
-    /popust/i,
-    /dopla[cč]il/i,
-    /discount/i,
-    /splošni pogoji/i,
-    /vaše današnje ugodnosti/i,
-    /točke zvestobe/i,
-    // "Vmesna vsota" = interim/subtotal label (HOFER-B real capture: OCR line
-    // "Vmesna vsota 4,73" was the ONLY clean Slovenian token in the whole
-    // garbled text, yet language detection failed on it and the line became
-    // a phantom ITEM while the true total 4,73 stayed unfound). Dinner's
-    // classifications: never an item; its amount IS the interim total and
-    // already feeds pickTotal via the existing tier-1 "vsota" keyword.
-    /vsota/,
-    /v(?:m|n)esna/,
-    /številka naročila/i,
-    /datum naročila/i,
-    /datum računa/i,
-    /skupaj eur/i,
-    /^kartica/i,
-    /^date[: ]?/i,
-    /^znesek\s*—?\s*\d+[,.]/i,
-    // v2.0.19 EFT-echo family (HOFER hoferracun1 real case, user capture on
-    // deployed v2.0.18): the EFT device echoes the payable back and OCR adds a
-    // lead garble — "AR | Znesel-BFT ER: 1 - 4.73", "Zresek-BFT EUR 4.73",
-    // "Znesek-EFT EUR 4.73". The start-anchored guard above misses these
-    // because the echo label is no longer line-initial. Root: z+nes/res stem,
-    // up to 8 OSB letters, optional separator, EFT/BFT. The echo amount is the
-    // PAYABLE (feeding total candidates via payment markers), never an item.
-    // "EFT Ref-No: …" never matches (no znes/res stem); its exclusion stays in
-    // other rules.
-    /\bz(?:nes|res)[a-z]{0,8}\s*[-–—|(]?\s*(?:[ef]ft|bft)\b/i,
-    /^a\s+\d{1,2}[,.]\d+\s+\d+[,.]/i,
-    /^[a-z]?\s*\d{1,2}[,.]\d+\s+\d+[,.]/i,
-    /^,?\d{1,3}[,.]\d{2}\s*—?\s*\d{1,3}[,.]\d{2}/,
-    /^obračunsko obdobje/i,
-    /^vsi zneski so v/i,
-  ];
-
-  // v2.0.28 pipe-tolerant exclusion test. The S25 phone family prints vertical
-  // rules down the receipt that OCR renders as a leading "|" — the live
-  // INTERSPORT-c capture reads the discount row as
-  // "| (30.0%) - SPORTNE ZVEZDE -24.00". The pipe defeated every
-  // start-anchored exclusion above (^\( rate-marker, ^plačano, ^dov:, …), so
-  // the discount row survived as a phantom +24,00 item: the items sum inflated
-  // to 103,99, and with it the pay-zone rescue derived items−POPUST = 79,99
-  // instead of the printed payable 55,99. A pipe is never part of a real item
-  // name, so the pipe-stripped line is tested against the same patterns.
-  const isNonItemLine = (line) => {
-    if (nonItemPatterns.some((pat) => pat.test(line))) return true;
-    const bare = line.replace(/^[|\s]+/, "");
-    return bare !== line && nonItemPatterns.some((pat) => pat.test(bare));
-  };
 
   // Detect total candidates from lines
   const totalCandidates = extractAllTotalCandidates(lines, isSlovenian);
@@ -1069,10 +1069,16 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
 
   // v1.6.9: provenance note for strip-recovered items — the app must show
   // where the row came from so the user can spot-check it against the photo.
+  // v2.0.29: the missing-item hunt also reads the ITEM band (tall-header
+  // receipts push the first rows to ~45% of the paper), so the note names the
+  // band that measured the row when the injector supplied one.
   for (const extra of extraItems) {
+    const via = extra.band
+      ? `recovered by strip re-OCR (band ${extra.band[0]}-${extra.band[1]})`
+      : `recovered by top-strip re-OCR`;
     checks.push({
       ok: false,
-      text: `recovered by top-strip re-OCR: "${extra.name}" ${extra.price} — verify against photo [?]`,
+      text: `${via}: "${extra.name}" ${extra.price} — verify against photo [?]`,
     });
   }
 

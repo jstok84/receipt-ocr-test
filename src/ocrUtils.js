@@ -1,7 +1,7 @@
 import { createWorker } from "tesseract.js";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 import pdfWorker from "pdfjs-dist/build/pdf.worker.js";
-import { parseReceipt, namesScore, namesSimilar, payableRescue, discountAmounts, findDateCandidate, validDateFromReading } from "./parseReceipt";
+import { parseReceipt, isNonItemLine, namesScore, namesSimilar, payableRescue, discountAmounts, findDateCandidate, validDateFromReading } from "./parseReceipt";
 // v2.1: canvas-free decode + preprocess. The pixels Tesseract sees are produced
 // deterministically (WebCodecs / libheif decode → OpenCV Mats). The ONLY canvas
 // touch is the final PNG encoding step, which keeps image sizes small enough for
@@ -1138,6 +1138,19 @@ function bicubicUpscaleGrayCanvas(srcCanvas, factor, mode = "catrom") {
  * carry dark pixels (smoothed counts >=5 over a ±20px window). Columns with
  * sparse/faint ink (the folded price!) survive because the ±20px window and a
  * 50px gap-merge span them; bounds get ±30/60 slack like the bench crop.
+ *
+ * v2.0.29 wide-gap chain (EUROSPIN-cropped live measurement): a receipt's
+ * PRICE column is a SEPARATE ink run from its NAME column — the measured
+ * item band had runs at x[0..866] (names), x[1007..1216] (prices) and
+ * x[1283..1325] (paper edge), i.e. a 141px whitespace gap on a 1326px-wide
+ * crop. The longest-run pick kept the names and discarded every price, so no
+ * strip could measure a missing row's amount (the hunt then found nothing in
+ * 8 band variants while the same pixels read "EKSI FROLLINI 1KG 1,55 A" in
+ * the Node bench at full width). Runs are now chained while their separation
+ * stays within a quarter of the width, and the widest chain's OUTERMOST
+ * bounds are kept: the price column is part of the receipt, not a
+ * neighbouring object. Distant objects (a second receipt, a margin stamp)
+ * still form their own chain and lose to the widest one.
  */
 function brightColumnTrim(colMeans, darkCounts, minWidthFraction = 0.15, maxGapPx = 50) {
   const n = colMeans.length;
@@ -1149,8 +1162,7 @@ function brightColumnTrim(colMeans, darkCounts, minWidthFraction = 0.15, maxGapP
     }
     smooth[x] = s;
   }
-  let bestStart = -1;
-  let bestEnd = -1;
+  const runs = [];
   let curStart = -1;
   let lastInk = -1;
   for (let x = 0; x <= n; x++) {
@@ -1160,13 +1172,29 @@ function brightColumnTrim(colMeans, darkCounts, minWidthFraction = 0.15, maxGapP
       lastInk = x;
     } else if (curStart >= 0) {
       if (x - lastInk <= maxGapPx && x < n) continue;
-      if (lastInk - curStart + 1 > bestEnd - bestStart + 1) { bestStart = curStart; bestEnd = lastInk; }
+      runs.push([curStart, lastInk]);
       curStart = -1;
       lastInk = -1;
     }
   }
-  if (bestStart < 0 || bestEnd - bestStart + 1 < n * minWidthFraction) return null;
-  return [Math.max(0, bestStart - 30), Math.min(n - 1, bestEnd + 60)];
+  if (!runs.length) return null;
+  const wideGap = Math.max(maxGapPx, Math.round(n * 0.25));
+  const chains = [];
+  for (const [a, b] of runs) {
+    const last = chains[chains.length - 1];
+    if (last && a - last[1] <= wideGap) {
+      last[0] = Math.min(last[0], a);
+      last[1] = Math.max(last[1], b);
+    } else {
+      chains.push([a, b]);
+    }
+  }
+  let best = null;
+  for (const c of chains) {
+    if (!best || c[1] - c[0] > best[1] - best[0]) best = c;
+  }
+  if (!best || best[1] - best[0] + 1 < n * minWidthFraction) return null;
+  return [Math.max(0, best[0] - 30), Math.min(n - 1, best[1] + 60)];
 }
 
 // --- OCR + preprocessing for direct image files ---
@@ -1376,29 +1404,46 @@ export async function processImage(imageSrc, onProgress = () => {}) {
         // browser strip PNG read "preo B" at PSM 6 but "1,798" (= 1,79 with the
         // VAT letter B misread as 8) at PSM 4. PSM 6 wasted determinism on the
         // same pixels, so the segmentation, not the image, was the bottleneck.
-        outer: for (const [stripKind, band, psm] of [
-          ["raw", [0, 0.25], "6"], ["prep", [0, 0.25], "6"], ["prep", [0, 0.18], "6"],
-          ["raw", [0, 0.25], "4"], ["prep", [0, 0.25], "4"],
+        outer: for (const [stripKind, band, psm, factor] of [
+          ["raw", [0, 0.25], "6", 3], ["prep", [0, 0.25], "6", 3], ["prep", [0, 0.18], "6", 3],
+          ["raw", [0, 0.25], "4", 3], ["prep", [0, 0.25], "4", 3],
+          // v2.0.29: tall-header receipts push their first item rows to ~45%
+          // of the paper. EUROSPIN-cropped live: FROLLINI sits at y-fraction
+          // 0.43-0.45, so every top band above read only the logo/address
+          // block while the missing row lived in the item band (the 8 attempts
+          // measured nothing; the same band at full width reads
+          // "EKSI FROLLINI 1KG 1,55 A" in the Node bench). These variants are
+          // the shape the item-band correction cascade validated (prep
+          // 0.4-0.75 at 2x) and hunt the gap amount there.
+          ["prep", [0.4, 0.75], "6", 2], ["prep", [0.4, 0.75], "4", 2],
+          ["raw", [0.4, 0.75], "6", 2],
         ]) {
           // strip from the PRE-perspective image when available: creased rows
           // garble under the warp (live evidence), while the unwrapped crop
           // is what the Node benchmarks read correctly. "raw" attempts bypass
           // resampling entirely (canvas gray+stretch math == sharp params).
           const base = prePerspectiveDataURL || (stripKind === "raw" ? imageSrc : preprocessedDataURL);
-          strip = stripKind === "raw" ? await rawStripDataURL(base, band) : await topStripDataURL(base, band);
+          strip = stripKind === "raw" ? await rawStripDataURL(base, band, factor) : await topStripDataURL(base, band, factor);
           await worker.setParameters({ ...tessParams, tessedit_pageseg_mode: psm });
           const stripResult = await worker.recognize(strip);
           await worker.setParameters(tessParams);
           const stripText = cleanAndMergeText(stripResult.data.text);
           const stripLines = stripText.split("\n").filter(Boolean);
           console.log("🔁 Strip re-OCR (missing item ≈", missing.toFixed(2), ", strip", stripKind, band.join("-"), "psm", psm, "):", stripLines);
-          stripEvidence.push({ stripKind, band, factor: 3, psm, lines: stripLines, image: strip });
+          stripEvidence.push({ stripKind, band, factor, psm, lines: stripLines, image: strip });
           for (const line of stripLines) {
             const amounts = [...line.matchAll(/\d{1,3}[.,]\d{1,2}/g)].map((m) =>
               parseFloat(m[0].replace(",", "."))
             );
             const hit = amounts.find((a) => Math.abs(a - missing) <= 0.02);
             if (hit == null) continue;
+            // v2.0.29: item-band strips also carry totals/tender machinery
+            // ("otovina EUR 13,00", "Skupaj 4,29"). extraItems bypass every
+            // parser guard on injection, so a machinery line whose amount
+            // happens to equal the gap would become a phantom item that
+            // CLOSES the sum check. Apply the parser's own exclusion test
+            // (same patterns, pipe-tolerant) before accepting a hit.
+            if (isNonItemLine(line)) continue;
             const tokens = line.trim().split(/\s+/);
             let end = 0;
             while (end < tokens.length && !/\d/.test(tokens[end])) end++;
@@ -1411,8 +1456,9 @@ export async function processImage(imageSrc, onProgress = () => {}) {
               price: `${hit.toFixed(2)} ${currency}`,
               quantity: undefined,
               via: "strip-retry",
+              band,
             });
-            rescueWinner = { stripKind, band, factor: 3, psm, line };
+            rescueWinner = { stripKind, band, factor, psm, line };
             break outer; // one rescued row per bucket
           }
         }

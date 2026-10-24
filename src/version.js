@@ -8,4 +8,4 @@
  * is the same number). The header chip is what the user compares against
  * when a scan misbehaves — "deployed bundle is stale" disputes end here.
  */
-export const APP_VERSION = "v2.0.28";
+export const APP_VERSION = "v2.0.29";
