@@ -642,3 +642,49 @@ User challenged "hofer is in regression" → I initially mis-attributed it (inve
 - Live ERRATA from the 41.7s desktop HOFER run: the 17.40≠12.14 [?] was caused by "S HVALA Z 10,26 17: | SODNA" — the desktop OCR variance added a leading garble "S" to the footer, and the HVALA guard was line-start anchored (^hvala) so it missed its own fixture-covered shape. Loosened to word-boundary (\bhvala\b) + new regression test; HOFER phone fixture test still asserts 3 items summing to 12.14 with zero failing checks — 76/76.
 - Live verification method (repeatable): presignS3 GET of bucket photo → page fetch → DataTransfer into input[type=file] → wait queue row done. Panel verified: verdict, 20 raw lines, 45 parser lines, 6 stage images all rendered. Variant for local desk samples: tiny node http server on 127.0.0.1 with ACAO:* serving samples/*.jpg from Temp\opencode\serve (no bucket writes, no repo pollution), same dispatch path.
 - Tender matcher: v2.0.2 added bare "otovin" — the live desktop EUROSPIN run read Gotovina as "otovina EUR 13,00" (leading g eaten) and the tender/change check stayed silent although 13,00 − 8,71 = 4,29 was a passing check it never reported. Matcher now fires through the garble; arithmetic bounds false positives (the check only passes when tendered − change equals the total to the cent). Verified live after the fix: third check line "✓ tender 13.00 − change 8.71 = total ✓" appears on the same EU desk photo; HOFER gains nothing by design (single cash line encodes tender+total, no change line exists to check). Two tests added: fixture's misread change (13.00−8.11=4.89 ≠ 4.29) pinned as a FLAGGING check that must not override the keyword total (tender arithmetic stays evidence, never a total source, per the fixture header's designed rejection); the otovin live variant pinned as a green check. 78/78. (My proposal message predicted "76 → 79" from a miscount — the change adds exactly 2 tests.)
+
+## PHONE CASE #6 — PAY-ZONE PAYABLE RESCUE (2026-10-24, v2.0.15, live-verified)
+User re-photographed the INTERSPORT jacket receipt TWICE more (third capture, sharper than ever;
+B2 pairs e6df3018/7dac0131). The printed payable is 55,99 in THREE zones (ZA PLAČILO, DDV recap
+"22,00 % 45,69 10,10 55,99", PLAČANO MASTERCARD 55,99) and OCR misreads the dotted-bold "55" glyph
+as "99" in EVERY zone on EVERY capture (45,89→45,69 in the recap also observed). Photo sharpness is
+NOT the constraint — it is a print/glyph issue. Under the printed-total-never-overridden rule the
+receipt was permanently red with no capture able to fix it.
+
+DESIGN (measurement-first, same policy as the v1.7.2 item rescues):
+- Decision logic `payableRescue(parse, text, measured)` in parseReceipt.js (pure, Node-tested).
+  Fire conditions, all strict: a failing "items sum I ≠ total T" check; an EXPLICIT discount-labelled
+  line (popust/kupon/doplačil) carrying exactly ONE distinct amount P (pset.size!==1 aborts — SPAR's
+  "KUPON POPUST 10.00% od 57.35 -5.74" can never fire); derived D = I − P differs from T (>0.02 —
+  so INTERSPORT-phone, whose total already = items−POPUST, stays untouched); the MEASURED pay-zone
+  re-OCR reading equals D ± 0.02. Arithmetic only DERIVES the target; a measurement must confirm it.
+  On fire the sum-mismatch check is REPLACED by an ok:true provenance check naming every number
+  (total 55.99 verified: pay-zone re-OCR measured 55.99 — matches items 79.99 − POPUST 24.00;
+  printed pay lines read 99.99, misread). Nothing is hidden.
+- Measurement `ocrUtils.processImage` bottom-band cascade: prep/raw @2x PSM6/PSM4, bands
+  [0.55-1.0], [0.75-1.0]. A strip line must carry pay vocabulary (plačano/za pla/zapla/master/
+  osnova/davek/ddv/skupaj) AND its last amount must equal D ± 0.02. Armed ONLY when the
+  missing-item rescue is not (missing===null). Returns `payRescue: {amount, winner, attempts}`.
+- WIRING: app.js runParsing gained `payAmount` param and re-applies payableRescue on its OWN parse
+  (processImage's finalParse is discarded — app re-parses independently, which is why the rescue
+  initially fired in logs but not in the UI). Both call sites pass result.payRescue?.amount.
+  sync.js manifest gained payRescue {amount, winner(minus image), attempts}.
+- TEL-PHANTOM FIX (surfaced by the new capture's OCR drift): the standalone 3-digit repair turned
+  the phone line's trailing "125" into a 1.25 € item ("Tel: 00386 (0)51 285 125"), polluting the
+  item sum to 81.24 and destroying the rescue's arithmetic anchor. nonItem guards added:
+  /^\s*te[ld]\b/ and /\b00[0 ]?386\b/ — phone lines are machinery, never items. Fixture test pins
+  both shapes (intact + drifted "00386 10)51 285 125").
+
+EVIDENCE:
+- Live run, intersport-new2: armed (items 79.99 − POPUST 24 = 55.99 ≠ read total 99.99);
+  bottom-strip attempt 1 (prep 0.55-1.0 PSM6) re-read "| ZA PLAČILO 55,99" — the TRUE value from
+  the SAME pixels; payableRescue resolved total 99.99 → 55.99; final state: 1 item, 0 failing
+  checks, green provenance check. Attempt 1 winning means the maintenance cost is one strip pass.
+- Live run, intersport-new1 (creased capture, previously honestly [?]): its bottom strip ALSO
+  measured 55.99 this run → also green via the same gate. Improvement, not weakened policy.
+- FULL REGRESSION (all 8 real captures identical to the known-good baseline or better):
+  SPAR 26/57.35≠51.61, HOFER-B 3/4.73+Krüger, INTERSPORT-phone 1/79.99≠55.99 (stays red —
+  correct: no payable-vs-printed disagreement, D=T), EUROSPIN 3/4.29≠4.20 ×2, hofer-phone
+  3/12.14 all-green, intersport-new1 1/55.99 green, intersport-new2 1/55.99 green.
+  The payableRescue does NOT fire on HOFER/EUROSPIN (no popust line), SPAR (pset abort), or the
+  old INTERSPORT (D=T within tolerance). Tests 90/90.

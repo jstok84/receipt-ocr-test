@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { processImage, processPDF, cleanAndMergeText } from "./ocrUtils";
-import { parseReceipt } from "./parseReceipt";
+import { parseReceipt, payableRescue } from "./parseReceipt";
 import { scanVerdict } from "./scanVerdict";
 import { loadSyncCfg, saveSyncCfg, clearSyncCfg, uploadScan, presignS3 } from "./sync";
 
@@ -92,14 +92,22 @@ export default function App() {
 
   // alreadyCleaned: processImage returns text that already went through the
   // single clean pass (idempotent); the PDF path still cleans pdf-embedded text.
-  const runParsing = (rawText, extraItems = [], rescue = null, corrections = [], alreadyCleaned = false) => {
+  // v2.0.15 payAmount: the MEASURED pay-zone re-OCR reading from processImage
+  // (result.payRescue?.amount). processImage's own finalParse is discarded
+  // here — app.js re-parses independently — so the rescue decision must be
+  // re-applied on this side too, with the measurement carried over.
+  const runParsing = (rawText, extraItems = [], rescue = null, corrections = [], alreadyCleaned = false, payAmount = null) => {
     let prepared = rawText;
     if (!useFlatMode) {
       if (!alreadyCleaned) prepared = cleanAndMergeText(rawText);
     } else {
       prepared = rawText.replace(/\n/g, " ");
     }
-    const result = parseReceipt(prepared, extraItems, corrections);
+    let result = parseReceipt(prepared, extraItems, corrections);
+    // v2.0.15 pay-zone payable rescue: fires only when the measured reading
+    // matches items − POPUST ±0.02 (decision logic in parseReceipt).
+    const payFixed = payableRescue(result, prepared, payAmount);
+    if (payFixed) result = payFixed;
     setParsed(result);
     // v2.0.2: the app-level parse is the last parseReceipt call of the scan,
     // so window.__OCR_LOG now holds exactly this scan's decision trail
@@ -129,6 +137,15 @@ export default function App() {
         text: ocr.text,
         parsed: parsedNow,
         rescue: ocr.rescue,
+        payRescue: ocr.payRescue
+          ? {
+              amount: ocr.payRescue.amount,
+              winner: ocr.payRescue.winner
+                ? { ...ocr.payRescue.winner, image: null }
+                : null,
+              attempts: ocr.payRescue.attempts,
+            }
+          : undefined,
         corrections: ocr.corrections,
         ms,
         ua: navigator.userAgent,
@@ -199,7 +216,7 @@ export default function App() {
       const t0 = performance.now();
       const result = await processImage(dataUrl);
       setText(result.text);
-      const parsedNow = runParsing(result.text, result.extraItems, result.rescue, result.corrections, true);
+      const parsedNow = runParsing(result.text, result.extraItems, result.rescue, result.corrections, true, result.payRescue?.amount ?? null);
       const ms = Math.round(performance.now() - t0);
       setPipelineMs(ms);
       setLoading(false);
@@ -228,7 +245,7 @@ export default function App() {
         const t0 = performance.now();
         const result = await processImage(file);
         setText(result.text);
-        const parsedNow = runParsing(result.text, result.extraItems, result.rescue, result.corrections, true);
+        const parsedNow = runParsing(result.text, result.extraItems, result.rescue, result.corrections, true, result.payRescue?.amount ?? null);
         const ms = Math.round(performance.now() - t0);
         setPipelineMs(ms);
         jobDone(jobId, "done", `${ms} ms · ${parsedNow.items.length} items · ${parsedNow.checks.filter(c => !c.ok).length} failing checks`);

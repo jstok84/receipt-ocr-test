@@ -192,6 +192,11 @@ export async function uploadScan(cfg, scan) {
     ocr: { text: scan.text },
     parse: { date: scan.parsed?.date, total: scan.parsed?.total, items: scan.parsed?.items, checks: scan.parsed?.checks },
     rescue: scan.rescue, // winner + text of every cascade attempt
+    payRescue: {
+      amount: scan.payRescue?.amount ?? null, // measured pay-zone re-OCR reading (v2.0.15)
+      winner: scan.payRescue?.winner ? { ...scan.payRescue.winner, image: null } : null,
+      attempts: scan.payRescue?.attempts ?? null, // strip texts; images stay out of the manifest
+    },
     corrections: scan.corrections,
     timings: { totalMs: scan.ms ?? null },
     ua: scan.ua ?? null,

@@ -1,7 +1,7 @@
 import { createWorker } from "tesseract.js";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 import pdfWorker from "pdfjs-dist/build/pdf.worker.js";
-import { parseReceipt, namesScore, namesSimilar } from "./parseReceipt";
+import { parseReceipt, namesScore, namesSimilar, payableRescue } from "./parseReceipt";
 
 GlobalWorkerOptions.workerSrc = pdfWorker;
 
@@ -1466,6 +1466,93 @@ export async function processImage(imageSrc, onProgress = () => {}) {
     }
   }
 
+  // v2.0.15 PAY-ZONE payable rescue (INTERSPORT re-photo real case): the
+  // receipt prints the payable in three zones (ZA PLAČILO, DDV recap,
+  // PLAČANO) and OCR misread the dotted-bold "55" as "99" in EVERY zone,
+  // across three captures. Arithmetic derives the target payable (items −
+  // POPUST) and each bottom-band attempt must MEASURE it (±0.02) in a
+  // pay-vocabulary line before it wins — same measurement-first policy as the
+  // item rescues (v1.7.2). Decision logic lives in parseReceipt.payableRescue
+  // (Node-tested); this block only supplies the measurement. Armed only when
+  // the missing-item rescue is not (missing == null) — different failure
+  // story, never both on one receipt.
+  let payRescue = null;
+  if (missing == null) {
+    const sumMismatchPay = finalChecks.find(
+      (c) => !c.ok && /items sum ([\d.]+) ≠ total ([\d.]+)/.test(c.text)
+    );
+    const discountPresent15 = /pop[ou]st|kupon|dopla[cč]il/i.test(cleaned);
+    if (sumMismatchPay && discountPresent15) {
+      const I15 = parseFloat(sumMismatchPay.text.match(/items sum ([\d.]+)/)[1]);
+      const T15 = parseFloat(sumMismatchPay.text.match(/≠ total ([\d.]+)/)[1]);
+      // P = distinct amounts on explicit discount-labelled lines only;
+      // ambiguity (SPAR coupon line carries 3 numbers) aborts first.
+      const p15 = new Set();
+      for (const ln of cleaned.split("\n")) {
+        if (!/\b(?:pop[ou]st|kupon|dopla[cč]il)/i.test(ln)) continue;
+        for (const am of ln.matchAll(/(\d{1,3}[.,]\d{2})/g)) {
+          const val = parseFloat(am[1].replace(",", "."));
+          if (val > 0 && val < I15) p15.add(+val.toFixed(2));
+        }
+      }
+      if (p15.size === 1 && !isNaN(T15)) {
+        const D15 = +(I15 - [...p15][0]).toFixed(2);
+        if (D15 > 0 && Math.abs(D15 - T15) > 0.02) {
+          console.log("🔁 Pay-zone rescue armed: items", I15, "− POPUST", [...p15][0], "=", D15, "≠ read total", T15);
+          let measured15 = null;
+          let payWinner15 = null;
+          outer15: for (const [stripKind, band, factor, psm] of [
+            ["prep", [0.55, 1.0], 2, "6"],
+            ["raw", [0.55, 1.0], 2, "6"],
+            ["prep", [0.55, 1.0], 2, "4"],
+            ["prep", [0.75, 1.0], 2, "6"],
+          ]) {
+            try {
+              const base15 = stripKind === "raw" ? imageSrc : (prePerspectiveDataURL || preprocessedDataURL);
+              const strip15 = stripKind === "raw"
+                ? await rawStripDataURL(base15, band, factor)
+                : await topStripDataURL(base15, band, factor);
+              await worker.setParameters({ ...tessParams, tessedit_pageseg_mode: psm });
+              const res15 = await worker.recognize(strip15);
+              await worker.setParameters(tessParams);
+              const lines15 = cleanAndMergeText(res15.data.text).split("\n").filter(Boolean);
+              console.log("🔁 Pay-zone re-OCR (", stripKind, band.join("-"), "psm", psm, "):", lines15);
+              stripEvidence.push({ stripKind, band, factor, psm, kernel: "catrom", lines: lines15, image: strip15 });
+              for (const line of lines15) {
+                if (!/pla[čc]ano|placano|za pla|zapla|master|osnova|davek|ddv|skupaj/i.test(line)) continue;
+                const amts15 = [...line.matchAll(/\d{1,3}[.,]\d{1,2}/g)].map((mm) => parseFloat(mm[0].replace(",", ".")));
+                const last15 = amts15[amts15.length - 1];
+                if (last15 != null && Math.abs(last15 - D15) <= 0.02) {
+                  measured15 = last15;
+                  payWinner15 = { stripKind, band, factor, psm, line };
+                  break outer15;
+                }
+              }
+            } catch (errPay) {
+              console.warn("🔁 Pay-zone re-OCR attempt failed:", errPay);
+            }
+          }
+          if (measured15 != null) {
+            const res15 = payableRescue(finalParse, cleaned, measured15);
+            if (res15) {
+              Object.assign(finalParse, res15);
+              payRescue = {
+                amount: measured15,
+                winner: payWinner15,
+                attempts: stripEvidence.map((a) => ({
+                  stripKind: a.stripKind, band: a.band, factor: a.factor, psm: a.psm, kernel: a.kernel, lines: a.lines,
+                  image: payWinner15 && a.stripKind === payWinner15.stripKind && a.band[0] === payWinner15.band[0] &&
+                         a.band[1] === payWinner15.band[1] && a.factor === payWinner15.factor && a.psm === payWinner15.psm
+                    ? a.image : null,
+                })),
+              };
+            }
+          }
+        }
+      }
+    }
+  }
+
   updateOCRProgressUI("OCR complete", 1);
   setTimeout(() => updateOCRProgressUI("", 0), 2000);
   // The winning attempt's strip image rides along for the evidence panel;
@@ -1475,6 +1562,7 @@ export async function processImage(imageSrc, onProgress = () => {}) {
     text: cleaned,
     extraItems,
     corrections,
+    payRescue,
     rescue: rescued
       ? {
           missing: missingBucket,
