@@ -898,14 +898,37 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
     const itemSum = items.reduce((acc, it) => acc + (parseAmount("item", it.price) ?? 0), 0);
     if (itemSum > 0) {
       const delta = Math.abs(itemSum - total);
-      checks.push(
-        delta <= 0.011
-          ? { ok: true, text: `items sum = total (${itemSum.toFixed(2)})` }
-          : {
-              ok: false,
-              text: `items sum ${itemSum.toFixed(2)} ≠ total ${total.toFixed(2)} — verify a price [?] or a discount/missing item`,
-            }
-      );
+      // v2.0.16 discount reconciliation (INTERSPORT-phone real case, live
+      // evidence: items 79.99, POPUST 24.00, ZA PLAČILO 55.99 all read clean,
+      // yet the sum check flagged [?] because it never subtracted the
+      // discount): when the text carries exactly ONE distinct discount amount
+      // P and items − P closes on the total, the gap is EXPLAINED by a
+      // printed line — green check names every measured number. No value is
+      // invented (total and items stay as read); this is arithmetic BETWEEN
+      // measured numbers, same class as the plain items-sum check. SPAR's
+      // 3-number coupon line (10.00% / 57.35 / 5.74) stays ambiguous → red,
+      // by design. Old INTERSPORT fixture (payable misread 59.99) does not
+      // close (55.99 ≠ 59.99) → stays red.
+      const pRe16 = discountAmounts(text, itemSum);
+      const reconciled =
+        delta > 0.011 &&
+        pRe16.length === 1 &&
+        Math.abs(itemSum - pRe16[0] - total) <= 0.011;
+      if (reconciled) {
+        checks.push({
+          ok: true,
+          text: `items ${itemSum.toFixed(2)} − POPUST ${pRe16[0].toFixed(2)} = total ${total.toFixed(2)} ✓ (discount line reconciles the sum)`,
+        });
+      } else {
+        checks.push(
+          delta <= 0.011
+            ? { ok: true, text: `items sum = total (${itemSum.toFixed(2)})` }
+            : {
+                ok: false,
+                text: `items sum ${itemSum.toFixed(2)} ≠ total ${total.toFixed(2)} — verify a price [?] or a discount/missing item`,
+              }
+        );
+      }
       // VAT-recap "missing bucket" refinement (v1.6.9, HOFER real case): the
       // photo clipped the Krüger 1,79 row entirely, but the DDV recap survived
       // ("B 22,0% Neto 1,47 …"). Deriving each recap row's gross from rate ×
@@ -989,6 +1012,26 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
 }
 
 /**
+ * v2.0.16 shared discount-amount extraction: the DISTINCT amounts carried by
+ * explicit discount-labelled lines (popust / kupon / doplačilo), capped below
+ * the items sum. Used by the sum-check discount reconciliation and by
+ * payableRescue; in both, ambiguity aborts (SPAR's
+ * "KUPON POPUST 10.00% od 57.35 -5.74" carries three numbers and can never
+ * reduce to one P).
+ */
+function discountAmounts(text, cap) {
+  const pset = new Set();
+  for (const ln of String(text).split(/\r?\n/)) {
+    if (!/\b(?:pop[ou]st|kupon|dopla[cč]il)/i.test(ln)) continue;
+    for (const am of ln.matchAll(/(\d{1,3}[.,]\d{2})/g)) {
+      const val = parseFloat(am[1].replace(",", "."));
+      if (val > 0 && val < cap) pset.add(+val.toFixed(2));
+    }
+  }
+  return [...pset];
+}
+
+/**
  * v2.0.15 pay-zone payable rescue (INTERSPORT re-photo real case, 2026-10-24).
  * The receipt prints the payable (55,99) in three places (ZA PLAČILO, DDV
  * recap "Skupaj", PLAČANO MASTERCARD) and OCR misread the dotted-bold "55"
@@ -1021,16 +1064,9 @@ export function payableRescue(parse, text, measured) {
   const T = parseFloat(m[2]);
   if (!(I > 0) || !(T > 0)) return null;
   // P: explicit discount-labelled lines only; every distinct amount aborts.
-  const pset = new Set();
-  for (const ln of text.split(/\r?\n/)) {
-    if (!/\b(?:pop[ou]st|kupon|dopla[cč]il)/i.test(ln)) continue;
-    for (const am of ln.matchAll(/(\d{1,3}[.,]\d{2})/g)) {
-      const val = parseFloat(am[1].replace(",", "."));
-      if (val > 0 && val < I) pset.add(+val.toFixed(2));
-    }
-  }
-  if (pset.size !== 1) return null;
-  const P = [...pset][0];
+  const parr = discountAmounts(text, I);
+  if (parr.length !== 1) return null;
+  const P = parr[0];
   const D = +(I - P).toFixed(2);
   if (!(D > 0)) return null;
   if (Math.abs(D - T) <= 0.02) return null; // total already consistent with items−popust

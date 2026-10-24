@@ -104,15 +104,19 @@ test("payableRescue: fires when total already = items−POPUST? No — returns n
   assert.equal(payableRescue(consistent, raw, 55.99), null);
 });
 
+// v2.0.16: shared across tests — SPAR's coupon line carries THREE numbers
+// (percent, base, amount); neither payableRescue nor the sum-check discount
+// reconciliation may reduce it to one P.
+const sparLike =
+  "DESPAR PIZZA 2,25 A\n" +
+  "KROKETI 1,40 A\n" +
+  "1,55 A\n" +
+  "SKUPAJ 57.35\n" +
+  "KUPON POPUST 10.00% od 57.35 -5.74\n" +
+  "ZA PLAČILO 99.99\n" +
+  "PLAČANO: GOTOVINA 51.61\n";
+
 test("payableRescue: ambiguous discount amounts abort (SPAR coupon shape)", () => {
-  const sparLike =
-    "DESPAR PIZZA 2,25 A\n" +
-    "KROKETI 1,40 A\n" +
-    "1,55 A\n" +
-    "SKUPAJ 57.35\n" +
-    "KUPON POPUST 10.00% od 57.35 -5.74\n" +
-    "ZA PLAČILO 99.99\n" +
-    "PLAČANO: GOTOVINA 51.61\n";
   const r = parseReceipt(sparLike);
   const sumFail = r.checks.some((c) => !c.ok && /items sum/.test(c.text));
   if (sumFail) {
@@ -124,6 +128,54 @@ test("payableRescue: no discount line at all -> cannot fire (HOFER phone fixture
   const raw2 = readFileSync(join(here, "fixtures", "hofer-phone-real.txt"), "utf8");
   const r = parseReceipt(raw2);
   assert.equal(payableRescue(r, raw2, 12.14), null);
+});
+
+// ---- v2.0.16 discount reconciliation in the sum check (INTERSPORT-phone live
+// ---- evidence 2026-10-24: items 79.99, POPUST 24.00, ZA PLAČILO 55,99 all
+// ---- read clean on the same capture, yet the sum check flagged [?] — the
+// ---- gap IS the printed discount; a single-amount discount line that closes
+// ---- the gap upgrades it to a green check naming every measured number)
+
+test("discount reconciliation: single-amount POPUST closing the gap is green", () => {
+  const recon =
+    "6438496871585 JAKNA M.POH BRIMFIELD š48\n" +
+    "1,000 x 79,99 79,99\n" +
+    "(30.0%) - ŠPORTNE ZVEZDE -24,00\n" +
+    "SKUPAJ 79,99\n" +
+    "POPUST 24,00\n" +
+    "ZA PLAČILO 55,99\n";
+  const r = parseReceipt(recon);
+  assert.equal(r.items.length, 1, `items: ${JSON.stringify(r.items)}`);
+  assert.match(r.total, /^55\.99/);
+  const reconCheck = r.checks.filter((c) => /discount line reconciles/.test(c.text));
+  assert.equal(reconCheck.length, 1, `expected the reconciliation check, got ${JSON.stringify(r.checks)}`);
+  assert.ok(reconCheck[0].ok, "reconciliation must be green");
+  assert.match(reconCheck[0].text, /items 79\.99 − POPUST 24\.00 = total 55\.99 ✓/);
+  assert.equal(r.checks.filter((c) => !c.ok).length, 0, `checks: ${JSON.stringify(r.checks)}`);
+});
+
+test("discount reconciliation: does NOT fire when total disagrees with items−POPUST", () => {
+  // new capture fixture (payable misread 99,99): 79.99 − 24.00 = 55.99 ≠ 99.99
+  // → no reconciliation, sum mismatch stays red, total untouched
+  let reconChecks = r16New.checks.filter((c) => /discount line reconciles/.test(c.text));
+  assert.equal(reconChecks.length, 0, `reconciliation leaked on misread total: ${JSON.stringify(r16New.checks)}`);
+  assert.match(r16New.total, /^99\.99/);
+  assert.ok(r16New.checks.some((c) => !c.ok && /items sum 79\.99 ≠ total 99\.99/.test(c.text)),
+    `sum mismatch must survive: ${JSON.stringify(r16New.checks)}`);
+  // old capture fixture (payable misread 59,99, its own conflict story): also red
+  const rawOld = readFileSync(join(here, "fixtures", "intersport-phone-real.txt"), "utf8");
+  const rOld = parseReceipt(rawOld);
+  reconChecks = rOld.checks.filter((c) => /discount line reconciles/.test(c.text));
+  assert.equal(reconChecks.length, 0, `reconciliation leaked on old fixture: ${JSON.stringify(rOld.checks)}`);
+  assert.match(rOld.total, /^59\.99/);
+});
+// new-capture fixture parse shared with the reconciliation test above
+const r16New = parseReceipt(raw);
+
+test("discount reconciliation: ambiguous multi-number discount line stays red (SPAR coupon shape)", () => {
+  const r = parseReceipt(sparLike);
+  const reconChecks = r.checks.filter((c) => /discount line reconciles/.test(c.text));
+  assert.equal(reconChecks.length, 0, `coupon ambush: ${JSON.stringify(r.checks)}`);
 });
 
 // ---- phone-line guard (this capture's drift read, locked so the standalone

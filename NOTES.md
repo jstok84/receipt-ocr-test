@@ -688,3 +688,38 @@ EVIDENCE:
   3/12.14 all-green, intersport-new1 1/55.99 green, intersport-new2 1/55.99 green.
   The payableRescue does NOT fire on HOFER/EUROSPIN (no popust line), SPAR (pset abort), or the
   old INTERSPORT (D=T within tolerance). Tests 90/90.
+
+## PHONE CASE #6b — SUM-CHECK DISCOUNT RECONCILIATION (2026-10-24, v2.0.16, live-verified)
+User: "intersport-phone — should read the same as new1 and 2." It did not: 1 item / total 55.99
+/ 1 failing sum check, because the check at the sum/total comparison never subtracted a
+recognized discount. Live probe showed the capture carries the answer cleanly: "POPUST 24.00",
+"ZA PLACILO 55,99", item JAKNA 79.99 — the [?] gap is EXACTLY the printed discount.
+
+DESIGN (v2.0.16, `parseReceipt.js`):
+- Shared helper discountAmounts(text, cap): DISTINCT amounts on explicit discount-labelled lines
+  (popust/kupon/doplačil, case-insensitive), capped below the items sum. payableRescue (v2.0.15)
+  refactored onto it — behavior identical, ambiguity aborts (SPAR's 3-number coupon reduces to
+  no single P).
+- Sum check gains a RECONCILIATION branch: when a single-amount discount line P closes the gap
+  (items − P == total ±0.011), the red "items sum ≠ total" is replaced by
+  "✓ items 79.99 − POPUST 24.00 = total 55.99 ✓ (discount line reconciles the sum)".
+  No value is invented — total, items and discount are all as-read/printed; the check is
+  arithmetic BETWEEN measured numbers, the same class as the plain items-sum check. When the
+  numbers don't close (misread totals), the red mismatch stands and the v2.0.15 pay-zone rescue
+  chain (measure → strip → resolve) is unchanged after it.
+- VAT-recap bucket hunt (v1.6.9) still runs for unexplained gaps only; reconciled receipts skip
+  the point (gap is explained; loop is harmless anyway as missing goes negative).
+
+NO-FIRE PINS (all tested):
+- old intersport-phone-real.txt fixture (payable misread 59,99): 79.99 − 24.00 = 55.99 ≠ 59.99
+  → no reconciliation, mismatch + payable≠paid conflict stay red, total 59.99 pins;
+- NEW capture fixture (payable misread 99,99): no reconciliation — that path belongs to the
+  v2.0.15 pay-zone rescue (measure-gated), not arithmetic;
+- SPAR coupon shape: ambiguous (percent + base + amount on one line) → stays red BY DESIGN.
+
+EVIDENCE: npm tests 93/93 (+3 pins). Live re-run of the 8-capture corpus: all three INTERSPORT
+captures now 1 item / 55.99 / 0 failing — intersport-phone via the green "items − POPUST = total"
+reconciliation, new1/new2 via the pay-zone measured rescue; total identical everywhere. SPAR
+26/51.61 [?], HOFER-B 3/4.73 + Krüger [?], EUROSPIN 3/4.20 [?] ×2, hofer-phone 3/12.14 green —
+byte-identical to the pre-change baseline. intersport-phone re-run once more for drift: same
+green outcome both times ("POPUST 24.00" + "ZA PLACILO 55,99" legible on both passes).
