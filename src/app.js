@@ -550,13 +550,24 @@ export default function App() {
     setFocusPt({ nx: pt.x, ny: pt.y, px: e.clientX - cr.left, py: e.clientY - cr.top });
     setTimeout(() => setFocusPt(null), 900);
     const track = cameraStreamRef.current?.getVideoTracks?.()[0];
+    if (!track?.applyConstraints) return;
+    // 1) Single-shot at the tapped point — honoured by some Chromium/Android HALs.
+    try { await track.applyConstraints(tapFocusConstraint(pt)); }
+    catch (err) { console.warn("Tap-to-focus point failed:", err?.name || err); }
+    // 2) Many Android HALs do NOT implement pointsOfInterest, so step 1 is a
+    //    silent no-op. Force a real AF cycle by dropping to manual and back to
+    //    continuous — this makes the camera re-run autofocus (at frame centre).
+    //    Best-effort: only when the track advertises both modes.
     try {
-      await track?.applyConstraints?.(tapFocusConstraint(pt));
-      const s = track?.getSettings?.() || {};
-      setCameraInfo(prev => (prev ? { ...prev, focusMode: s.focusMode || prev.focusMode } : prev));
-    } catch (err) {
-      console.warn("Tap-to-focus failed:", err?.name || err);
-    }
+      const modes = (track.getCapabilities?.() || {}).focusMode || [];
+      if (modes.includes("manual") && modes.includes("continuous")) {
+        await track.applyConstraints({ advanced: [{ focusMode: "manual" }] });
+        await new Promise(r => setTimeout(r, 80));
+        await track.applyConstraints({ advanced: [{ focusMode: "continuous" }] });
+      }
+    } catch { /* capability flip mid-session — ignore */ }
+    const s = track.getSettings?.() || {};
+    setCameraInfo(prev => (prev ? { ...prev, focusMode: s.focusMode || prev.focusMode } : prev));
   };
 
   const toggleTorch = async () => {
@@ -739,6 +750,19 @@ export default function App() {
           over the whole app (the page stays beneath, untouched), stage video,
           guide border + advisory lamp, bottom action bar. Escape closes. */}
       {cameraState !== "off" && <div className="cam-overlay" role="dialog" aria-modal="true" aria-label="Guided camera capture">
+        {/* Top bar: every action EXCEPT capture (user request 2026-10-25). */}
+        <div className="cam-topbar">
+          <button className="btn ghost" onClick={stopCamera} type="button">Close</button>
+          {(() => {
+            const track = cameraState === "live" ? cameraStreamRef.current?.getVideoTracks?.()[0] : null;
+            return hasTorch(track?.getCapabilities?.()) && (
+              <button className="btn ghost" onClick={toggleTorch} type="button">
+                {torchOn ? "Torch off" : "Torch on"}
+              </button>
+            );
+          })()}
+        </div>
+
         <div className="cam-stage" ref={stageRef}>
           {cameraState === "opening" && <p className="cam-msg">Opening the camera …</p>}
           {cameraState === "error" && <p className="cam-msg error" role="alert">{cameraErr}</p>}
@@ -765,25 +789,10 @@ export default function App() {
             </div>
           )}
         </div>
+
         {cameraState === "live" && cameraLamp && (
           <p className={`lamp-msg ${cameraLamp.level}`}>{cameraLamp.msg}</p>
         )}
-        <div className="cam-bar">
-          {(() => {
-            const track = cameraState === "live" ? cameraStreamRef.current?.getVideoTracks?.()[0] : null;
-            return hasTorch(track?.getCapabilities?.()) && (
-              <button className="btn ghost" onClick={toggleTorch} type="button">
-                {torchOn ? "Torch off" : "Torch on"}
-              </button>
-            );
-          })()}
-          <button className="btn primary capture" onClick={captureToQueue} disabled={cameraState !== "live"} type="button">
-            Capture &amp; scan
-          </button>
-          <button className="btn ghost" onClick={stopCamera} type="button">
-            Close
-          </button>
-        </div>
         {cameraInfo && <p className="cam-info">
           capture ≈{cameraInfo.dpi.pxPerMm} px/mm (≈{cameraInfo.dpi.dpi} dpi, assuming an
           80&nbsp;mm-wide receipt) · stream {cameraInfo.w}×{cameraInfo.h} px
@@ -791,6 +800,13 @@ export default function App() {
           {cameraInfo.focusMode ? ` · focus ${cameraInfo.focusMode}` : ""}
           {cameraInfo.dpi.dpi < 300 ? " — below the ~300 dpi OCR sweet spot; the rescues will still try" : ""}
         </p>}
+
+        {/* Bottom bar: the primary action, alone (user request 2026-10-25). */}
+        <div className="cam-bottombar">
+          <button className="btn primary capture" onClick={captureToQueue} disabled={cameraState !== "live"} type="button">
+            Capture &amp; scan
+          </button>
+        </div>
       </div>}
 
       {loading && <div className="loading-row" role="status">

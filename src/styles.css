@@ -287,40 +287,50 @@ label:focus-visible {
 }
 
 .cam-overlay .lamp-msg {
-  position: absolute;
-  left: 0;
-  right: 0;
-  /* sits just above the action bar, below the stage */
-  bottom: 118px;
+  /* normal flow between the stage and the info line (no longer floats over the
+     video) — the top/bottom bars now own the chrome */
   margin: 0;
+  padding: 4px 16px 0;
   text-align: center;
   font-size: 13px;
   color: #fff;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
   pointer-events: none;
-  z-index: 2;
 }
 
 .cam-overlay .lamp-msg.ok { color: #7ee1a8; }
 .cam-overlay .lamp-msg.warn { color: #ffd479; }
 
-.cam-bar {
+/* Camera chrome (v2.0.38, user request): every secondary action lives in a TOP
+   bar; the Capture button sits ALONE in a BOTTOM bar — the thumb-reachable
+   primary action. Both bars are dark strips on the fullscreen overlay. */
+.cam-topbar {
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: space-between;
   gap: 10px;
-  padding: 14px 16px calc(14px + env(safe-area-inset-bottom, 0px));
+  padding: calc(10px + env(safe-area-inset-top, 0px)) 16px 10px;
   background: #0b0b0b;
 }
 
-/* The primary capture button reads as the big shutter action on the dark bar */
-.cam-bar .btn {
+.cam-bottombar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 14px 16px calc(20px + env(safe-area-inset-bottom, 0px));
+  background: #0b0b0b;
+}
+
+.cam-topbar .btn {
   font-size: 14px;
 }
 
-.cam-bar .btn.capture {
-  min-width: 168px;
-  padding: 11px 20px;
+/* The primary capture button reads as the big shutter action on the dark bar */
+.cam-bottombar .btn.capture {
+  min-width: 240px;
+  padding: 15px 28px;
+  font-size: 16px;
+  font-weight: 600;
 }
 
 .cam-info {
