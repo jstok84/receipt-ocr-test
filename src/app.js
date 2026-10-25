@@ -112,6 +112,11 @@ export default function App() {
   // applyConstraints call in tapToFocus().
   const [focusPt, setFocusPt] = useState(null);
 
+  // Capture tuning (v2.0.46): how long to let a forced focus lock settle, and
+  // how many AF+burst attempts before accepting the best-so-far frame.
+  const AF_SETTLE = 350;   // ms after forcing a focus lock
+  const SHOT_RETRIES = 3;  // AF attempts before giving up on a sharp frame
+
   const [uploadedPreview, setUploadedPreview] = useState(null);
   const [pdfPreviews, setPdfPreviews] = useState([]);
   const [useFlatMode, setUseFlatMode] = useState(false);
@@ -143,9 +148,9 @@ export default function App() {
   // Values produced by the most recent runParsing call (its decision log and
   // the stage captures), so a snapshot can carry exactly what the panels got.
   const lastRunMeta = useRef({ parserLog: [], stages: [] });
-  const newJob = name => {
+  const newJob = (name, extra = {}) => {
     const id = ++jobSeq.current;
-    setJobs(q => [...q, { id, name, status: "running", sync: null, at: Date.now() }]);
+    setJobs(q => [...q, { id, name, status: "running", sync: null, at: Date.now(), ...extra }]);
     return id;
   };
   const jobDone = (id, status, note = "") =>
@@ -586,34 +591,74 @@ export default function App() {
     });
 
     let blob = null;
+    let softCapture = false;
+    let bestScore = 0;
     if (strategy === "still" && track) {
       try {
         const cap = new window.ImageCapture(track);
-        // ROOT FIX (v2.0.45): ImageCapture.takePhoto() does NOT run an
-        // autofocus sweep on Android Chrome — it captures the current sensor
-        // frame. So a still is soft unless we explicitly drive a focus lock
-        // first. focusMode "single-shot" (a plain String per MDN, NOT a
-        // ConstrainDOMString) triggers one AF scan; we await the constraint
-        // settle, then burst stills while the lens stays locked. This is why
-        // captures were soft even on plain white paper: nothing ever focused.
-        try {
-          await track.applyConstraints({ advanced: [{ focusMode: "single-shot" }] });
-          await new Promise(r => setTimeout(r, 350));
-        } catch (afErr) {
-          console.warn("Forced AF lock unsupported / failed:", afErr?.name || afErr);
+        /**
+         * v2.0.46 — sharpness-GATED still capture.
+         * ImageCapture.takePhoto() captures the current sensor frame with NO
+         * autofocus sweep, so a still is soft unless we drive a focus lock
+         * first (v2.0.45 added a single-shot lock). Measured on the user's S25
+         * (bucket receipts, 2026-10-25): the camera CAN and DOES focus — 4 of 6
+         * captures scored Tenengrad 1200–1371 (above the 500 floor) and OCR'd
+         * cleanly; the 2 soft ones (260, 323) were shot at ISO 1600 / 640 in DIM
+         * light at 1/100 s handheld — the low-contrast / low-light regime where
+         * contrast-detect AF hunts and fails to lock, plus hand-shake blur. The
+         * real defects were: (1) the 3-frame burst fired back-to-back (gapMs was
+         * unused) so the frames were identical and "best of 3" was meaningless,
+         * and (2) the 500 floor was NEVER enforced, so a soft frame was uploaded
+         * and OCR failed silently. Fix: drive AF, burst WITH the gap, and retry
+         * the whole AF+burst a few times (re-locking each try); keep the best
+         * frame; if even the best stays below the floor, flag it so the user gets
+         * an honest warning instead of a silent OCR failure.
+         */
+        const driveAF = async () => {
+          // 1) single-shot lock (honoured by some Chromium/Android HALs).
+          try { await track.applyConstraints({ advanced: [{ focusMode: "single-shot" }] }); }
+          catch { /* unsupported — silent no-op */ }
+          await new Promise(r => setTimeout(r, AF_SETTLE));
+          // 2) Many Android HALs ignore focusMode/pointsOfInterest (observed on
+          //    S25), so force a real AF re-scan: manual → continuous makes the
+          //    camera re-run autofocus at frame centre.
+          try {
+            const modes = (track.getCapabilities?.() || {}).focusMode || [];
+            if (modes.includes("manual") && modes.includes("continuous")) {
+              await track.applyConstraints({ advanced: [{ focusMode: "manual" }] });
+              await new Promise(r => setTimeout(r, 80));
+              await track.applyConstraints({ advanced: [{ focusMode: "continuous" }] });
+              await new Promise(r => setTimeout(r, AF_SETTLE));
+            }
+          } catch { /* no-op */ }
+        };
+        const burstSharpest = async () => {
+          const shots = [];
+          for (let i = 0; i < SHARPNESS.frames; i++) {
+            if (i > 0) await new Promise(r => setTimeout(r, SHARPNESS.gapMs));
+            shots.push(await cap.takePhoto());
+          }
+          const scores = [];
+          for (const s of shots) scores.push(await stillSharpness(s));
+          const bi = pickSharpestIndex(scores);
+          return { blob: shots[bi], score: scores[bi] };
+        };
+        // Retry the AF+burst up to SHOT_RETRIES times, re-locking each attempt
+        // (gives contrast-detect AF multiple chances to settle, especially on
+        // low-contrast subjects). Keep the global best frame; stop early once it
+        // clears the floor. Then gate against the absolute floor.
+        let best = null;
+        for (let attempt = 0; attempt < SHOT_RETRIES && !(best && best.score >= SHARPNESS.floor); attempt++) {
+          await driveAF();
+          const r = await burstSharpest();
+          if (!best || r.score > best.score) best = r;
         }
-        // Burst: the lens is already locked, so take a few stills and keep the
-        // sharpest centre region (hand-shake guard). No inter-shot AF wait.
-        const shots = [];
-        for (let i = 0; i < SHARPNESS.frames; i++) {
-          shots.push(await cap.takePhoto());
-        }
-        const scores = [];
-        for (const s of shots) scores.push(await stillSharpness(s));
-        const best = shots[Math.max(0, pickSharpestIndex(scores))];
+        bestScore = best ? best.score : 0;
+        softCapture = best ? best.score < SHARPNESS.floor : true;
         // Native JPEG straight through — no canvas re-encode (that was the
         // softener). Crop/re-encode only if the file is too big to keep whole.
-        blob = best.size <= CAPTURE_MAX_BYTES ? best : await cropStillToGuide(best);
+        blob = best && best.blob.size <= CAPTURE_MAX_BYTES ? best.blob
+             : best ? await cropStillToGuide(best.blob) : null;
       } catch (err) {
         // takePhoto can reject on some stacks (synthetic device, mid-record) —
         // fall back to the video frame rather than fail the shot.
@@ -636,7 +681,10 @@ export default function App() {
     // again; the queue row + evidence trail shows the result.
     stopCamera();
     const name = `camera-${new Date().toISOString().replace(/[:.]/g, "-")}.jpg`;
-    await handleFiles(new File([blob], name, { type: "image/jpeg" }), newJob(name));
+    await handleFiles(
+      new File([blob], name, { type: "image/jpeg" }),
+      newJob(name, { soft: softCapture, sharpness: Math.round(bestScore) })
+    );
   };
 
   /**
@@ -965,6 +1013,9 @@ export default function App() {
             {j.status === "done" ? "✓" : j.status === "error" ? "!" : "·"}
           </span>
           <span className="qname">{j.name}</span>
+          {j.soft && <span className="qnote warn"
+            title={`Captured sharpness ${j.sharpness} — floor is ${SHARPNESS.floor}. Retake in brighter light / hold steady for reliable text.`}>
+            ⚠ soft — retake</span>}
           {j.status !== "running" && j.note && <span className="qnote">{j.note}</span>}
           {j.sync?.state === "uploading" && <span className="qsync">sync…</span>}
           {j.sync?.state === "ok" && <span className="qsync ok">synced ✓</span>}

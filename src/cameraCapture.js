@@ -175,6 +175,27 @@ export function pickSharpestIndex(scores) {
 }
 
 /**
+ * Gate the sharpest frame against the absolute Tenengrad floor. The floor is
+ * calibrated on real captures (crisp receipt ≈ 1200, soft ≈ 350 at 320 px); it
+ * exists so the app never silently uploads a frame it KNOWS is too soft to OCR.
+ * Pure + tested — the capture path (app.js) keeps the best frame across AF
+ * retries and uses this to decide whether to warn the user.
+ *
+ * @returns {{index:number, score:number, accepted:boolean, reason:string}}
+ */
+export function acceptSharpest(scores, { floor = SHARPNESS.floor } = {}) {
+  const index = pickSharpestIndex(scores);
+  if (index < 0) return { index: -1, score: 0, accepted: false, reason: "no-frames" };
+  const score = scores[index];
+  return {
+    index,
+    score,
+    accepted: score >= floor,
+    reason: score >= floor ? "ok" : "below-floor",
+  };
+}
+
+/**
  * Sharpness tunables. The live badge is RELATIVE (current frame vs the best in
  * the recent window) because absolute Laplacian variance depends on scene
  * content — a fixed threshold would call a plain wall "blurry" and a busy

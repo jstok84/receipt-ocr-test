@@ -26,6 +26,7 @@ import {
   normalizeTap,
   tapFocusConstraint,
   LAMP_THRESHOLDS,
+  acceptSharpest,
 } from "../src/cameraCapture.js";
 
 test("constraints: degradation-safe shape — everything ideal, user-facing camera, high-res ask", () => {
@@ -219,4 +220,29 @@ test("SHARPNESS config: sane multi-frame bounds", () => {
   assert.ok(SHARPNESS.frames >= 2 && SHARPNESS.frames <= 6);
   assert.ok(SHARPNESS.sampleW >= 200 && SHARPNESS.sampleW <= 640);
   assert.ok(SHARPNESS.relativeSharp > 0 && SHARPNESS.relativeSharp <= 1);
+});
+
+test("acceptSharpest: accepts above floor, rejects below, -1 on empty", () => {
+  // Calibrated floor is 500 (crisp receipt ≈ 1200, soft ≈ 350 at 320 px).
+  assert.equal(SHARPNESS.floor, 500);
+  const ok = acceptSharpest([260, 323]); // both soft → reject
+  assert.equal(ok.accepted, false);
+  assert.equal(ok.reason, "below-floor");
+  assert.equal(ok.index, 1); // still picks the best (least-soft) frame
+  assert.equal(ok.score, 323);
+
+  const ok2 = acceptSharpest([1200, 1371, 1266]); // all sharp → accept
+  assert.equal(ok2.accepted, true);
+  assert.equal(ok2.reason, "ok");
+  assert.equal(ok2.index, 1);
+  assert.equal(ok2.score, 1371);
+
+  // floor can be overridden (capture path uses the default; tests may pin a custom one)
+  assert.equal(acceptSharpest([400], { floor: 300 }).accepted, true);
+  assert.equal(acceptSharpest([400], { floor: 500 }).accepted, false);
+
+  const empty = acceptSharpest([]);
+  assert.equal(empty.index, -1);
+  assert.equal(empty.accepted, false);
+  assert.equal(empty.reason, "no-frames");
 });
