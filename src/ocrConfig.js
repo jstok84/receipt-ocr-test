@@ -349,6 +349,25 @@ export const MIN_CORRECTION_NAME_LETTERS = 4;
 export const PRICE_MAX = 10000;
 /** qty×price row unit-price ceiling (same plausibility class). */
 export const XROW_UNIT_MAX = 10000;
+/**
+ * Weight-priced row (live SPAR HRVATSKA capture 2026-10-25, photo
+ * spar-2024-12-14): "1,210 kg(N) x 1,44 EUR/kg 1,74 D". The qty is a KILOGRAM
+ * figure (comma = decimal here, NOT a thousands grouping), the unit price is
+ * per kg, and the third amount is the line total. Shape A's "^digits ×" anchor
+ * can never match it — "kg(N)" sits between the figure and the ×. Groups:
+ * 1 = weight, 2 = unit per kg, 3 = printed line total.
+ */
+export const WEIGHT_ROW_RE =
+  /^(\d+(?:[.,]\d{3})*)\s*kg(?:\(N\))?\s*[x×]\s*(\d+[.,]\d{2})\s*EUR\s*\/\s*kg\s+(\d+[.,]\d{2})/i;
+/**
+ * Measure units that may trail a bare 3-digit integer on a name line
+ * ("KRUH PSENIC.BIJELI 600 g"): the integer is a WEIGHT/VOLUME, never a
+ * decimal-dropped price, so the standalone 3-digit repair must not fire on it
+ * (live SPAR HRVATSKA capture 2026-10-25 — the repair manufactured a phantom
+ * 6,00 item out of "600 g"). VAT codes on these receipts are A/B/C/D/E and
+ * never collide with this list.
+ */
+export const MEASURE_UNIT_TAIL_RE = /\b(?:kg|g|mg|ml|cl|dl|l|kom|kos)\s*$/i;
 /** Quantities at/above this are not quantities (column bleed). */
 export const QTY_MAX = 100;
 /** SPAR multi-column rows split into at least this many whitespace parts. */

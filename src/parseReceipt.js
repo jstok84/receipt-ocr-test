@@ -4,10 +4,10 @@ import {
   DATE_REGEXES, DATE_RESCUE_REGEXES, DATE_TIME_PATTERN, DISCOUNT_AMOUNT_RE,
   DISCOUNT_GATE_RE, DISCOUNT_LABEL_RE, EXCLUDE_KEYWORDS, FALLBACK_DELTA,
   FUSED_DATE_RE, GARBLE_SHORT_TOKENS,
-  MEASURE_TOL, MIN_NAME_LETTERS, NAME_MATCH_THRESHOLD, NETO_ROW_RE, NON_ITEM_PATTERNS,
+  MEASURE_TOL, MEASURE_UNIT_TAIL_RE, MIN_NAME_LETTERS, NAME_MATCH_THRESHOLD, NETO_ROW_RE, NON_ITEM_PATTERNS,
   PAID_LINE_RE, PAYMENT_MARKERS, POST_TOTAL_GUARD_FRAC, PRICE_MAX, QTY_MAX,
   SLOVENIAN_ANCHORS, SPAR_MIN_PARTS, SUM_TOL, TENDER_LINE_RE, TIME_ANCHOR_RE,
-  TOTAL_KEYWORD_TIERS, XROW_UNIT_MAX,
+  TOTAL_KEYWORD_TIERS, WEIGHT_ROW_RE, XROW_UNIT_MAX,
 } from "./ocrConfig.js";
 
 /**
@@ -137,6 +137,11 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
    */
   function repairStandaloneIntAmount(line) {
     if (/\d[.,]\d/.test(line)) return line;
+    // A measure unit trailing the 3-digit group means the integer is a
+    // WEIGHT/VOLUME ("KRUH PSENIC.BIJELI 600 g", live SPAR HRVATSKA capture
+    // 2026-10-25), never a decimal-dropped price — repairing it manufactured a
+    // phantom 6,00 item. Prices are never followed by units.
+    if (MEASURE_UNIT_TAIL_RE.test(line)) return line;
     const m = line.match(/^(.*[a-zA-ZčšžČŠŽ].*?)\s+(\d{3})(\s+[a-zčšž]{1,2})?\s*$/i);
     if (!m) return line;
     return `${m[1]} ${m[2].slice(0, -2)}.${m[2].slice(-2)}${m[3] ?? ""}`;
@@ -378,63 +383,110 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
   //   current geometry:   "6438496671565 JAKNA M POH BRIMFIELD $48" + "1,000 x 79.99 (999"
   // The name row's own price column is print-column garble ("548"/"$48" of the
   // true 79,99) — a bare-int repair turns it into a phantom 5,48 item, while
-  // the MEASURED unit price only survives on the ×-row. Handle BOTH sides from
-  // the ×-row: it claims its PREDECESSOR as the name donor. Donor conditions
+  // the MEASURED price only survives on the priced row. Handle BOTH sides from
+  // the row: it claims its PREDECESSOR as the name donor. Donor conditions
   // (strict): passes the same guards the item loop applies, has a lettered
-  // name, and carries NO decimal amount of its own (its price is suspect; a
-  // cleanly priced line is never hijacked). The ×-row itself becomes the item;
-  // the donor never produces a fallback item.
+  // name, and carries NO amount of its own (its price is suspect; a cleanly
+  // priced line is never hijacked). The row itself becomes the item; the donor
+  // never produces a fallback item.
+  //
+  // v2.0.32 adds a second row shape from the live SPAR HRVATSKA capture
+  // (spar-2024-12-14): the weight-priced row ("1,210 kg(N) x 1,44 EUR/kg
+  // 1,74 D"). The qty-garbled row ("Za 09 2,18 D") is handled by the orphan
+  // rule in the item loop below.
   const xRowByXLine = new Map();
   const donorLines = new Set();
-  for (let xi = 1; xi < lines.length; xi++) {
-    const xm = lines[xi].match(
-      /^(\d+(?:[.,]\d{3})*(?:[ \u00A0]\d{3})*)\s*[x×]\s*(\d+[.,]\d{2}|\d+\.\d{3}[.,]\d{2})(?:\s+\d+[.,]\d{2})?/i
-    );
-    if (!xm) continue;
-    const donor = lines[xi - 1];
-    if ((donor.match(/[a-zA-ZčšžČŠŽ]{3,}/g) || []).length < 1) continue;
-    if (/\d[.,]\d/.test(donor)) continue;
-    if (
-      dateTimePattern.test(donor) ||
-      shouldExcludeLine(donor, excludeKeywords) ||
-      isNonItemLine(donor)
-    ) {
-      log(`  ×-row "${lines[xi]}" has no valid donor (guards failed on "${donor}")`);
-      continue;
-    }
-    const unit = parseFloat(xm[2].replace(",", "."));
-    if (!(unit > 0 && unit <= XROW_UNIT_MAX)) continue;
-    // Quantity: "1,000" / "1 000" = one unit in a thousands grouping; a plain
-    // small integer stores as-is; anything else stays undefined (honest N/A).
-    let qty;
-    const compact = xm[1].replace(/[ \u00A0]/g, "");
-    const th = compact.match(/^(\d{1,3})[.,]\d{3}$/);
-    if (th) qty = parseInt(th[1], 10);
-    else if (/[ \u00A0]/.test(xm[1])) {
-      const grp = compact.match(/^(\d{1,2})\d{3}$/);
-      qty = grp ? parseInt(grp[1], 10) : undefined;
-    } else {
-      qty = parseInt(compact, 10);
-      if (isNaN(qty)) qty = undefined;
-    }
-    if (qty !== undefined && (qty <= 0 || qty >= QTY_MAX)) qty = undefined;
-    // Name: strip leading figure/punctuation tokens (junk edge + SKU/qty
-    // column bleed) and trailing figure tokens (the garbled price column).
+  // Donor validity, shared by every priced-row shape. A percentage is
+  // packaging text, NOT a price: "MLIJEKO UHT 1,5%MM 1L" was rejected by the
+  // plain decimal test, which threw away the qty row below ("3 x 2,19 6.57 D")
+  // and let the name line be misread as a 1,50 item. A real price on the
+  // donor still disqualifies it.
+  const donorHasOwnAmount = (donor) =>
+    /\d[.,]\d/.test(donor.replace(/\d+[.,]\d+\s*%/g, ""));
+  const validDonor = (donor) =>
+    (donor.match(/[a-zA-ZčšžČŠŽ]{3,}/g) || []).length >= 1 &&
+    !donorHasOwnAmount(donor) &&
+    !dateTimePattern.test(donor) &&
+    !shouldExcludeLine(donor, excludeKeywords) &&
+    !isNonItemLine(donor);
+  // Donor name cleanup, shared: strip leading figure/punctuation tokens (junk
+  // edge + SKU/qty column bleed), trailing figure tokens (the garbled price
+  // column — "š48"/"S48"/"$48" = OCR variants of the 5438496871585 SKU tail,
+  // the 5's glyph degrades to š/s/$ on phone photos; new capture 2026-10-24)
+  // and a trailing dash placeholder ("Banana -" → "Banana" — an empty price
+  // column prints a dash, never part of a name).
+  const cleanDonorName = (donor) => {
     const nameToks = donor.trim().split(/\s+/).filter(Boolean);
     while (nameToks.length > 1 && /^[\d.,%°$€§=]{1,16}$/.test(nameToks[0])) nameToks.shift();
     while (
       nameToks.length > 1 &&
-      // "š48"/"S48"/"$48" = OCR variants of the 5438496871585 SKU tail (the
-      // 5's glyph degrades to š/s/$ on phone photos; new capture 2026-10-24).
       /^[$€šs§]?\d{1,3}[.,]?%?$/.test(nameToks[nameToks.length - 1])
     ) {
       nameToks.pop();
     }
-    while (nameToks.length > 1 && /^[\d.,%°$€§]{1,16}$/.test(nameToks[0])) nameToks.shift();
-    const name = nameToks.join(" ");
-    if ((name.match(/[a-zA-ZčšžČŠŽ]/g) || []).length < MIN_NAME_LETTERS) continue;
-    donorLines.add(donor);
-    if (!xRowByXLine.has(lines[xi])) xRowByXLine.set(lines[xi], { name, unit, qty, donor });
+    while (nameToks.length > 1 && /^[\d.,%°$€§=]{1,16}$/.test(nameToks[0])) nameToks.shift();
+    while (nameToks.length > 1 && /^[-–—]+$/.test(nameToks[nameToks.length - 1])) nameToks.pop();
+    return nameToks.join(" ");
+  };
+  const donorNameOk = (name) =>
+    (name.match(/[a-zA-ZčšžČŠŽ]/g) || []).length >= MIN_NAME_LETTERS;
+  for (let xi = 1; xi < lines.length; xi++) {
+    const row = lines[xi];
+    const xm = row.match(
+      /^(\d+(?:[.,]\d{3})*(?:[ \u00A0]\d{3})*)\s*[x×]\s*(\d+[.,]\d{2}|\d+\.\d{3}[.,]\d{2})(?:\s+\d+[.,]\d{2})?/i
+    );
+    const wm = !xm && row.match(WEIGHT_ROW_RE);
+    if (!xm && !wm) continue;
+    const donor = lines[xi - 1];
+    if (!validDonor(donor)) {
+      log(`  ${xm ? "×-row" : "weight row"} "${row}" has no valid donor (guards failed on "${donor}")`);
+      continue;
+    }
+    const name = cleanDonorName(donor);
+    if (!donorNameOk(name)) continue;
+    if (xm) {
+      const unit = parseFloat(xm[2].replace(",", "."));
+      if (!(unit > 0 && unit <= XROW_UNIT_MAX)) continue;
+      // Quantity: "1,000" / "1 000" = one unit in a thousands grouping; a plain
+      // small integer stores as-is; anything else stays undefined (honest N/A).
+      let qty;
+      const compact = xm[1].replace(/[ \u00A0]/g, "");
+      const th = compact.match(/^(\d{1,3})[.,]\d{3}$/);
+      if (th) qty = parseInt(th[1], 10);
+      else if (/[ \u00A0]/.test(xm[1])) {
+        const grp = compact.match(/^(\d{1,2})\d{3}$/);
+        qty = grp ? parseInt(grp[1], 10) : undefined;
+      } else {
+        qty = parseInt(compact, 10);
+        if (isNaN(qty)) qty = undefined;
+      }
+      if (qty !== undefined && (qty <= 0 || qty >= QTY_MAX)) qty = undefined;
+      // v2.0.32: the item price is the LINE TOTAL (qty × unit) — the amount
+      // the receipt actually sums, not the unit price. "4 x 1,69 6,/6 A" (live
+      // SPAR HRVATSKA capture) printed its total garbled, so the arithmetic is
+      // the only surviving witness; INTERSPORT's "1,000 x 79,99" is a
+      // thousands-grouped ONE, so its price is unchanged and its printed
+      // "79.89" drift stays ignored.
+      const price = qty !== undefined ? Math.round(qty * unit * 100) / 100 : unit;
+      donorLines.add(donor);
+      if (!xRowByXLine.has(row)) xRowByXLine.set(row, { name, price, qty, donor });
+    } else {
+      // Weight row: the printed line total, corroborated by weight × unit/kg
+      // ("1,210 kg(N) x 1,44 EUR/kg 1,74 D" → 1.21 × 1.44 = 1.7424 → 1.74). A
+      // total the arithmetic cannot witness is OCR drift — reject the row
+      // rather than emit a price no measurement supports.
+      const weight = parseFloat(wm[1].replace(",", "."));
+      const perKg = parseFloat(wm[2].replace(",", "."));
+      const total = parseFloat(wm[3].replace(",", "."));
+      if (!(total > 0 && total <= XROW_UNIT_MAX)) continue;
+      if (Math.abs(Math.round(weight * perKg * 100) / 100 - total) > 0.005) {
+        log(`  weight row "${row}" fails arithmetic (${weight} × ${perKg} ≠ ${total})`);
+        continue;
+      }
+      // Quantity stays N/A: a kilogram figure is not a unit count.
+      donorLines.add(donor);
+      if (!xRowByXLine.has(row)) xRowByXLine.set(row, { name, price: total, qty: undefined, donor });
+    }
   }
 
   // Parse items with support for Spar multi-column format and fallback generic parsing
@@ -448,13 +500,13 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
     if (xRowByXLine.has(line)) {
       const xr = xRowByXLine.get(line);
       log(
-        `  Detected item (qty×price row, donor "${xr.donor}"): name="${xr.name}", price=${xr.unit.toFixed(
+        `  Detected item (qty×price row, donor "${xr.donor}"): name="${xr.name}", price=${xr.price.toFixed(
           2
         )} ${currency}, quantity=${xr.qty ?? "N/A"}`
       );
       items.push({
         name: xr.name,
-        price: `${xr.unit.toFixed(2)} ${currency}`,
+        price: `${xr.price.toFixed(2)} ${currency}`,
         quantity: xr.qty,
       });
       continue;
@@ -629,6 +681,37 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
     const letterCount = (description.match(/[a-zA-ZčšžČŠŽ]/g) || []).length;
     if (letterCount < MIN_NAME_LETTERS) {
       log(`  Skipping: name has only ${letterCount} letters ("${description}")`);
+      // v2.0.32 orphan priced row (live SPAR HRVATSKA capture 2026-10-25): the
+      // qty column of "KRUH PSENIC.BIJELI 600 g" printed as "Za 09 2,18 D" —
+      // the name side is destroyed, the row is junk + one clean amount + the
+      // VAT code. Every priced row on this receipt family ends with that code,
+      // and the requirement is what keeps EUROSPIN garble ("se ? 0,37", no
+      // code, donor "JESEK 4 0. ova Dr pne") from becoming a phantom item.
+      // The line above carries the name (all item-loop guards already ran on
+      // THIS line: dates, totals, tender, neto tails and garble storms never
+      // reach here).
+      if (
+        li > 0 &&
+        !donorLines.has(lines[li - 1]) &&
+        validDonor(lines[li - 1]) &&
+        /\s[a-zšžč]{1,2}$/i.test(line)
+      ) {
+        const orphanName = cleanDonorName(lines[li - 1]);
+        if (donorNameOk(orphanName)) {
+          donorLines.add(lines[li - 1]);
+          log(
+            `  Detected item (orphan priced row, donor "${lines[li - 1]}"): name="${orphanName}", price=${price.toFixed(
+              2
+            )} ${detectedCurrency}`
+          );
+          items.push({
+            name: orphanName,
+            price: `${price.toFixed(2)} ${detectedCurrency}`,
+            quantity: undefined,
+          });
+          continue;
+        }
+      }
       continue;
     }
 
