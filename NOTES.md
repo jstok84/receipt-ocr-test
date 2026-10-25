@@ -998,3 +998,25 @@ photos (none rescues a date — all parse dates); it rides any future capture wh
 printed date garbles (e.g. hoferracun1 in a farbled browser). Provenance logic is
 app-level, mirrored on the same injection path as the pay check, pinned conceptually
 by CASE #10 fixture pins.
+
+## 2026-10-26 (Acting-agent turn, post-WorkBuddy handoff): chain merged to main
+User approved WorkBuddy's v2.0.26-v2.0.33 chain directly ("changes I approved and tested
+myself"); my proposed own live gate was declined. Multi-agent constitution codified in
+AGENTS.md first: ONE AGENT AT A TIME, handoff-on-limit with role reversal, all recorded
+rules (both agents) binding. Analysis-before-acceptance: 145/145 tests green in this
+checkout; own guards verified intact after the big refactor (payDebug, date rescue,
+recap-% guard, znes/EFT echo guard now in ocrConfig NON_ITEM_PATTERNS); privacy rules
+respected (ua still absent; new pixels.js/imageInput.js explicitly document
+fingerprinting-avoidance; WebCodecs decode = canvas-free photo path, progress on the
+no-gap directive; strip re-OCR path remains canvas-based - still subject farbling);
+WorkBuddy sweep records verified present (samples/live/SWEEP-*.md through v2.0.33).
+Deploy mechanics verified: deploy.yml triggers ONLY on push to main (branch pushes never
+deploy); origin/main was already our v2.0.25 (user push yesterday, site serves v2.0.25
+bundle fa7a0c8d, verified live); site currently 8 versions behind local main.
+MERGE EXECUTED locally on user approval: git checkout main + merge --ff-only
+fix/hofer-footer-date -> main now 39f05e3 (13 commits ahead of origin/main), history
+linear, no merge commit. Branches (feat/deterministic-decode, chore/cleanup-2026-10-25,
+refactor/ocr-config, fix/* x4) still point at their commits = now on main; safe to
+delete after push verification. NEXT (user-side push): push main -> Actions npm install
++ parcel build -> gh-pages force-publish -> site v2.0.33/parser v1.9.0 after
+propagation (index.html max-age 600). Rollback: repoint main to 5db55d3 + push.
