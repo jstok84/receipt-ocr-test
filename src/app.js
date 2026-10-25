@@ -5,6 +5,7 @@ import { scanVerdict } from "./scanVerdict";
 import { detectFileKind, toProcessableSource } from "./imageInput";
 import { loadSyncCfg, saveSyncCfg, clearSyncCfg, uploadScan, presignS3 } from "./sync";
 import { APP_VERSION } from "./version.js";
+import { parseExifOrientation } from "./pixels.js";
 import {
   CAMERA_VIDEO_CONSTRAINTS,
   GUIDE,
@@ -105,6 +106,14 @@ export default function App() {
   const [cameraInfo, setCameraInfo] = useState(null); // {w,h,dpi:{pxPerMm,dpi}}
   const [cameraSharp, setCameraSharp] = useState(null); // {score, sharp} — live focus meter
   const [cameraWarn, setCameraWarn] = useState(null); // reframe nudge after a refused soft capture
+  // Preview rotation (deg, 0/90/180/270) so the guide border + receipt match the
+  // EXIF-rotated capture. getUserMedia streams on some Android builds are
+  // delivered in SENSOR (landscape) orientation while takePhoto() returns an
+  // EXIF-tagged still — without this the border frames a sideways preview and
+  // disagrees with the rotated crop. Auto-detected from a probe still; 0 when the
+  // stream is already display-oriented (no-op on those devices).
+  const [cameraRot, setCameraRot] = useState(0);
+  const cameraRotRef = useRef(0);
   const [zoomCaps, setZoomCaps] = useState(null); // {min,max,step} from getCapabilities().zoom
   const [zoom, setZoom] = useState(1);
   const [torchOn, setTorchOn] = useState(false);
@@ -378,6 +387,8 @@ export default function App() {
     setCameraLamp(null);
     setCameraInfo(null);
     setCameraWarn(null);
+    setCameraRot(0);
+    cameraRotRef.current = 0;
     setTorchOn(false);
   };
 
@@ -460,10 +471,48 @@ export default function App() {
       if (!stage || !v.videoWidth) return;
       const aw = stage.clientWidth - 24, ah = stage.clientHeight - 24;
       if (aw <= 0 || ah <= 0) return;
-      const s = Math.min(aw / v.videoWidth, ah / v.videoHeight);
+      // When the preview is rotated 90/270 for display, the VISUAL (rotated)
+      // orientation is swapped vs the raw video element box — size the element
+      // so the rotated receipt fills the stage instead of letterboxing as a
+      // sideways strip.
+      const swap = cameraRotRef.current === 90 || cameraRotRef.current === 270;
+      const dw = swap ? v.videoHeight : v.videoWidth;
+      const dh = swap ? v.videoWidth : v.videoHeight;
+      const s = Math.min(aw / dw, ah / dh);
       v.style.width = Math.round(v.videoWidth * s) + "px";
       v.style.height = Math.round(v.videoHeight * s) + "px";
     };
+    /**
+     * Probe one still to learn the capture's EXIF orientation, then rotate the
+     * live preview so the guide border + receipt correspond to the cropped still.
+     * Only rotates when the stream's orientation disagrees with the still's
+     * display orientation (a no-op on devices that already deliver a display-
+     * oriented stream). Any failure leaves cameraRot at 0.
+     */
+    const probeOrientation = async (tk) => {
+      if (!tk || typeof window === "undefined" || typeof window.ImageCapture !== "function") return;
+      try {
+        const cap = new window.ImageCapture(tk);
+        const blob = await cap.takePhoto();
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        const orientation = parseExifOrientation(bytes);
+        const bmp = await createImageBitmap(blob);
+        const vv = videoRef.current;
+        const streamPortrait = !!vv && vv.videoWidth < vv.videoHeight;
+        const stillPortrait = bmp.width < bmp.height;
+        bmp.close?.();
+        if (streamPortrait === stillPortrait) return; // stream already display-oriented
+        const deg = orientation === 6 ? 90 : orientation === 8 ? 270 : orientation === 3 ? 180 : 0;
+        if (deg) { cameraRotRef.current = deg; setCameraRot(deg); fit(); }
+      } catch (err) {
+        console.warn("orientation probe failed:", err?.name || err);
+      }
+    };
+    // v2.0.48 — orient the live preview to match the EXIF-rotated capture so the
+    // guide border frames the same receipt the crop keeps. Some Android builds
+    // deliver a SENSOR-orientation (landscape) stream while takePhoto() returns
+    // an EXIF-tagged still; without this the border lies about what is captured.
+    probeOrientation(track).catch(() => {});
     const onMeta = () => {
       if (!v.videoWidth) return;
       fit();
@@ -503,6 +552,12 @@ export default function App() {
     // Larger sample for the sharpness meter — lapVar needs pixels, not a 64px grid.
     const sharpCanvas = document.createElement("canvas");
     const sharpCtx = sharpCanvas.getContext("2d", { willReadFrequently: true });
+    // Scratch canvas that holds the preview FRAME drawn into the DISPLAY
+    // orientation (rotated to match cameraRot). drawImage(video) hands back the
+    // raw sensor frame regardless of any CSS transform, so the guide + sharpness
+    // would otherwise sample the wrong region once the preview is rotated.
+    const rotCanvas = document.createElement("canvas");
+    const rotCtx = rotCanvas.getContext("2d", { willReadFrequently: true });
     sharpMaxRef.current = 0;
     const tick = ts => {
       if (stopped) return;
@@ -512,8 +567,27 @@ export default function App() {
       if (ts - meterAtRef.current < 150) return;
       meterAtRef.current = ts;
       const vw = v.videoWidth, vh = v.videoHeight;
-      const r = mapGuideToSensor(GUIDE, vw, vh);
-      ctx.drawImage(v, r.x, r.y, r.w, r.h, 0, 0, METER_SAMPLE.w, METER_SAMPLE.h);
+      const rot = cameraRotRef.current;
+      const swap = rot === 90 || rot === 270;
+      const dispW = swap ? vh : vw;
+      const dispH = swap ? vw : vh;
+      // Draw the raw frame into the display orientation so the guide region we
+      // sample is exactly what the user sees (and what the EXIF-rotated crop keeps).
+      if (rotCanvas.width !== dispW || rotCanvas.height !== dispH) {
+        rotCanvas.width = dispW; rotCanvas.height = dispH;
+      }
+      rotCtx.save();
+      rotCtx.clearRect(0, 0, dispW, dispH);
+      if (rot) {
+        rotCtx.translate(dispW / 2, dispH / 2);
+        rotCtx.rotate((rot * Math.PI) / 180);
+        rotCtx.drawImage(v, -vw / 2, -vh / 2, vw, vh);
+      } else {
+        rotCtx.drawImage(v, 0, 0, vw, vh);
+      }
+      rotCtx.restore();
+      const r = mapGuideToSensor(GUIDE, dispW, dispH);
+      ctx.drawImage(rotCanvas, r.x, r.y, r.w, r.h, 0, 0, METER_SAMPLE.w, METER_SAMPLE.h);
       const { grid, mean, glareFrac } = lumaGrid(
         ctx.getImageData(0, 0, METER_SAMPLE.w, METER_SAMPLE.h).data,
         METER_SAMPLE.w,
@@ -538,7 +612,7 @@ export default function App() {
         const sh = Math.max(1, Math.round(ch * (sw / cw)));
         sharpCanvas.width = sw;
         sharpCanvas.height = sh;
-        sharpCtx.drawImage(v, cx, cy, cw, ch, 0, 0, sw, sh);
+        sharpCtx.drawImage(rotCanvas, cx, cy, cw, ch, 0, 0, sw, sh);
         const score = sharpnessScore(sharpCtx.getImageData(0, 0, sw, sh).data, sw, sh);
         const best = Math.max(score, sharpMaxRef.current * 0.98);
         sharpMaxRef.current = best;
@@ -977,7 +1051,10 @@ export default function App() {
           {cameraState === "opening" && <p className="cam-msg">Opening the camera …</p>}
           {cameraState === "error" && <p className="cam-msg error" role="alert">{cameraErr}</p>}
           {cameraState === "live" && (
-            <div className="cam-view">
+            <div
+              className="cam-view"
+              style={cameraRot ? { transform: `rotate(${cameraRot}deg)` } : undefined}
+            >
               <video ref={videoRef} autoPlay playsInline muted onClick={tapToFocus} />
               {focusPt && (
                 <span

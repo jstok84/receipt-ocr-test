@@ -47,7 +47,7 @@ const MIME = { jpeg: "image/jpeg", png: "image/png", avif: "image/avif", webp: "
  * chunks and HEIC rotation boxes do not occur in this app's inputs (measured:
  * the one HEIC in the corpus carries no irot/imir/Exif box at all).
  */
-function parseExifOrientation(bytes) {
+export function parseExifOrientation(bytes) {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let i = 2; // skip SOI
   while (i < bytes.length - 4) {
