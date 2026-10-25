@@ -1,11 +1,14 @@
 /**
  * Parser tests with Slovenian receipt fixtures.
  *
- * NOTE ON LANGUAGE: fixtures are encoded WITHOUT diacritics on purpose.
- * The production OCR whitelist (src/ocrUtils.js, tessedit_char_whitelist)
- * strips diacritic characters, so the parser only ever sees ASCII text
- * like "placano", "racun", "ddv" - never "plačano", "račun", "ddv" with
- * proper marks. Fixtures must mirror that reality or they test a fiction.
+ * NOTE ON LANGUAGE: fixture texts are diacritic-free because that is what
+ * the OCR engine ACTUALLY emits on these thermal prints — verbatim real
+ * capture, not deliberate stripping. Production carries NO character
+ * whitelist: tessedit_char_whitelist was removed (it misfires with LSTM;
+ * see src/ocrConfig.js TESS_PARAMS and the src/ocrUtils.js module header).
+ * The earlier wording "the production OCR whitelist strips diacritics" was
+ * stale v1-era knowledge and wrong since the whitelist was retired.
+ * Fixtures must mirror real OCR output or they test a fiction.
  *
  * Run: npm test   (node --test tests/)
  */
