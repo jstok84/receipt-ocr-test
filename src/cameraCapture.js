@@ -44,9 +44,14 @@ import { LUMA } from "./ocrConfig.js";
  * (LADDER in app.js). The ACTUAL granted size is read back and displayed —
  * never silently under-report.
  *
- * focusMode continuous is Chrome-Android-only; `ideal` keeps it a no-op
- * elsewhere. The app ALSO re-applies it via applyConstraints after the stream
- * is live: some Android stacks honor the setting only post-open.
+ * focusMode is a plain String per MDN ("none" | "manual" | "single-shot" |
+ * "continuous"), NOT a ConstrainDOMString — so it is set as `focusMode:
+ * "continuous"`, never `{ ideal: "continuous" }` (the object form is ignored).
+ * It is applied post-open via applyConstraints, since some Android stacks only
+ * honor it after the stream is live. CRITICAL: ImageCapture.takePhoto() does
+ * NOT autofocus by itself — capture must force a "single-shot" lock first
+ * (see app.js captureToQueue). That missing lock is why stills were soft even
+ * on plain white paper.
  */
 export const CAMERA_VIDEO_CONSTRAINTS = {
   audio: false,
@@ -54,7 +59,7 @@ export const CAMERA_VIDEO_CONSTRAINTS = {
     facingMode: { ideal: "environment" },
     width: { ideal: 3840 },
     height: { ideal: 2160 },
-    focusMode: { ideal: "continuous" },
+    focusMode: "continuous",
   },
 };
 

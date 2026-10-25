@@ -400,7 +400,7 @@ export default function App() {
           video: {
             facingMode: { ideal: "environment" },
             width: LADDER.fallbackWidth,
-            focusMode: { ideal: "continuous" },
+            focusMode: "continuous",
           },
         }));
       }
@@ -434,11 +434,11 @@ export default function App() {
     track?.applyConstraints?.({ advanced: [{ focusMode: "continuous" }] })
       .catch(() => {});
 
-    // Zoom — the ONE autofocus lever that works in a browser (v2.0.44). We can't
-    // tell the AF *what* to focus on (pointsOfInterest is ignored by most phones,
-    // so it locks onto the high-contrast keyboard behind the receipt). But if the
-    // receipt FILLS the frame, the AF has nothing else to lock onto. Expose zoom
-    // only when the device reports a real range (getCapabilities().zoom).
+    // Zoom — a SECONDARY aid, not the primary fix. The primary fix for soft
+    // captures is the explicit "single-shot" focus lock forced before
+    // takePhoto() above. Zoom still helps composition: if the receipt FILLS the
+    // frame, the AF has nothing else to lock onto. Expose zoom only when the
+    // device reports a real range (getCapabilities().zoom).
     const caps = track?.getCapabilities?.();
     if (caps && caps.zoom && typeof caps.zoom.max === "number" && caps.zoom.max > caps.zoom.min) {
       setZoomCaps(caps.zoom);
@@ -589,13 +589,24 @@ export default function App() {
     if (strategy === "still" && track) {
       try {
         const cap = new window.ImageCapture(track);
-        // Multi-frame (KYC-style best-frame): autofocus hunts, so take a few
-        // stills and keep the sharpest centre region — this beats the AF
-        // locking onto a high-contrast background behind the receipt.
+        // ROOT FIX (v2.0.45): ImageCapture.takePhoto() does NOT run an
+        // autofocus sweep on Android Chrome — it captures the current sensor
+        // frame. So a still is soft unless we explicitly drive a focus lock
+        // first. focusMode "single-shot" (a plain String per MDN, NOT a
+        // ConstrainDOMString) triggers one AF scan; we await the constraint
+        // settle, then burst stills while the lens stays locked. This is why
+        // captures were soft even on plain white paper: nothing ever focused.
+        try {
+          await track.applyConstraints({ advanced: [{ focusMode: "single-shot" }] });
+          await new Promise(r => setTimeout(r, 350));
+        } catch (afErr) {
+          console.warn("Forced AF lock unsupported / failed:", afErr?.name || afErr);
+        }
+        // Burst: the lens is already locked, so take a few stills and keep the
+        // sharpest centre region (hand-shake guard). No inter-shot AF wait.
         const shots = [];
         for (let i = 0; i < SHARPNESS.frames; i++) {
           shots.push(await cap.takePhoto());
-          if (i < SHARPNESS.frames - 1) await new Promise(r => setTimeout(r, SHARPNESS.gapMs));
         }
         const scores = [];
         for (const s of shots) scores.push(await stillSharpness(s));

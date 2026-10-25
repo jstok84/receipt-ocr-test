@@ -37,7 +37,11 @@ test("constraints: degradation-safe shape — everything ideal, user-facing came
   // Chromium-interpreted as an EXACT 1920x1080/1080x1920 sequence.
   assert.equal(v.width.ideal, 3840);
   assert.equal(v.height.ideal, 2160);
-  assert.deepEqual(v.focusMode, { ideal: "continuous" });
+  // focusMode is a plain String per MDN (NOT a ConstrainDOMString) — the
+  // `{ ideal: ... }` object form was silently ignored, so the camera never
+  // engaged continuous AF. v2.0.45 fixes the shape; capture also forces an
+  // explicit "single-shot" lock before takePhoto() (which does not autofocus).
+  assert.equal(v.focusMode, "continuous");
   // ladder contract: fallback is the classic 1080p ask, threshold 1920
   assert.equal(LADDER.minWidth, 1920);
   assert.deepEqual(LADDER.fallbackWidth, { ideal: 1920 });
