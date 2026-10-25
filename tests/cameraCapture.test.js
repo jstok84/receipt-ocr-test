@@ -11,6 +11,7 @@ import {
   CAMERA_VIDEO_CONSTRAINTS,
   GUIDE,
   LADDER,
+  CAPTURE_STILL_MAX_DIM,
   mapGuideToSensor,
   lumaGrid,
   motionScore,
@@ -18,6 +19,9 @@ import {
   estimateDpi,
   hasTorch,
   cameraErrorText,
+  pickCaptureStrategy,
+  normalizeTap,
+  tapFocusConstraint,
   LAMP_THRESHOLDS,
 } from "../src/cameraCapture.js";
 
@@ -135,4 +139,35 @@ test("hasTorch: capability-driven, defensive on missing/odd shapes", () => {
   assert.equal(hasTorch({ width: { min: 1 } }), false);
   assert.equal(hasTorch({ torch: false }), false);
   assert.equal(hasTorch({ torch: true }), true);
+});
+
+test("pickCaptureStrategy: still where ImageCapture exists, video-frame everywhere else", () => {
+  assert.equal(pickCaptureStrategy({ hasImageCapture: true }), "still");
+  assert.equal(pickCaptureStrategy({ hasImageCapture: false }), "video-frame");
+});
+
+test("CAPTURE_STILL_MAX_DIM: a sane long-edge cap (>= 3000, and not absurd)", () => {
+  assert.ok(CAPTURE_STILL_MAX_DIM >= 3000, "cap must keep the still well above the 300 dpi sweet spot");
+  assert.ok(CAPTURE_STILL_MAX_DIM <= 6000, "cap must bound decode/OCR memory");
+});
+
+test("normalizeTap: client coords → 0–1 frame fractions, clamped", () => {
+  const rect = { left: 100, top: 50, width: 400, height: 800 };
+  assert.deepEqual(normalizeTap(300, 450, rect), { x: 0.5, y: 0.5 }); // center
+  assert.deepEqual(normalizeTap(100, 50, rect), { x: 0, y: 0 });      // top-left
+  assert.deepEqual(normalizeTap(500, 850, rect), { x: 1, y: 1 });     // bottom-right
+  // outside the box clamps into range (never NaN / out-of-range)
+  const clamped = normalizeTap(-50, 2000, rect);
+  assert.equal(clamped.x, 0);
+  assert.equal(clamped.y, 1);
+  // degenerate rect → null (caller no-ops)
+  assert.equal(normalizeTap(10, 10, { left: 0, top: 0, width: 0, height: 0 }), null);
+  assert.equal(normalizeTap(10, 10, null), null);
+});
+
+test("tapFocusConstraint: single-shot at the tapped point, advanced (never throws)", () => {
+  const c = tapFocusConstraint({ x: 0.25, y: 0.75 });
+  assert.ok(Array.isArray(c.advanced) && c.advanced.length === 1);
+  assert.equal(c.advanced[0].focusMode, "single-shot");
+  assert.deepEqual(c.advanced[0].pointsOfInterest, [{ x: 0.25, y: 0.75 }]);
 });

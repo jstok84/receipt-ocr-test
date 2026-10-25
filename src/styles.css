@@ -265,6 +265,27 @@ label:focus-visible {
 .cam-view .guide.lamp-warn { border-color: #ffd479; }
 .cam-view .guide.lamp-bad { border-color: #ff9d92; }
 
+/* Tap-to-focus ring: a brief circle at the tapped point (app.js clears it after
+   ~900 ms). Purely visual — the focus itself is an applyConstraints call on the
+   track, which no-ops on browsers that ignore pointsOfInterest. */
+.cam-view .focus-ring {
+  position: absolute;
+  width: 64px;
+  height: 64px;
+  margin: -32px 0 0 -32px;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  animation: focus-ring-pop 0.9s ease-out forwards;
+}
+
+@keyframes focus-ring-pop {
+  0% { transform: scale(0.6); opacity: 0; }
+  20% { transform: scale(1); opacity: 1; }
+  100% { transform: scale(1.1); opacity: 0; }
+}
+
 .cam-overlay .lamp-msg {
   position: absolute;
   left: 0;

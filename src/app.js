@@ -11,6 +11,7 @@ import {
   METER_SAMPLE,
   LAMP_THRESHOLDS,
   LADDER,
+  CAPTURE_STILL_MAX_DIM,
   cameraErrorText,
   mapGuideToSensor,
   lumaGrid,
@@ -18,12 +19,42 @@ import {
   frameLamp,
   estimateDpi,
   hasTorch,
+  pickCaptureStrategy,
+  normalizeTap,
+  tapFocusConstraint,
 } from "./cameraCapture.js";
 
 // Version marker (user request 2026-10-24): the header shows the exact app
 // version so scan disputes can never again be about "which bundle is
 // deployed". Also exposed for console probes and written into sync manifests.
 if (typeof window !== "undefined") window.__APP_VERSION = APP_VERSION;
+
+/**
+ * Crop the guide region from a takePhoto() still (a full-sensor Blob) and
+ * return a JPEG Blob whose long edge is capped at CAPTURE_STILL_MAX_DIM.
+ * The guide fractions are applied to the STILL's own dimensions — the still
+ * shows the same scene as the preview, just at far more pixels — so the shot
+ * matches what the border framed while keeping 12 MP+ resolution instead of
+ * the video stream's 1–6 MP. createImageBitmap applies EXIF orientation.
+ */
+async function cropStillToGuide(stillBlob) {
+  const bmp = await createImageBitmap(stillBlob);
+  try {
+    const sw = bmp.width, sh = bmp.height;
+    const gx = GUIDE.xF0 * sw, gy = GUIDE.yF0 * sh;
+    const gw = (GUIDE.xF1 - GUIDE.xF0) * sw, gh = (GUIDE.yF1 - GUIDE.yF0) * sh;
+    const scale = Math.min(1, CAPTURE_STILL_MAX_DIM / Math.max(gw, gh));
+    const cw = Math.max(1, Math.round(gw * scale));
+    const ch = Math.max(1, Math.round(gh * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = cw;
+    canvas.height = ch;
+    canvas.getContext("2d").drawImage(bmp, gx, gy, gw, gh, 0, 0, cw, ch);
+    return await new Promise(res => canvas.toBlob(res, "image/jpeg", 0.95));
+  } finally {
+    bmp.close?.();
+  }
+}
 
 export default function App() {
   const [text, setText] = useState("");
@@ -40,6 +71,10 @@ export default function App() {
   const [cameraLamp, setCameraLamp] = useState(null); // {level: ok|warn, msg}
   const [cameraInfo, setCameraInfo] = useState(null); // {w,h,dpi:{pxPerMm,dpi}}
   const [torchOn, setTorchOn] = useState(false);
+  // Tap-to-focus feedback: normalized 0–1 point of the last tap (renders a
+  // brief ring, then clears) — purely visual; the focus itself is the
+  // applyConstraints call in tapToFocus().
+  const [focusPt, setFocusPt] = useState(null);
 
   const [uploadedPreview, setUploadedPreview] = useState(null);
   const [pdfPreviews, setPdfPreviews] = useState([]);
@@ -453,21 +488,44 @@ export default function App() {
   }, []);
 
   /**
-   * Crop the guide region at SENSOR resolution (videoWidth/Height — NOT the
-   * CSS-scaled preview) straight into the queue as a File. One honest wait:
-   * canvas.toBlob is the single async step; no artificial "autofocus settle"
-   * timer — the lamp already reported steadiness and the user decides.
+   * Capture into the queue. Two paths, best first:
+   *  ① ImageCapture.takePhoto() — a full-sensor still (12 MP+), cropped to the
+   *     guide region. This is the resolution fix: the video-frame crop is capped
+   *     at the stream size (measured 1.2–6.3 MP on an S25, which OCR failed on).
+   *  ② video-frame crop — the universal fallback (Firefox/Safari/synthetic
+   *     devices) where ImageCapture is missing or takePhoto() rejects.
+   * One honest wait: toBlob is the single async step; no artificial "autofocus
+   * settle" timer — the lamp already reported steadiness and the user decides.
    */
   const captureToQueue = async () => {
     const v = videoRef.current;
     if (!v || !v.videoWidth || cameraState !== "live") return;
-    const r = mapGuideToSensor(GUIDE, v.videoWidth, v.videoHeight);
-    const canvas = document.createElement("canvas");
-    canvas.width = r.w;
-    canvas.height = r.h;
-    const ctx = canvas.getContext("2d");
-    ctx.drawImage(v, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
-    const blob = await new Promise(res => canvas.toBlob(res, "image/jpeg", 0.95));
+    const track = cameraStreamRef.current?.getVideoTracks?.()[0];
+    const strategy = pickCaptureStrategy({
+      hasImageCapture: typeof window !== "undefined" && typeof window.ImageCapture === "function",
+    });
+
+    let blob = null;
+    if (strategy === "still" && track) {
+      try {
+        const shot = await new window.ImageCapture(track).takePhoto();
+        blob = await cropStillToGuide(shot);
+      } catch (err) {
+        // takePhoto can reject on some stacks (synthetic device, mid-record) —
+        // fall back to the video frame rather than fail the shot.
+        console.warn("takePhoto failed, using video frame:", err?.name || err);
+        blob = null;
+      }
+    }
+    if (!blob) {
+      const r = mapGuideToSensor(GUIDE, v.videoWidth, v.videoHeight);
+      const canvas = document.createElement("canvas");
+      canvas.width = r.w;
+      canvas.height = r.h;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(v, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
+      blob = await new Promise(res => canvas.toBlob(res, "image/jpeg", 0.95));
+    }
     if (!blob) return; // empty frame — the lamp/queue shows the state anyway
     // Straight-to-queue (A+): the moment the shot is taken the fullscreen
     // capture interface yields the viewport back — retake = hit Use camera
@@ -475,6 +533,30 @@ export default function App() {
     stopCamera();
     const name = `camera-${new Date().toISOString().replace(/[:.]/g, "-")}.jpg`;
     await handleFiles(new File([blob], name, { type: "image/jpeg" }), newJob(name));
+  };
+
+  /**
+   * Tap-to-focus: a tap on the preview focuses at that point (single-shot,
+   * pointsOfInterest). Chromium/Android honours it; elsewhere the `advanced`
+   * constraint no-ops (never throws). A brief ring marks where the user tapped.
+   */
+  const tapToFocus = async e => {
+    const v = videoRef.current;
+    if (!v || cameraState !== "live") return;
+    const pt = normalizeTap(e.clientX, e.clientY, v.getBoundingClientRect());
+    if (!pt) return;
+    const camView = v.closest(".cam-view");
+    const cr = camView ? camView.getBoundingClientRect() : { left: 0, top: 0 };
+    setFocusPt({ nx: pt.x, ny: pt.y, px: e.clientX - cr.left, py: e.clientY - cr.top });
+    setTimeout(() => setFocusPt(null), 900);
+    const track = cameraStreamRef.current?.getVideoTracks?.()[0];
+    try {
+      await track?.applyConstraints?.(tapFocusConstraint(pt));
+      const s = track?.getSettings?.() || {};
+      setCameraInfo(prev => (prev ? { ...prev, focusMode: s.focusMode || prev.focusMode } : prev));
+    } catch (err) {
+      console.warn("Tap-to-focus failed:", err?.name || err);
+    }
   };
 
   const toggleTorch = async () => {
@@ -662,7 +744,14 @@ export default function App() {
           {cameraState === "error" && <p className="cam-msg error" role="alert">{cameraErr}</p>}
           {cameraState === "live" && (
             <div className="cam-view">
-              <video ref={videoRef} autoPlay playsInline muted />
+              <video ref={videoRef} autoPlay playsInline muted onClick={tapToFocus} />
+              {focusPt && (
+                <span
+                  className="focus-ring"
+                  style={{ left: focusPt.px + "px", top: focusPt.py + "px" }}
+                  aria-hidden="true"
+                />
+              )}
               <div
                 className={`guide lamp-${cameraLamp?.level || "init"}`}
                 style={{

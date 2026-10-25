@@ -1,16 +1,19 @@
 /**
  * Camera-guided capture (A+): pure helper logic for the guided viewfinder.
  *
- * Scope decision (branch feat/camera-guided-capture, discussed with the user):
- * the capture itself is a plain drawImage from the live <video> element at
- * SENSOR resolution — the universally-supported path. The Chromium-only
- * ImageCapture.takePhoto() is deliberately NOT used: it would create a
- * browser behavior gap on Firefox, Safari and fingerprinting-protected
- * browsers (our no-behavior-gap rule), for at most a marginal still-quality
- * gain that the OCR pipeline does not need (see PRESCALE/TESSERACT_UPSCALE:
- * ~1080p-wide captures are already ~600 dpi across an 80 mm receipt — past
- * the ~300 dpi OCR sweet spot; huge stills only cost the strip machinery
- * time, STRIP_PIXEL_BUDGET exists precisely for that).
+ * Capture strategy (v2.0.37, supersedes the v2.0.35 "video-frame only" call):
+ * the video-frame crop is capped at the delivered stream size — measured on an
+ * S25, the camera captures were 692×1728 and 1814×3456 (1.2–6.3 MP) and OCR
+ * then failed on them, while the same receipt shot as a 12 MP file parsed
+ * cleanly. So where the browser exposes ImageCapture we takePhoto() a full-sensor
+ * still and crop the guide region from the STILL; everywhere else we keep the
+ * universally-supported video-frame crop. This is a capability difference in
+ * INPUT QUALITY (like camera availability itself), not a parsing behaviour gap —
+ * the same captured pixels still parse identically in every browser.
+ *
+ * Tap-to-focus (v2.0.37): tapping the preview applies a single-shot focus at the
+ * tapped point (pointsOfInterest). Chromium/Android honours it; elsewhere the
+ * `advanced` constraint simply no-ops (it never throws).
  *
  * Privacy posture (binding):
  *  - getUserMedia is requested ONLY from a user click, never probed at mount;
@@ -177,6 +180,46 @@ export function estimateDpi(captureWidthPx, receiptWidthMm = 80) {
 /** Torch predicate (Chrome-Android exposes torch in getCapabilities). */
 export function hasTorch(capabilities) {
   return !!(capabilities && typeof capabilities === "object" && capabilities.torch === true);
+}
+
+/**
+ * Long-edge cap for a takePhoto() still before it becomes the queued File.
+ * A still can be 12–50 MP; capping the long edge to ~4000 px keeps the crop in
+ * the same regime as the 12 MP file photos that already parse well (4000 px
+ * across an 80 mm receipt ≈ 1270 dpi — far above the ~300 dpi sweet spot) while
+ * bounding decode/OCR memory. The pipeline downscales the receipt crop itself.
+ */
+export const CAPTURE_STILL_MAX_DIM = 4000;
+
+/**
+ * Which capture path to take. Pure so it is testable without a DOM:
+ *  - "still"       → ImageCapture.takePhoto() available (Chromium/Android Chrome)
+ *  - "video-frame" → universal fallback (Firefox, Safari, anything else)
+ */
+export function pickCaptureStrategy({ hasImageCapture }) {
+  return hasImageCapture ? "still" : "video-frame";
+}
+
+/**
+ * Normalize a pointer/tap position to 0–1 frame coordinates for
+ * pointsOfInterest. Returns null on a degenerate rect (zero size) so the caller
+ * can no-op instead of sending NaN to applyConstraints.
+ */
+export function normalizeTap(clientX, clientY, rect) {
+  if (!rect || !(rect.width > 0) || !(rect.height > 0)) return null;
+  return {
+    x: Math.min(1, Math.max(0, (clientX - rect.left) / rect.width)),
+    y: Math.min(1, Math.max(0, (clientY - rect.top) / rect.height)),
+  };
+}
+
+/**
+ * Advanced constraint for tap-to-focus at a normalized point. `single-shot`
+ * locks focus at the tapped region; `advanced` constraints never throw on
+ * unsupported devices — they are silently ignored, so this degrades to a no-op.
+ */
+export function tapFocusConstraint(pt) {
+  return { advanced: [{ focusMode: "single-shot", pointsOfInterest: [{ x: pt.x, y: pt.y }] }] };
 }
 
 /**
