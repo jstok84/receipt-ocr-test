@@ -29,6 +29,11 @@ import {
 // deployed". Also exposed for console probes and written into sync manifests.
 if (typeof window !== "undefined") window.__APP_VERSION = APP_VERSION;
 
+// Cap for passing a takePhoto() still through WITHOUT re-encoding (v2.0.41):
+// below this, the camera's own JPEG goes straight to the queue (crispest — no
+// double JPEG); above it we crop/re-encode only to bound memory.
+const CAPTURE_MAX_BYTES = 12e6;
+
 /**
  * Crop the guide region from a takePhoto() still (a full-sensor Blob) and
  * return a JPEG Blob whose long edge is capped at CAPTURE_STILL_MAX_DIM.
@@ -489,9 +494,11 @@ export default function App() {
 
   /**
    * Capture into the queue. Two paths, best first:
-   *  ① ImageCapture.takePhoto() — a full-sensor still (12 MP+), cropped to the
-   *     guide region. This is the resolution fix: the video-frame crop is capped
-   *     at the stream size (measured 1.2–6.3 MP on an S25, which OCR failed on).
+   *  ① ImageCapture.takePhoto() — a full-sensor still, passed through as the
+   *     camera's OWN JPEG (no canvas re-encode). Re-encoding softened the shot
+   *     (measured: the phone's native still is crisper than a canvas re-encode;
+   *     the Oct-24 file upload, never re-encoded, is visibly cleaner). Only
+   *     cropped/re-encoded when the file is very large.
    *  ② video-frame crop — the universal fallback (Firefox/Safari/synthetic
    *     devices) where ImageCapture is missing or takePhoto() rejects.
    * One honest wait: toBlob is the single async step; no artificial "autofocus
@@ -509,7 +516,9 @@ export default function App() {
     if (strategy === "still" && track) {
       try {
         const shot = await new window.ImageCapture(track).takePhoto();
-        blob = await cropStillToGuide(shot);
+        // Native JPEG straight through — no canvas re-encode (that was the
+        // softener). Crop/re-encode only if the file is too big to keep whole.
+        blob = shot.size <= CAPTURE_MAX_BYTES ? shot : await cropStillToGuide(shot);
       } catch (err) {
         // takePhoto can reject on some stacks (synthetic device, mid-record) —
         // fall back to the video frame rather than fail the shot.
