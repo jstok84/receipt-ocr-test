@@ -1,4 +1,14 @@
 import { PARSER_VERSION } from "./version.js";
+import {
+  AMOUNT_WITH_CURRENCY_RE, CHANGE_LINE_RE, COMMA_DRIFT_RE, CURRENCY_DEFAULT, CURRENCY_TAG_RE,
+  DATE_REGEXES, DATE_RESCUE_REGEXES, DATE_TIME_PATTERN, DISCOUNT_AMOUNT_RE,
+  DISCOUNT_GATE_RE, DISCOUNT_LABEL_RE, EXCLUDE_KEYWORDS, FALLBACK_DELTA,
+  FUSED_DATE_RE, GARBLE_SHORT_TOKENS,
+  MEASURE_TOL, MIN_NAME_LETTERS, NAME_MATCH_THRESHOLD, NETO_ROW_RE, NON_ITEM_PATTERNS,
+  PAID_LINE_RE, PAYMENT_MARKERS, POST_TOTAL_GUARD_FRAC, PRICE_MAX, QTY_MAX,
+  SLOVENIAN_ANCHORS, SPAR_MIN_PARTS, SUM_TOL, TENDER_LINE_RE, TIME_ANCHOR_RE,
+  TOTAL_KEYWORD_TIERS, XROW_UNIT_MAX,
+} from "./ocrConfig.js";
 
 /**
  * Fuzzy item-name scoring for strip-measured price corrections (v1.7.6).
@@ -38,150 +48,23 @@ export function namesScore(candidate, itemName) {
 }
 
 export function namesSimilar(candidate, itemName) {
-  return namesScore(candidate, itemName) >= 0.75;
+  return namesScore(candidate, itemName) >= NAME_MATCH_THRESHOLD;
 }
 
-  const nonItemPatterns = [
-    /^plačano/i,
-    /^c\s+\d{1,2},\d{1,2}\s*%\s+[\d\s.,]+—?\s*[\d\s.,]+/i,
-    /^[a-zA-Z]\s*\d{1,2}[,.]\d{1,2}%\s+\d+[,.]\d+\s+\d+[,.]\d+/i,
-    /^dov:/i,
-    /^bl:/i,
-    /^eor[: ]/i,
-    /^zol[: ]/i,
-    /^spar plus/i,
-    /s.?upaj/i,
-    /zvesto[bnh]e/i,
-    /masterca/i,
-    // Tender-side lines (EUROSPIN real case): "Gotovina EUR 13,00" garbles as
-    // "otovina"/"stovina"/"Jt ovina" (all retain "ovina") — cash HANDED OVER,
-    // never an item; "Vrnjen denar EUR 8,71" keeps "denar" intact even garbled
-    // ("rnjen denar") — change given back, never an item. "Vračilo" = same role.
-    /ovin/i,
-    // "FUR" = garbled "EUR" (EUROSPIN real case: "s - 3 FUR 13,0" — the
-    // Gotovina line with its currency mangled into a name-like token).
-    /\bfur\b/i,
-    // Asterisk-row separator garbles (EUROSPIN real case: "***…" read as
-    // "F336 36 36.30.30 96 36 …"): ≥5 single-space-delimited pure digit runs.
-    // Real multi-column item rows separate columns with 2+ spaces, so they
-    // can't match; "MLEKO ALPSKO 3,5%"-style items have no digit runs at all.
-    /(?:\s|^)\d+(?:\s\d+){4,}(?:\s|$)/,
-    /\bdenar\b/i,
-    /vra[čc]il[ao]/i,
-    // INTERSPORT program-discount row (real capture 2026-10-24, new phone
-    // photo of the JAKNA receipt): "(30.0%) - ŠPORTNE ZVEZDE  -24,00" — OCR
-    // drops the minus sign, so the -24,00 discount reaches the parser as a
-    // positive 24,90 and manufactures a phantom item. Merchandise never opens
-    // with a parenthesised percent; closing paren not required (OCR noise).
-    /^\s*\(\s*\d{1,2}(?:[.,]\d{1,2})?\s*%/,
-    // "ZA PLAČILO" section header (same capture): the ruled separator
-    // OCR-fused into "ZAPLACILO eee _ 56,99" — a second phantom (56.99 was
-    // derived from the misread section header zone). "Plačilo" is payment
-    // vocabulary ("PLAČILO: MASTERCARD"), never product text.
-    /zapla[čc]ilo/i,
-    /\bpla[čc]ilo\b/i,
-    // Phone-number line (INTERSPORT second re-photo 2026-10-24): "Tel: 00386
-    // (0)51 285 125" — the standalone 3-digit repair turned the trailing
-    // "125" into "1.25" and manufactured a phantom item. SI country-code and
-    // "Tel:"-labelled lines are machinery; items never carry them.
-    /^\s*te[ld]\b/i,
-    /\b00[0 ]?386\b/,
-    // Gratitude footer (phone HOFER real case): "HVALA ZA VAS NAKUP!" OCR-fused
-    // with neighboring barcode digits ("HVALA Z 10,26 17. | SODNA" manufactured a
-    // bogus 10,26 item whose involvement breaks the items-sum check). Always machinery.
-    // Desktop variant reads the same footer as "S HVALA Z 10,26 17: | SODNA" —
-    // the word match survives the extra garble token (v2.0.2, live decision log).
-    /\bhvala\b/i,
-    /\bcash\b/i,
-    // VAT recap rows (HOFER real case: "Ca ok Neto 2,6900V 0,25" and
-    // "B 22,0% Neto 1,47 …" — the DDV rekapitulacija with "Neto" surviving
-    // OCR; a "Neto" token never appears in real item names on SI receipts).
-    /\bneto\b/i,
-    // Trailing 4+ digit run = terminal/EFT echo bleed, never a real item row
-    // (HOFER real case: "ACH HEE i BER 5.0 41501" — the ghost "41501" made
-    // the parser manufacture a 5,00 item from the line's "5.0" fragment).
-    // SPAR multi-column rows always END in a VAT code letter ("… 1.92 B"),
-    // so a bare digit tail is machinery, not merchandise.
-    /\s\d{4,}\s*$/,
-    // Garbled VAT-code / summary fragments (EUROSPIN real case: "kd, 0% ? 4,29"
-    // and "mat (ER): 4,29" from "Skupaj (EUR):"). Anchored short rate-code at
-    // line start (or stray parenthesised currency remnant + colon), so real
-    // items ("MLEKO ALPSKO 3,5%", "REZINA ... 17% DT ...") can't match.
-    /^[a-z]{1,2},?\s*\d{1,2}(?:[.,]\d{1,2})?\s*%/i,
-    // v2.0.19 parenthesised rate-marker rows (INTERSPORT S25 real captures,
-    // 2026-10-24, user's phone re-shots): the discount row prints
-    // "(30,0%) - ŠPORTNE ZVEZDE -24,00" and OCR drops BOTH the minus sign and
-    // its guard-word position, so the row manufactured a phantom +24.90/+24.00
-    // item and poisoned the sum. An item row never STARTS with a
-    // parenthesised rate percentage — that opening shape belongs to duty/
-    // discount recap machinery. ("MLEKO ALPSKO 3,5%" starts with a word and
-    // remains untouched by this anchor.)
-    /^\(\s*\d{1,3}(?:[.,]\d{1,3})?\s*%/,
-    /\(e?u?r?\)\s*:/i,
-    // Standalone EUR token = currency remnant, not a product name (EUROSPIN
-    // real case: "mov “ EUR 13,00" — the Gotovina line with its word ground
-    // down to noise keeps the currency fragment on its own token).
-    /\bEUR\b/i,
-    /\b[a-e0-9]:/i,
-    /=\s*\d/,
-    // (matches "22.10.2026"-style rows even when OCR blurred a separator into
-    // a space — INTERSPORT phone real case: "…1363170) 16.09 2029 Zav" fused
-    // a date into the line and manufactured a bogus 16.09 item)
-    /\d{1,2}[.,]\s{0,2}\d{1,2}(?:[.,]|\s){0,2}20\d{2}/,
-    /mat\.št/i,
-    /osn\.kapital/i,
-    /popust/i,
-    /dopla[cč]il/i,
-    /discount/i,
-    /splošni pogoji/i,
-    /vaše današnje ugodnosti/i,
-    /točke zvestobe/i,
-    // "Vmesna vsota" = interim/subtotal label (HOFER-B real capture: OCR line
-    // "Vmesna vsota 4,73" was the ONLY clean Slovenian token in the whole
-    // garbled text, yet language detection failed on it and the line became
-    // a phantom ITEM while the true total 4,73 stayed unfound). Dinner's
-    // classifications: never an item; its amount IS the interim total and
-    // already feeds pickTotal via the existing tier-1 "vsota" keyword.
-    /vsota/,
-    /v(?:m|n)esna/,
-    /številka naročila/i,
-    /datum naročila/i,
-    /datum računa/i,
-    /skupaj eur/i,
-    /^kartica/i,
-    /^date[: ]?/i,
-    /^znesek\s*—?\s*\d+[,.]/i,
-    // v2.0.19 EFT-echo family (HOFER hoferracun1 real case, user capture on
-    // deployed v2.0.18): the EFT device echoes the payable back and OCR adds a
-    // lead garble — "AR | Znesel-BFT ER: 1 - 4.73", "Zresek-BFT EUR 4.73",
-    // "Znesek-EFT EUR 4.73". The start-anchored guard above misses these
-    // because the echo label is no longer line-initial. Root: z+nes/res stem,
-    // up to 8 OSB letters, optional separator, EFT/BFT. The echo amount is the
-    // PAYABLE (feeding total candidates via payment markers), never an item.
-    // "EFT Ref-No: …" never matches (no znes/res stem); its exclusion stays in
-    // other rules.
-    /\bz(?:nes|res)[a-z]{0,8}\s*[-–—|(]?\s*(?:[ef]ft|bft)\b/i,
-    /^a\s+\d{1,2}[,.]\d+\s+\d+[,.]/i,
-    /^[a-z]?\s*\d{1,2}[,.]\d+\s+\d+[,.]/i,
-    /^,?\d{1,3}[,.]\d{2}\s*—?\s*\d{1,3}[,.]\d{2}/,
-    /^obračunsko obdobje/i,
-    /^vsi zneski so v/i,
-  ];
-
-  // v2.0.28 pipe-tolerant exclusion test. The S25 phone family prints vertical
-  // rules down the receipt that OCR renders as a leading "|" — the live
-  // INTERSPORT-c capture reads the discount row as
-  // "| (30.0%) - SPORTNE ZVEZDE -24.00". The pipe defeated every
-  // start-anchored exclusion above (^\( rate-marker, ^plačano, ^dov:, …), so
-  // the discount row survived as a phantom +24,00 item: the items sum inflated
-  // to 103,99, and with it the pay-zone rescue derived items−POPUST = 79,99
-  // instead of the printed payable 55,99. A pipe is never part of a real item
-  // name, so the pipe-stripped line is tested against the same patterns.
-  export const isNonItemLine = (line) => {
-    if (nonItemPatterns.some((pat) => pat.test(line))) return true;
-    const bare = line.replace(/^[|\s]+/, "");
-    return bare !== line && nonItemPatterns.some((pat) => pat.test(bare));
-  };
+// v2.0.28 pipe-tolerant exclusion test. The S25 phone family prints vertical
+// rules down the receipt that OCR renders as a leading "|" — the live
+// INTERSPORT-c capture reads the discount row as
+// "| (30.0%) - SPORTNE ZVEZDE -24.00". The pipe defeated every
+// start-anchored exclusion in NON_ITEM_PATTERNS (ocrConfig.js), so the
+// discount row survived as a phantom +24,00 item: the items sum inflated
+// to 103,99, and with it the pay-zone rescue derived items−POPUST = 79,99
+// instead of the printed payable 55,99. A pipe is never part of a real item
+// name, so the pipe-stripped line is tested against the same patterns.
+export const isNonItemLine = (line) => {
+  if (NON_ITEM_PATTERNS.some((pat) => pat.test(line))) return true;
+  const bare = line.replace(/^[|\s]+/, "");
+  return bare !== line && NON_ITEM_PATTERNS.some((pat) => pat.test(bare));
+};
 export function parseReceipt(text, extraItems = [], corrections = []) {
   // Set window.__OCR_DEBUG = true to restore verbose parser diagnostics.
   // v2.0.2: when debugging is on, every log line is ALSO appended to
@@ -220,11 +103,11 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
   function extractLastAmountWithCurrency(line) {
     // OCR wobble tolerance (EUROSPIN real case: the same photo read
     // "4,29" and "4, 29" across two app runs): the comma sometimes drifts
-    // apart from the cents with a space. Rejoin `(\d), +(\d{2})` before
-    // matching — comma REQUIRED, so "8 71"/"2 09" space-only splits stay out
-    // (those are handled by repairTrailingIntAmount only at line end).
-    const cleaned = line.replace(/(\d),\s{1,3}(\d{2})\b/g, "$1,$2");
-    const regex = /(\d{1,3}(?:[ .,]\d{3})*(?:[.,]\d{1,2}))\s*(€|EUR|USD|\$)?/gi;
+    // apart from the cents with a space. Rejoin before matching — comma
+    // REQUIRED, so "8 71"/"2 09" space-only splits stay out (those are
+    // handled by repairTrailingIntAmount only at line end).
+    const cleaned = line.replace(COMMA_DRIFT_RE, "$1,$2");
+    const regex = AMOUNT_WITH_CURRENCY_RE;
     let lastMatch = null, match;
     while ((match = regex.exec(cleaned)) !== null) lastMatch = match;
     return lastMatch; // null if none
@@ -272,17 +155,7 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
   function extractAllTotalCandidates(lines, isSlovenian) {
     // Slovenian keywords have ASCII twins: older OCR paths strip diacritics
     // ("PLACANO", "ZA PLACILO"), the v7 pipeline preserves them.
-    const tiers = isSlovenian
-      ? [
-          { weight: 3, kws: ["za plačilo", "za placilo", "končni znesek", "koncni znesek"] },
-          { weight: 2, kws: ["skupaj", "skupna vrednost"] },
-          { weight: 1, kws: ["znesek", "plačano", "placano", "vsota"] },
-        ]
-      : [
-          { weight: 3, kws: ["amount due", "grand total", "total due", "to pay"] },
-          { weight: 2, kws: ["total", "amount"] },
-          { weight: 1, kws: ["paid", "sum"] },
-        ];
+    const tiers = isSlovenian ? TOTAL_KEYWORD_TIERS.SI : TOTAL_KEYWORD_TIERS.EN;
 
     // Payment markers: a card line with an amount equals the payable total
     // even when the "Skupaj" text above it is garbled or vanished (both real
@@ -291,7 +164,7 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
     // NOTE: gotovina/cash are deliberately NOT here — they are tender-side
     // amounts (cash handed over), which can exceed the payable when change is
     // given (EUROSPIN real case: "Gotovina EUR 13,00" vs "Za plačilo 4,29").
-    const paymentKws = [/masterca/i, /maest[rc]o/i, /\bkartic[ao]\b/i, /\bvisa\b/i, /\beft\b/i, /h[o0]fer\s+cena/i];
+    const paymentKws = PAYMENT_MARKERS;
 
     const keywords = tiers.flatMap((t) => t.kws);
     const candidates = [];
@@ -312,7 +185,7 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
       // (EUROSPIN real case: "Poz ID (EUR): | 4,29" from "Skupaj (EUR): 4,29",
       // "na) (FUR): 4,29"). Weight 2 — same tier as "skupaj". Item names never
       // carry a parenthesised currency tag.
-      if (weight === 0 && /\(\s*(?:EUR|FUR|ER)\s*\)\s*:?\s*[|:]?\s*\d/i.test(line)) {
+      if (weight === 0 && CURRENCY_TAG_RE.test(line)) {
         weight = 2;
       }
       if (weight === 0) continue;
@@ -336,7 +209,7 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
           match = extractLastAmountWithCurrency(nextLine);
           if (match) {
             const raw = match[1];
-            const curr = (match[2] || "€").toUpperCase();
+            const curr = (match[2] || CURRENCY_DEFAULT).toUpperCase();
             const val = parseFloat(normalizeAmount(raw, isSlovenian));
             if (!isNaN(val) && val > 0) {
               candidates.push({ line: line + " " + nextLine, value: val, currency: curr, weight, index: i });
@@ -346,7 +219,7 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
         }
       } else {
         const raw = match[1];
-        const curr = (match[2] || "€").toUpperCase();
+        const curr = (match[2] || CURRENCY_DEFAULT).toUpperCase();
         const val = parseFloat(normalizeAmount(raw, isSlovenian));
         if (!isNaN(val) && val > 0) candidates.push({ line, value: val, currency: curr, weight, index: i });
       }
@@ -409,14 +282,7 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
   /** Extract ISO-format date (YYYY-MM-DD) from lines if any */
   function extractDate(lines) {
     // Array of regexes to match multiple date formats including dot+space and space-separated numeric
-    const dateRegexes = [
-      // Matches dates like "07. 07. 2025" or "11.06.2025" with optional spaces after dots
-      /\b(0?[1-9]|[12][0-9]|3[01])\.\s*(0?[1-9]|1[0-2])\.\s*(\d{4})\b/,
-
-      // NEW: Matches space-separated numeric dates like "25 8 2024"
-      /\b(0?[1-9]|[12][0-9]|3[01])\s+(0?[1-9]|1[0-2])\s+(\d{4})\b/,
-          /\b(0?[1-9]|[12][0-9]|3[01])\s*[.,]\s*(0?[1-9]|1[0-2])\s*[.,]\s*(\d{4})\b/,
-    ];
+    const dateRegexes = DATE_REGEXES;
 
     for (const line of lines) {
       for (const regex of dateRegexes) {
@@ -444,64 +310,15 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
   }
 
   /** Date/time pattern to exclude lines that look like metadata with times (e.g., "25.08. 2024 ob 13:17:09") */
-  const dateTimePattern = /\b\d{1,2}\.\s*\d{1,2}\.\s*\d{2,4}\b\s*ob\s*\d{1,2}:\d{2}(:\d{2})?/i;
+  const dateTimePattern = DATE_TIME_PATTERN;
 
   /** Main body of parseReceipt **/
   const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
   const joinedText = lines.join(" ").toLowerCase();
-  const isSlovenian = [
-    "račun",
-    "kupec",
-    "ddv",
-    "znesek",
-    "ponudba",
-    "skupaj",
-    "za plačilo",
-    "plačano",
-    // HOFER-B real capture: every one of the anchors above was garbled away
-    // by OCR ("ra-Id", "Zresek", "pla?ila", "BRON CS B 22,0% Neto…"), so the
-    // parser fell into the ENGLISH tiers and misparsed the receipt. These
-    // tokens are the ones that CAN survive garbling (they read clean in the
-    // live run): "vsota" = the subtotal label itself, "vmesna" the same
-    // line's first word, "izdel" = "3 Izdel(i)" summary prefix. Additive
-    // only: no foreign receipt contains these words, and isSlovenian already
-    // being true elsewhere makes them no-ops.
-    "vsota",
-    "vmesna",
-    "izdel",
-  ].some((kw) => joinedText.includes(kw));
+  const isSlovenian = SLOVENIAN_ANCHORS.some((kw) => joinedText.includes(kw));
 
   // Refined exclude keywords (avoid overly generic small words)
-  const excludeKeywords = isSlovenian
-    ? [
-        "številka",
-        "transakcija",
-        "ddv",
-        "datum",
-        "račun",
-        "osnovni kapital",
-        "bruto",
-        "ponudbe",
-        "rekapitulacija",
-        "osnova",
-        "veljavnost ponudbe",
-        "keine",
-        "telefonska",
-        "telefon",
-        "stran",
-        "ljubljana",
-        "p.p.",
-      ]
-    : [
-        "transaction",
-        "terminal",
-        "subtotal",
-        "tax",
-        "vat",
-        "invoice",
-        "date",
-        "validity",
-      ];
+  const excludeKeywords = isSlovenian ? EXCLUDE_KEYWORDS.SI : EXCLUDE_KEYWORDS.EN;
 
 
   // Detect total candidates from lines
@@ -510,7 +327,7 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
   let total = pickedCandidate ? pickedCandidate.value : null;
   let totalSource = null;
   if (total != null) totalSource = "keyword";
-  let currency = (pickedCandidate?.currency) ?? "€";
+  let currency = (pickedCandidate?.currency) ?? CURRENCY_DEFAULT;
 
   // v2.1 STRUCTURAL GUARD — merchandise precedes the payable total.
   // Any line BELOW the line that supplied the total is totals/tender/change/
@@ -527,13 +344,13 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
   const totalLineIndex =
     pickedCandidate && typeof pickedCandidate.index === "number" ? pickedCandidate.index : null;
   const postTotalGuardActive =
-    totalLineIndex != null && totalLineIndex > Math.floor(lines.length * 0.25);
+    totalLineIndex != null && totalLineIndex > Math.floor(lines.length * POST_TOTAL_GUARD_FRAC);
 
   // Attempt fallback total from VAT net+vat summary
   const fallbackTotal = tryFallbackTotal(lines, isSlovenian);
   if (fallbackTotal) {
     const delta = total ? Math.abs(fallbackTotal.value - total) : 0;
-    const useFallback = !total || delta <= 0.05 || fallbackTotal.value > total;
+    const useFallback = !total || delta <= FALLBACK_DELTA || fallbackTotal.value > total;
     if (useFallback) {
       log(`✅ Using fallback total: ${fallbackTotal.value} > main: ${total}`);
       total = fallbackTotal.value;
@@ -586,7 +403,7 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
       continue;
     }
     const unit = parseFloat(xm[2].replace(",", "."));
-    if (!(unit > 0 && unit <= 10000)) continue;
+    if (!(unit > 0 && unit <= XROW_UNIT_MAX)) continue;
     // Quantity: "1,000" / "1 000" = one unit in a thousands grouping; a plain
     // small integer stores as-is; anything else stays undefined (honest N/A).
     let qty;
@@ -600,7 +417,7 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
       qty = parseInt(compact, 10);
       if (isNaN(qty)) qty = undefined;
     }
-    if (qty !== undefined && (qty <= 0 || qty >= 100)) qty = undefined;
+    if (qty !== undefined && (qty <= 0 || qty >= QTY_MAX)) qty = undefined;
     // Name: strip leading figure/punctuation tokens (junk edge + SKU/qty
     // column bleed) and trailing figure tokens (the garbled price column).
     const nameToks = donor.trim().split(/\s+/).filter(Boolean);
@@ -615,7 +432,7 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
     }
     while (nameToks.length > 1 && /^[\d.,%°$€§]{1,16}$/.test(nameToks[0])) nameToks.shift();
     const name = nameToks.join(" ");
-    if ((name.match(/[a-zA-ZčšžČŠŽ]/g) || []).length < 3) continue;
+    if ((name.match(/[a-zA-ZčšžČŠŽ]/g) || []).length < MIN_NAME_LETTERS) continue;
     donorLines.add(donor);
     if (!xRowByXLine.has(lines[xi])) xRowByXLine.set(lines[xi], { name, unit, qty, donor });
   }
@@ -702,7 +519,7 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
       for (let t = a + 1; t < b; t++) {
         if (/^[a-zA-ZčšžČŠŽ]{1,3}$/.test(toks[t])) shortMid++;
       }
-      if (shortMid >= 3) {
+      if (shortMid >= GARBLE_SHORT_TOKENS) {
         log(`  Skipping garbled non-item row (${shortMid} short letter tokens between digit fragments)`);
         continue;
       }
@@ -721,7 +538,7 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
     // Spar multi-column detection heuristic: >=10 parts split by several spaces/tabs
     const parts = line.split(/\s{2,}|\t/).filter((p) => p.trim() !== "");
 
-    if (parts.length >= 10) {
+    if (parts.length >= SPAR_MIN_PARTS) {
       const quantityRaw = parts[0];
       const articleCode = parts[1];
       const nameTokens = parts.slice(2, parts.length - 7);
@@ -792,7 +609,7 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
       continue;
     }
 
-    if (price > 10000) {
+    if (price > PRICE_MAX) {
       log(`  Skipping due to implausible large price: ${price.toFixed(2)}`);
       continue;
     }
@@ -810,7 +627,7 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
     // name is essentially letters-free/symbol-heavy ("H&M") would drop too;
     // SI grocery receipts rarely print such names.
     const letterCount = (description.match(/[a-zA-ZčšžČŠŽ]/g) || []).length;
-    if (letterCount < 3) {
+    if (letterCount < MIN_NAME_LETTERS) {
       log(`  Skipping: name has only ${letterCount} letters ("${description}")`);
       continue;
     }
@@ -831,7 +648,7 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
     }
     for (const t of stripped) {
       const v = parseFloat(t.replace(",", "."));
-      if (!isNaN(v) && v > 0 && v < 100 && Number.isInteger(v)) quantityNum = v;
+      if (!isNaN(v) && v > 0 && v < QTY_MAX && Number.isInteger(v)) quantityNum = v;
     }
     while (descTokens.length > 1) {
       const t = descTokens[0];
@@ -882,8 +699,8 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
   // the stemmed-complete \bovin / gotovin forms were not enough. False-positive
   // risk is bounded by the arithmetic: the check itself only passes when
   // tendered − change equals the total to the cent.
-  const tenderLine = lines.find((l) => /\bovin|otovin|\bdenar|gotovin/i.test(l));
-  const changeLine = lines.find((l) => /\bdenar\b|vra[čc]il/i.test(l));
+  const tenderLine = lines.find((l) => TENDER_LINE_RE.test(l));
+  const changeLine = lines.find((l) => CHANGE_LINE_RE.test(l));
 
   // v1.7.6: strip-measured price corrections. ocrUtils measures candidate
   // items from a band re-OCR and hands them over; matching happens HERE (one
@@ -911,7 +728,7 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
     ? null
     : (typeof total === "number" ? total : parseAmount("total", total));
   const itemsSum = () => items.reduce((acc, it) => acc + (parseAmount("item", it.price) ?? 0), 0);
-  const discountGate = /pop[ou]st|doplac/i.test(text);
+  const discountGate = DISCOUNT_GATE_RE.test(text);
   const applied = []; // { idx, prevPrice, prevVia, candName, newPrice }
   if (discountGate && corrections.length) {
     log(`  Discount/coupon line in text — ${corrections.length} correction candidate(s) ignored`);
@@ -933,7 +750,7 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
         continue;
       }
       const oldPrice = parseAmount("item", items[best].price);
-      if (oldPrice != null && Math.abs(oldPrice - corr.price) <= 0.02) {
+      if (oldPrice != null && Math.abs(oldPrice - corr.price) <= MEASURE_TOL) {
         log(`  Correction candidate "${corr.name}" equals existing price — no change`);
         continue;
       }
@@ -958,7 +775,7 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
     }
     // all-or-nothing commit
     const finalGap = parseTotalVal != null ? Math.abs(itemsSum() - parseTotalVal) : Infinity;
-    if (applied.length && finalGap > 0.02) {
+    if (applied.length && finalGap > MEASURE_TOL) {
       for (let k = applied.length - 1; k >= 0; k--) {
         const a = applied[k];
         items[a.idx].price = a.prevPrice;
@@ -992,9 +809,9 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
       // close (55.99 ≠ 59.99) → stays red.
       const pRe16 = discountAmounts(text, itemSum);
       const reconciled =
-        delta > 0.011 &&
+        delta > SUM_TOL &&
         pRe16.length === 1 &&
-        Math.abs(itemSum - pRe16[0] - total) <= 0.011;
+        Math.abs(itemSum - pRe16[0] - total) <= SUM_TOL;
       if (reconciled) {
         checks.push({
           ok: true,
@@ -1002,7 +819,7 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
         });
       } else {
         checks.push(
-          delta <= 0.011
+          delta <= SUM_TOL
             ? { ok: true, text: `items sum = total (${itemSum.toFixed(2)})` }
             : {
                 ok: false,
@@ -1018,16 +835,16 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
       // amount with evidence instead of leaving a bare sum mismatch. Fires
       // only on an exact (±0.02) bucket match, so SPAR-coupon gaps (5,74) and
       // multi-row losses (2,64 = two clipped rows) never produce false hits.
-      if (delta > 0.011) {
+      if (delta > SUM_TOL) {
         const missing = total - itemSum;
-        for (const recapRow of lines.filter((l) => /\bneto\b/i.test(l))) {
+        for (const recapRow of lines.filter((l) => NETO_ROW_RE.test(l))) {
           const m = recapRow.match(/([a-e0-9])?\s*(\d{1,2}(?:[.,]\d{1,2})?)\s*%\s*neto\s+(\d{1,3}(?:[.,]\d{1,4})?)/i);
           if (!m) continue;
           const rate = parseFloat(m[2].replace(",", "."));
           const neto = parseFloat(m[3].replace(",", "."));
           if (isNaN(rate) || isNaN(neto)) continue;
           const gross = parseFloat((neto * (1 + rate / 100)).toFixed(2));
-          if (Math.abs(gross - missing) <= 0.02) {
+          if (Math.abs(gross - missing) <= MEASURE_TOL) {
             checks.push({
               ok: false,
               text: `VAT ${m[2]}% recap row implies a missing item ≈ ${gross.toFixed(2)} ${currency} (neto ${neto.toFixed(2)}) — row not captured by OCR`,
@@ -1044,7 +861,7 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
     if (tendered != null && change != null && tendered > change) {
       const implied = parseFloat((tendered - change).toFixed(2));
       checks.push(
-        Math.abs(implied - total) <= 0.011
+        Math.abs(implied - total) <= SUM_TOL
           ? { ok: true, text: `tender ${tendered.toFixed(2)} − change ${change.toFixed(2)} = total ✓` }
           : { ok: false, text: `tender ${tendered.toFixed(2)} − change ${change.toFixed(2)} = ${implied.toFixed(2)} ≠ total ${total.toFixed(2)}` }
       );
@@ -1057,10 +874,10 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
   // carried the true payable. The tier system keeps the keyword total as-is;
   // a total that disagrees with the paid amount surfaces as a failing check —
   // genuinely ambiguous evidence, [?]-flagged, never silently overridden.
-  const paidLine = lines.find((l) => /^(?:pla[čc]ano|placano)\b/i.test(l));
+  const paidLine = lines.find((l) => PAID_LINE_RE.test(l));
   if (paidLine && total != null) {
     const paid = parseAmount("t", (extractLastAmountWithCurrency(paidLine) ?? [])[1]);
-    if (paid != null && Math.abs(paid - total) > 0.011) {
+    if (paid != null && Math.abs(paid - total) > SUM_TOL) {
       checks.push({
         ok: false,
         text: `payable ${total.toFixed(2)} ≠ paid ${paid.toFixed(2)} — one of them is misread; verify against photo [?]`,
@@ -1109,8 +926,8 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
 function discountAmounts(text, cap) { // exported below — used by ocrUtils for target derivation
   const pset = new Set();
   for (const ln of String(text).split(/\r?\n/)) {
-    if (!/\b(?:pop[ou]st|kupon|dopla[cč]il)/i.test(ln)) continue;
-    for (const am of ln.matchAll(/(\d{1,3}[.,]\d{2})/g)) {
+    if (!DISCOUNT_LABEL_RE.test(ln)) continue;
+    for (const am of ln.matchAll(DISCOUNT_AMOUNT_RE)) {
       const val = parseFloat(am[1].replace(",", "."));
       if (val > 0 && val < cap) pset.add(+val.toFixed(2));
     }
@@ -1179,7 +996,7 @@ export function findDateCandidate(text) {
   if (typeof text !== "string") return null;
   const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
   for (const line of lines) {
-    if (/\b\d{1,3}\s*\.\s*20\d{2}\b/.test(line) && /\b[0-2]?\d:[0-5]\d\b/.test(line)) return line;
+    if (FUSED_DATE_RE.test(line) && TIME_ANCHOR_RE.test(line)) return line;
   }
   return null;
 }
@@ -1193,11 +1010,7 @@ export function findDateCandidate(text) {
  */
 export function validDateFromReading(rawLines) {
   const lines = Array.isArray(rawLines) ? rawLines : typeof rawLines === "string" ? String(rawLines).split("\n") : [];
-  const regexes = [
-    /\b(0?[1-9]|[12][0-9]|3[01])\s*\.\s*(0?[1-9]|1[0-2])\s*\.\s*(20\d{2})\b/,
-    /\b(0?[1-9]|[12][0-9]|3[01])\s*[.,]\s*(0?[1-9]|1[0-2])\s*[.,]\s*(20\d{2})\b/,
-    /\b(0?[1-9]|[12][0-9]|3[01])\s+(0?[1-9]|1[0-2])\s+(20\d{2})\b/,
-  ];
+  const regexes = DATE_RESCUE_REGEXES;
   for (const raw of lines) {
     const line = String(raw);
     for (const re of regexes) {
@@ -1235,15 +1048,15 @@ export function payableRescue(parse, text, measured) {
   if (parr.length === 1) {
     P = parr[0];
     D = +(I - P).toFixed(2);
-  } else if (parr.length === 0 && !/\b(?:pop[ou]st|kupon|dopla[cč]il)/i.test(text)) {
+  } else if (parr.length === 0 && !DISCOUNT_LABEL_RE.test(text)) {
     D = +I.toFixed(2); // v2.0.18: no discount story at all — target is the items sum
   } else {
     return null; // ambiguous discount amounts (SPAR coupon class)
   }
   if (!(D > 0)) return null;
-  if (Math.abs(D - T) <= 0.02) return null; // total already consistent
-  if (measured == null || Math.abs(measured - D) > 0.02) return null; // unmeasured arithmetic never fires
-  const currency = (parse.total || "").split(" ")[1] || "€";
+  if (Math.abs(D - T) <= MEASURE_TOL) return null; // total already consistent
+  if (measured == null || Math.abs(measured - D) > MEASURE_TOL) return null; // unmeasured arithmetic never fires
+  const currency = (parse.total || "").split(" ")[1] || CURRENCY_DEFAULT;
   const checks = parse.checks.slice();
   const idx = checks.indexOf(sumCheck);
   const provenance = P != null

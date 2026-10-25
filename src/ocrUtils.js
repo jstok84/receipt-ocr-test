@@ -7,6 +7,19 @@ import { parseReceipt, isNonItemLine, namesScore, namesSimilar, payableRescue, d
 // touch is the final PNG encoding step, which keeps image sizes small enough for
 // Tesseract to ingest (a raw 8000×6000 BMP is 144 MB and chokes the worker).
 import { decodeToRGBA, rgbaToMat } from "./pixels";
+import {
+  ARM_GAP, CARD_MARKER_RE, COLUMN_TRIM, CONTRAST, CROP, CURRENCY_DEFAULT,
+  DATE_RESCUE_ATTEMPTS, DESKEW_DEADBAND_DEG, DISCOUNT_ARM_RE, DISCOUNT_GATE_RE,
+  DISCOUNT_PRESENT_RE,
+  ITEM_BAND_ATTEMPTS, KERNEL_TAPS, KEYWORD_TOTAL_RE, LUMA, MEASURE_TOL,
+  MIN_CORRECTION_NAME_LETTERS,
+  MIN_STRIP_NAME_LETTERS, MISSING_ITEM_ATTEMPTS, MONEY_AMOUNT_RE, PAY_ZONE_ATTEMPTS,
+  PAY_ZONE_MARKERS, PERSPECTIVE_EPSILON_FRAC, PIPELINE_DEFAULTS, PRESCALE,
+  PROGRESSIVE_MAX_STEP, STAGE_PARAMS, STRIP_COLUMN_MARGIN_PX, STRIP_DARK_THRESHOLD,
+  STRIP_DEFAULT_BAND, STRIP_DEFAULT_FACTOR, STRIP_DEFAULT_KERNEL, STRIP_INK_THRESHOLD,
+  STRIP_PIXEL_BUDGET, TESSERACT_LANG, TESSERACT_OEM, TESSERACT_UPSCALE, TESS_PARAMS,
+  TEXT_ANGLE,
+} from "./ocrConfig.js";
 
 GlobalWorkerOptions.workerSrc = pdfWorker;
 
@@ -17,22 +30,18 @@ GlobalWorkerOptions.workerSrc = pdfWorker;
 // textord_heavy_nr (legacy-engine only, was always dead code at oem 1).
 // Added: user_defined_dpi (fixes "Invalid resolution 0 dpi" defaulting to 70),
 // preserve_interword_spaces (keeps SPAR-style multi-column spacing alive).
-const tessParams = {
-  tessedit_pageseg_mode: "6",
-  preserve_interword_spaces: "1",
-  user_defined_dpi: "300",
-};
+// All values live in ocrConfig.js (TESS_PARAMS / TESSERACT_LANG / TESSERACT_OEM).
 
 let workerPromise = null;
 function getWorker() {
   if (!workerPromise) {
-    workerPromise = createWorker("slv+eng", 1, {
+    workerPromise = createWorker(TESSERACT_LANG, TESSERACT_OEM, {
       logger: (m) => {
         if (m.status && typeof m.progress === "number") {
           updateOCRProgressUI(m.status, m.progress);
         }
       },
-    }).then((w) => w.setParameters(tessParams).then(() => w));
+    }).then((w) => w.setParameters(TESS_PARAMS).then(() => w));
   }
   return workerPromise;
 }
@@ -45,7 +54,7 @@ function getWorker() {
  * Matches tesseract docs: "image should be sufficiently high resolution; the
  * same image often gets much better results if you upscale before recognize".
  */
-function upscaleDataURL(dataURL, factor = 2) {
+function upscaleDataURL(dataURL, factor = TESSERACT_UPSCALE.factor) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = "Anonymous";
@@ -70,42 +79,24 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
       reject(new Error("OpenCV.js (cv) is not loaded or initialized."));
       return;
     }
+    // Stage switches + their measured provenance: PIPELINE_DEFAULTS in
+    // ocrConfig.js (evidence runs override any of these via window.__OCR_OPTS).
     const {
-      grayscale = true,
-      deskew = true,
-      perspectiveCorrection = true,
-      unsharpMask = false, // measured harmful on receipt digits (benchmark2 D)
-      smoothing = false,
-      thresholding = false,
-      adaptiveThresholding = false, // measured harmful: digital noise amplification
-      morph = false,
-      denoise = false,
-      clahe = false, // measured CATASTROPHIC on thermal receipts: 24/26 -> 4/26 items, corrupts digits ("1.19" -> "149")
-      invert = false, // measured: small accuracy loss (benchmark2 B)
-      autoCrop = true, // v1.6.2: bright-mask receipt-region crop, run EARLY (before deskew). The old
-      // late-stage cropToContent was measured harmful (fixed 240 BINARY_INV dark-mask ->
-      // selected the BACKGROUND on cluttered photos and cropped into the receipt), so it
-      // was disabled; the new crop isolates the paper before geometry stages run.
-      autoCropMode = "axis", // v2.0.9: "axis" (default, bbox cut) or "rotated" — tight
-      // TEXT-ALIGNED selection (white background fill outside the paper's
-      // text-aligned quad, zero pixel rotation — see cropToReceipt). The old
-      // "rotatedFlip" sign channel is retired: the selection rotates nothing,
-      // so there is no sign left to flip; both names behave identically now
-      // (kept accepted for old __OCR_OPTS evidence scripts).
-      // v2.0.5: the rotation angle comes from text-line direction (textAngleOf),
-      // NOT minAreaRect — that one reported junk ~10° on a ~0° tilted receipt.
-      // v2.0.5: rotation sign for the text-angle correction. NUMERICALLY
-      // settled (EUROSPIN live A/B, Hough length-weighted text angle):
-      // original −3.44°; after getRotationMatrix2D(+3.45°) ("pos") the final
-      // text angle measured −3.1..−4.9° — "pos" rotated text AWAY from
-      // horizontal (this build's +θ turns content the visually-opposite way
-      // vs the docs' wording); after "+neg" (−3.45°) the deskewed stage
-      // measured +1.06° ≈ flat. So the correct flattening angle is −T.
-      // "neg" default; "pos" still selectable via window.__OCR_OPTS for A/Bs.
-      textAngleSign = "neg",
-      contrastStretch = true, // v1.7: linear a=1.6 b=-80 after crop. Measured on EUROSPIN
-      // (ocr-eurospin2): contrast-stretched OCR read 3/3 item amounts (1,55/1,29/1,45),
-      // unstretched read 0-2/3. Thermal print contrast is naturally low after crops.
+      grayscale = PIPELINE_DEFAULTS.grayscale,
+      deskew = PIPELINE_DEFAULTS.deskew,
+      perspectiveCorrection = PIPELINE_DEFAULTS.perspectiveCorrection,
+      unsharpMask = PIPELINE_DEFAULTS.unsharpMask,
+      smoothing = PIPELINE_DEFAULTS.smoothing,
+      thresholding = PIPELINE_DEFAULTS.thresholding,
+      adaptiveThresholding = PIPELINE_DEFAULTS.adaptiveThresholding,
+      morph = PIPELINE_DEFAULTS.morph,
+      denoise = PIPELINE_DEFAULTS.denoise,
+      clahe = PIPELINE_DEFAULTS.clahe,
+      invert = PIPELINE_DEFAULTS.invert,
+      autoCrop = PIPELINE_DEFAULTS.autoCrop,
+      autoCropMode = PIPELINE_DEFAULTS.autoCropMode,
+      textAngleSign = PIPELINE_DEFAULTS.textAngleSign,
+      contrastStretch = PIPELINE_DEFAULTS.contrastStretch,
     } = options;
     // v2.1: decode through WebCodecs / libheif — deterministic, no canvas.
     // The old path used new Image() + canvas.drawImage + cv.imread(canvas);
@@ -205,16 +196,20 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
       // Tight quartiles measured on the real photo: original +0.9°, σIQR 1.5°.
       function textAngleOf(mat) {
         const edges = new cv.Mat();
-        cv.Canny(mat, edges, 60, 150);
+        cv.Canny(mat, edges, TEXT_ANGLE.cannyLow, TEXT_ANGLE.cannyHigh);
         const lines = new cv.Mat();
-        cv.HoughLinesP(edges, lines, 1, Math.PI / 180, 60, 60, 12);
+        cv.HoughLinesP(
+          edges, lines,
+          TEXT_ANGLE.houghRho, Math.PI / TEXT_ANGLE.houghThetaDeg,
+          TEXT_ANGLE.houghThreshold, TEXT_ANGLE.houghMinLineLength, TEXT_ANGLE.houghMaxLineGap
+        );
         let n = 0, lenSum = 0, angSum = 0;
         for (let i = 0; i < lines.rows; i++) {
           const x1 = lines.data32S[i * 4], y1 = lines.data32S[i * 4 + 1];
           const x2 = lines.data32S[i * 4 + 2], y2 = lines.data32S[i * 4 + 3];
           const len = Math.hypot(x2 - x1, y2 - y1);
           const ang = Math.atan2(y2 - y1, x2 - x1) * 180 / Math.PI;
-          if (Math.abs(ang) < 20 && len >= 40) {
+          if (Math.abs(ang) < TEXT_ANGLE.windowDeg && len >= TEXT_ANGLE.minLineLength) {
             n++;
             lenSum += len;
             angSum += ang * len;
@@ -222,7 +217,7 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
         }
         edges.delete();
         lines.delete();
-        if (n < 12) return null; // too few confident baselines — don't rotate
+        if (n < TEXT_ANGLE.minLines) return null; // too few confident baselines — don't rotate
         return angSum / lenSum;
       }
       // rotate content about a center, enlarging the canvas so corners
@@ -251,7 +246,7 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
         // that would otherwise split it into several blobs.
         const binary = new cv.Mat();
         cv.threshold(m, binary, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
-        const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(15, 15));
+        const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(CROP.closeKernelPx, CROP.closeKernelPx));
         const closed = new cv.Mat();
         cv.morphologyEx(binary, closed, cv.MORPH_CLOSE, kernel);
         binary.delete();
@@ -294,11 +289,11 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
         try {
           const W = mat.cols, H = mat.rows;
           const binary = new cv.Mat();
-          cv.threshold(mat, binary, 160, 255, cv.THRESH_BINARY);
+          cv.threshold(mat, binary, CROP.brightThreshold, 255, cv.THRESH_BINARY);
           const cols = new cv.Mat(), rows = new cv.Mat();
           cv.reduce(binary, cols, 0, cv.REDUCE_AVG, cv.CV_32F);
           cv.reduce(binary, rows, 1, cv.REDUCE_AVG, cv.CV_32F);
-          const smooth = Math.max(11, Math.round(Math.min(W, H) * 0.04) | 1);
+          const smooth = Math.max(CROP.smoothFloorPx, Math.round(Math.min(W, H) * CROP.smoothFrac) | 1);
           const findBand = (data, len, frac) => {
             let a0 = -1, a1 = -1;
             for (let i = 0; i < len; i++) {
@@ -311,18 +306,18 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
           // rows admit a slightly lower fraction than columns (shadowed
           // paper edges thread the bottom rows: probe 0.63-0.85 bright).
           const band = {
-            x: findBand(cols.data32F, W, 0.3),
-            y: findBand(rows.data32F, H, 0.2),
+            x: findBand(cols.data32F, W, CROP.bandFracX),
+            y: findBand(rows.data32F, H, CROP.bandFracY),
           };
           cols.delete(); rows.delete(); binary.delete();
           if (band.x && band.y) {
             const bandArea = (band.x[1] - band.x[0] + 1) * (band.y[1] - band.y[0] + 1);
-            if (bandArea >= 0.98 * W * H) {
+            if (bandArea >= CROP.fullFrameFrac * W * H) {
               // full-frame band = bright-background (scan-style) case:
               // ink-edge stage selects by the dark pixels instead
               const ink = new cv.Mat();
-              cv.threshold(mat, ink, 128, 255, cv.THRESH_BINARY_INV);
-              const ring = Math.round(Math.max(W, H) * 0.01);
+              cv.threshold(mat, ink, CROP.inkThreshold, 255, cv.THRESH_BINARY_INV);
+              const ring = Math.round(Math.max(W, H) * CROP.ringFrac);
               const black = new cv.Scalar(0, 0, 0, 0); // erase scan-border lines
               cv.rectangle(ink, new cv.Point(0, 0), new cv.Point(W - 1, ring - 1), black, -1);
               cv.rectangle(ink, new cv.Point(0, H - ring), new cv.Point(W - 1, H - 1), black, -1);
@@ -332,14 +327,14 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
               cv.reduce(ink, icols, 0, cv.REDUCE_AVG, cv.CV_32F);
               cv.reduce(ink, irows, 1, cv.REDUCE_AVG, cv.CV_32F);
               const ib = {
-                x: findBand(icols.data32F, W, 0.02),
-                y: findBand(irows.data32F, H, 0.02),
+                x: findBand(icols.data32F, W, CROP.inkBandFrac),
+                y: findBand(irows.data32F, H, CROP.inkBandFrac),
               };
               ink.delete(); icols.delete(); irows.delete();
               if (ib.x && ib.y) {
                 const bw = ib.x[1] - ib.x[0] + 1, bh = ib.y[1] - ib.y[0] + 1;
-                if (bw >= 0.25 * W && bh >= 0.25 * H) {
-                  const mx = Math.round(W * 0.10), my = Math.round(H * 0.10);
+                if (bw >= CROP.sanityFrac * W && bh >= CROP.sanityFrac * H) {
+                  const mx = Math.round(W * CROP.inkMarginFrac), my = Math.round(H * CROP.inkMarginFrac);
                   const x = Math.max(0, ib.x[0] - mx);
                   const y = Math.max(0, ib.y[0] - my);
                   const w = Math.min(W - x, bw + 2 * mx);
@@ -352,7 +347,7 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
                 }
               }
             } else {
-              const mx = Math.round(W * 0.02), my = Math.round(H * 0.02);
+              const mx = Math.round(W * CROP.profileMarginFrac), my = Math.round(H * CROP.profileMarginFrac);
               const x = Math.max(0, band.x[0] - mx);
               const y = Math.max(0, band.y[0] - my);
               const w = Math.min(W - x, band.x[1] - band.x[0] + 1 + 2 * mx);
@@ -386,10 +381,10 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
           if (maxContour) {
             const rect = cv.boundingRect(maxContour);
             const imgArea = mat.rows * mat.cols;
-            const boxOk = rect.width >= 0.25 * mat.cols && rect.height >= 0.25 * mat.rows && rect.width * rect.height >= 0.15 * imgArea;
+            const boxOk = rect.width >= CROP.contourBoxWFrac * mat.cols && rect.height >= CROP.contourBoxHFrac * mat.rows && rect.width * rect.height >= CROP.contourAreaFrac * imgArea;
             if (boxOk) {
-              const mx = Math.round(mat.cols * 0.02);
-              const my = Math.round(mat.rows * 0.02);
+              const mx = Math.round(mat.cols * CROP.profileMarginFrac);
+              const my = Math.round(mat.rows * CROP.profileMarginFrac);
               const x = Math.max(0, rect.x - mx);
               const y = Math.max(0, rect.y - my);
               const w = Math.min(mat.cols - x, rect.width + 2 * mx);
@@ -420,9 +415,9 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
         // Chromium's default smoothing (bilinear); INTER_CUBIC here resampled
         // differently and measurably changed OCR on the two sub-1000px corpus
         // photos (eurospin-cropped 5→2 items, spar-2024-12-14 10→8).
-        if (decoded.width < 1000) {
+        if (decoded.width < PRESCALE.minWidthPx) {
           const up = new cv.Mat();
-          cv.resize(src, up, new cv.Size(decoded.width * 2, decoded.height * 2), 0, 0, cv.INTER_LINEAR);
+          cv.resize(src, up, new cv.Size(decoded.width * PRESCALE.factor, decoded.height * PRESCALE.factor), 0, 0, cv.INTER_LINEAR);
           src.delete();
           src = up;
         }
@@ -452,7 +447,7 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
         // amounts vs 0-2/3 unstretched - sharp.linear(1.6, -80) equivalent).
         if (contrastStretch) {
           const stretched = new cv.Mat();
-          cv.convertScaleAbs(gray, stretched, 1.6, -80);
+          cv.convertScaleAbs(gray, stretched, CONTRAST.alpha, CONTRAST.beta);
           showIntermediate(stretched, "Contrast Stretched");
           gray.delete();
           gray = stretched;
@@ -473,7 +468,7 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
           const T = textAngleOf(gray);
           if (T !== null) console.log("🧭 text-line angle:", +T.toFixed(2) + "° (n lines ok)");
           else console.log("🧭 text-line angle: not enough confident baselines, skipping");
-          if (T !== null && Math.abs(T) > 1.0) {
+          if (T !== null && Math.abs(T) > DESKEW_DEADBAND_DEG) {
             const angle = (textAngleSign === "neg" ? -1 : 1) * T;
             const center = new cv.Point(gray.cols / 2, gray.rows / 2);
             const rotated = rotatedMat(gray, angle, center, true);
@@ -520,7 +515,7 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
           if (maxContour) {
             const approx = new cv.Mat();
             const perimeter = cv.arcLength(maxContour, true);
-            cv.approxPolyDP(maxContour, approx, 0.02 * perimeter, true);
+            cv.approxPolyDP(maxContour, approx, PERSPECTIVE_EPSILON_FRAC * perimeter, true);
             if (approx.rows === 4) {
               const srcPts = [];
               for (let i = 0; i < 4; i++) {
@@ -593,9 +588,9 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
         // Unsharp Mask step retained
         if (unsharpMask) {
           const blurredUM = new cv.Mat();
-          cv.GaussianBlur(gray, blurredUM, new cv.Size(5, 5), 1.5);
+          cv.GaussianBlur(gray, blurredUM, new cv.Size(STAGE_PARAMS.unsharp.blurKsize, STAGE_PARAMS.unsharp.blurKsize), STAGE_PARAMS.unsharp.blurSigma);
           sharpened = new cv.Mat();
-          cv.addWeighted(gray, 1.5, blurredUM, -0.5, 0, sharpened);
+          cv.addWeighted(gray, STAGE_PARAMS.unsharp.alpha, blurredUM, STAGE_PARAMS.unsharp.beta, 0, sharpened);
           showIntermediate(sharpened, "Unsharp Masked");
           gray.delete();
           gray = sharpened;
@@ -605,7 +600,7 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
         // Optional smoothing
         if (smoothing) {
           smoothed = new cv.Mat();
-          cv.bilateralFilter(gray, smoothed, 9, 75, 75);
+          cv.bilateralFilter(gray, smoothed, STAGE_PARAMS.smoothing.d, STAGE_PARAMS.smoothing.sigmaColor, STAGE_PARAMS.smoothing.sigmaSpace);
           showIntermediate(smoothed, "Smoothed (Bilateral Filter)");
           gray.delete();
           gray = smoothed;
@@ -625,14 +620,14 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
           const adaptive = new cv.Mat();
           const rows = gray.rows;
           const cols = gray.cols;
-          let blockSize = Math.floor(Math.min(rows, cols) * 0.05);
+          let blockSize = Math.floor(Math.min(rows, cols) * STAGE_PARAMS.adaptive.blockFrac);
           if (blockSize % 2 === 0) {
             blockSize += 1;
           }
           blockSize = Math.max(blockSize, 3);
           const meanScalar = cv.mean(gray);
           const meanIntensity = meanScalar[0];
-          const C = meanIntensity > 127 ? 10 : 5;
+          const C = meanIntensity > STAGE_PARAMS.adaptive.meanSplit ? STAGE_PARAMS.adaptive.cBright : STAGE_PARAMS.adaptive.cDark;
           cv.adaptiveThreshold(
             gray,
             adaptive,
@@ -650,7 +645,7 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
         // Denoising (median blur)
         if (denoise) {
           const denoised = new cv.Mat();
-          cv.medianBlur(gray, denoised, 3);
+          cv.medianBlur(gray, denoised, STAGE_PARAMS.denoise.ksize);
           showIntermediate(denoised, "Denoised (Median Blur)");
           gray.delete();
           gray = denoised;
@@ -658,7 +653,7 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
         }
         // CLAHE enhancement
         if (clahe) {
-          const claheInstance = new cv.CLAHE(2.0, new cv.Size(8, 8));
+          const claheInstance = new cv.CLAHE(STAGE_PARAMS.clahe.clip, new cv.Size(STAGE_PARAMS.clahe.tile, STAGE_PARAMS.clahe.tile));
           const equalized = new cv.Mat();
           claheInstance.apply(gray, equalized);
           showIntermediate(equalized, "CLAHE Enhanced");
@@ -677,7 +672,7 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
           await delay(300);
         }
         if (morph) {
-          const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+          const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(STAGE_PARAMS.morph.ksize, STAGE_PARAMS.morph.ksize));
           const closed = new cv.Mat();
           cv.morphologyEx(gray, closed, cv.MORPH_CLOSE, kernel);
           showIntermediate(closed, "Morphological Closing");
@@ -703,7 +698,7 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
         // 2× upscale for Tesseract — same as the old upscaleDataURL path,
         // now on a canvas created from the processed Mat.
         const up = new cv.Mat();
-        cv.resize(gray, up, new cv.Size(gray.cols * 2, gray.rows * 2), 0, 0, cv.INTER_CUBIC);
+        cv.resize(gray, up, new cv.Size(gray.cols * TESSERACT_UPSCALE.factor, gray.rows * TESSERACT_UPSCALE.factor), 0, 0, cv.INTER_CUBIC);
         const tesseractCanvas = document.createElement("canvas");
         tesseractCanvas.width = up.cols;
         tesseractCanvas.height = up.rows;
@@ -860,7 +855,7 @@ function scoreParse(parse) {
  * so the strip is narrowed to the receipt column via column-brightness
  * projection — dark background columns trimmed, receipts stay centered.
  */
-function topStripDataURL(preprocessedDataURL, band = [0, 0.25], factor = 3, mode = "catrom") {
+function topStripDataURL(preprocessedDataURL, band = STRIP_DEFAULT_BAND, factor = STRIP_DEFAULT_FACTOR, mode = STRIP_DEFAULT_KERNEL) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = "Anonymous";
@@ -886,7 +881,7 @@ function topStripDataURL(preprocessedDataURL, band = [0, 0.25], factor = 3, mode
             const i = (y * img.width + x) * 4;
             const v = (data[i] + data[i + 1] + data[i + 2]) / 3;
             sum += v;
-            if (v < 105) dark++;
+            if (v < STRIP_DARK_THRESHOLD) dark++;
             n++;
           }
           colMeans.push(sum / n);
@@ -894,7 +889,7 @@ function topStripDataURL(preprocessedDataURL, band = [0, 0.25], factor = 3, mode
         }
         const span = brightColumnTrim(colMeans, darkCounts);
         // only narrow when the projection found a plausible paper column
-        const margin = 15;
+        const margin = STRIP_COLUMN_MARGIN_PX;
         if (span) {
           x0 = Math.max(0, span[0] - margin);
           x1 = Math.min(img.width, span[1] + margin);
@@ -922,7 +917,7 @@ function topStripDataURL(preprocessedDataURL, band = [0, 0.25], factor = 3, mode
  * price ("1,79 8") — sharp used lanczos3 on the same pixels. Nearest at an
  * integer factor is the canvas-side substitute for a sharp resampler.
  */
-function rawStripDataURL(imageSrc, band = [0, 0.25], factor = 3, mode = "catrom") {
+function rawStripDataURL(imageSrc, band = STRIP_DEFAULT_BAND, factor = STRIP_DEFAULT_FACTOR, mode = STRIP_DEFAULT_KERNEL) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = "Anonymous";
@@ -949,8 +944,8 @@ function rawStripDataURL(imageSrc, band = [0, 0.25], factor = 3, mode = "catrom"
       }
       const d = data.data;
       for (let i = 0; i < d.length; i += 4) {
-        const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-        const v = Math.max(0, Math.min(255, Math.round(1.6 * g - 80)));
+        const g = LUMA.r * d[i] + LUMA.g * d[i + 1] + LUMA.b * d[i + 2];
+        const v = Math.max(0, Math.min(255, Math.round(CONTRAST.alpha * g + CONTRAST.beta)));
         d[i] = d[i + 1] = d[i + 2] = v;
       }
       ctx1.putImageData(data, 0, 0);
@@ -962,7 +957,7 @@ function rawStripDataURL(imageSrc, band = [0, 0.25], factor = 3, mode = "catrom"
         for (let x = 0; x < img.width; x++) {
           const v = d[(y * img.width + x) * 4];
           colMeans[x] += v;
-          if (v < 75) darkCounts[x]++;
+          if (v < STRIP_INK_THRESHOLD) darkCounts[x]++;
         }
       }
       for (let x = 0; x < img.width; x++) colMeans[x] /= h;
@@ -970,8 +965,8 @@ function rawStripDataURL(imageSrc, band = [0, 0.25], factor = 3, mode = "catrom"
       let left = 0;
       let right = img.width - 1;
       if (span) {
-        left = Math.max(0, span[0] - 15);
-        right = Math.min(img.width - 1, span[1] + 15);
+        left = Math.max(0, span[0] - STRIP_COLUMN_MARGIN_PX);
+        right = Math.min(img.width - 1, span[1] + STRIP_COLUMN_MARGIN_PX);
       }
       const w = right - left;
       const c1src = document.createElement("canvas");
@@ -1002,7 +997,7 @@ function upscaleCanvasProgressive(src, totalFactor) {
   let out = src;
   let remaining = factor;
   while (remaining > 1.0001) {
-    const step = Math.min(remaining, 2);
+    const step = Math.min(remaining, PROGRESSIVE_MAX_STEP);
     const c = document.createElement("canvas");
     c.width = Math.round(out.width * step);
     c.height = Math.round(out.height * step);
@@ -1030,16 +1025,14 @@ function upscaleCanvasProgressive(src, totalFactor) {
  * eurospin ~1.2 MP), so the budget only ever bites on phone-photo receipts —
  * where it is the difference between a 26 s scan and a 190 s one.
  */
-const STRIP_MAX_W = 3000;
-const STRIP_MAX_AREA = 9e6;
 function clampStripFactor(sw, sh, factor) {
   let f = factor;
-  if (sw * f > STRIP_MAX_W) f = STRIP_MAX_W / sw;
-  if (sw * sh * f * f > STRIP_MAX_AREA) f = Math.sqrt(STRIP_MAX_AREA / (sw * sh));
-  return Math.max(0.5, f);
+  if (sw * f > STRIP_PIXEL_BUDGET.maxWidthPx) f = STRIP_PIXEL_BUDGET.maxWidthPx / sw;
+  if (sw * sh * f * f > STRIP_PIXEL_BUDGET.maxArea) f = Math.sqrt(STRIP_PIXEL_BUDGET.maxArea / (sw * sh));
+  return Math.max(STRIP_PIXEL_BUDGET.minFactor, f);
 }
 
-function bicubicUpscaleGrayCanvas(srcCanvas, factor, mode = "catrom") {
+function bicubicUpscaleGrayCanvas(srcCanvas, factor, mode = STRIP_DEFAULT_KERNEL) {
   let sd;
   try {
     const sctx = srcCanvas.getContext("2d");
@@ -1063,7 +1056,7 @@ function bicubicUpscaleGrayCanvas(srcCanvas, factor, mode = "catrom") {
   // band window (catrom reads 1,55 @35-75%, lanczos3 reads it @40-75% where
   // catrom loses the row), so neither justifies a primary-pipeline swap.
   const isLanczos = mode === "lanczos3";
-  const taps = isLanczos ? 6 : 4;
+  const taps = isLanczos ? KERNEL_TAPS.lanczos3 : KERNEL_TAPS.catrom;
   const weightFor = (t) => {
     const s = Math.abs(t);
     if (isLanczos) {
@@ -1152,12 +1145,12 @@ function bicubicUpscaleGrayCanvas(srcCanvas, factor, mode = "catrom") {
  * neighbouring object. Distant objects (a second receipt, a margin stamp)
  * still form their own chain and lose to the widest one.
  */
-function brightColumnTrim(colMeans, darkCounts, minWidthFraction = 0.15, maxGapPx = 50) {
+function brightColumnTrim(colMeans, darkCounts, minWidthFraction = COLUMN_TRIM.minWidthFraction, maxGapPx = COLUMN_TRIM.maxGapPx) {
   const n = colMeans.length;
   const smooth = new Array(n).fill(0);
   for (let x = 0; x < n; x++) {
     let s = 0;
-    for (let k = Math.max(0, x - 20); k <= Math.min(n - 1, x + 20); k++) {
+    for (let k = Math.max(0, x - COLUMN_TRIM.smoothWindowPx); k <= Math.min(n - 1, x + COLUMN_TRIM.smoothWindowPx); k++) {
       s += darkCounts ? darkCounts[k] : 0;
     }
     smooth[x] = s;
@@ -1166,7 +1159,7 @@ function brightColumnTrim(colMeans, darkCounts, minWidthFraction = 0.15, maxGapP
   let curStart = -1;
   let lastInk = -1;
   for (let x = 0; x <= n; x++) {
-    const isP = x < n && smooth[x] >= 6;
+    const isP = x < n && smooth[x] >= COLUMN_TRIM.minInk;
     if (isP) {
       if (curStart < 0) curStart = x;
       lastInk = x;
@@ -1178,7 +1171,7 @@ function brightColumnTrim(colMeans, darkCounts, minWidthFraction = 0.15, maxGapP
     }
   }
   if (!runs.length) return null;
-  const wideGap = Math.max(maxGapPx, Math.round(n * 0.25));
+  const wideGap = Math.max(maxGapPx, Math.round(n * COLUMN_TRIM.wideGapFrac));
   const chains = [];
   for (const [a, b] of runs) {
     const last = chains[chains.length - 1];
@@ -1194,7 +1187,7 @@ function brightColumnTrim(colMeans, darkCounts, minWidthFraction = 0.15, maxGapP
     if (!best || c[1] - c[0] > best[1] - best[0]) best = c;
   }
   if (!best || best[1] - best[0] + 1 < n * minWidthFraction) return null;
-  return [Math.max(0, best[0] - 30), Math.min(n - 1, best[1] + 60)];
+  return [Math.max(0, best[0] - COLUMN_TRIM.slackLeftPx), Math.min(n - 1, best[1] + COLUMN_TRIM.slackRightPx)];
 }
 
 // --- OCR + preprocessing for direct image files ---
@@ -1287,8 +1280,8 @@ export async function processImage(imageSrc, onProgress = () => {}) {
   if (!firstParse.total || !firstParse.items.length) {
     let freshWorker = null;
     try {
-      freshWorker = await createWorker("slv+eng", 1, {});
-      await freshWorker.setParameters(tessParams);
+      freshWorker = await createWorker(TESSERACT_LANG, TESSERACT_OEM, {});
+      await freshWorker.setParameters(TESS_PARAMS);
       const secondResult = await freshWorker.recognize(pre.tesseractURL);
       const secondCleaned = cleanAndMergeText(secondResult.data.text);
       const secondParse = parseReceipt(secondCleaned);
@@ -1337,12 +1330,12 @@ export async function processImage(imageSrc, onProgress = () => {}) {
     // becomes an item. Guard (v1.6.9 no-fire philosophy, proven on SPAR's
     // 5,74 coupon gap): never arm when the raw text contains a discount or
     // coupon marker — the mismatch is then explained without a missing item.
-    if (!/popust|kupon|discount|dopla[cč]il/i.test(cleaned)) {
+    if (!DISCOUNT_ARM_RE.test(cleaned)) {
       const sumCheck = finalChecks.find((c) => !c.ok && /items sum ([\d.]+) ≠ total ([\d.]+)/.test(c.text));
       if (sumCheck && finalParse.total) {
         const t = parseFloat((finalParse.total.match(/([\d.,]+)/) || [])[1]?.replace(",", "."));
         const sum = parseFloat(sumCheck.text.match(/items sum ([\d.]+)/)[1]);
-        if (!isNaN(t) && !isNaN(sum) && t - sum > 0.004) {
+        if (!isNaN(t) && !isNaN(sum) && t - sum > ARM_GAP) {
           missing = +(t - sum).toFixed(2);
         } else if (!isNaN(t) && !isNaN(sum)) {
           // v2.0.19 (real case, user capture of the HOFER EFT tail on deployed
@@ -1361,13 +1354,13 @@ export async function processImage(imageSrc, onProgress = () => {}) {
           // INTERSPORT's garbled "ZA PLACILO 59,99" fails V > sum (items 79.99).
           let vKey = null;
           for (const ln of cleaned.split("\n")) {
-            if (!/\b(?:vsota|skupaj|skupna vrednost|za pla[čc]ilo|za placilo|kon[čc]ni znesek|koncni znesek)\b/i.test(ln)) continue;
-            if (/masterca|maest[rc]|kartic|visa|\beft\b|\bbft\b|h[o0]fer\s+cena/i.test(ln)) continue;
-            const amts = [...ln.matchAll(/\d{1,3}[.,]\d{1,2}/g)].map((mm) => parseFloat(mm[0].replace(",", ".")));
+            if (!KEYWORD_TOTAL_RE.test(ln)) continue;
+            if (CARD_MARKER_RE.test(ln)) continue;
+            const amts = [...ln.matchAll(MONEY_AMOUNT_RE)].map((mm) => parseFloat(mm[0].replace(",", ".")));
             const last = amts[amts.length - 1];
             if (last != null && (vKey == null || last > vKey)) vKey = last;
           }
-          if (vKey != null && vKey > t + 0.02 && vKey > sum) {
+          if (vKey != null && vKey > t + MEASURE_TOL && vKey > sum) {
             missing = +(vKey - sum).toFixed(2);
             console.log("🔁 Total-keyword line reads", vKey, "> picked total", t, "— strip target = V − items =", missing);
           }
@@ -1392,50 +1385,35 @@ export async function processImage(imageSrc, onProgress = () => {}) {
   if (missing != null) {
     missingBucket = missing;
     const alreadyParsed = finalParse.items.some(
-      (it) => Math.abs((parseFloat(it.price) ?? 0) - missing) <= 0.02
+      (it) => Math.abs((parseFloat(it.price) ?? 0) - missing) <= MEASURE_TOL
     );
     if (!alreadyParsed) {
       let strip = null;
       try {
-        const currency = (finalParse.total || "").split(" ")[1] || "€";
-        // cascade: strip band × page-seg. Live-evidence history: full-frame
-        // strips garbled ("prv 7S"); ink-trim alone helped names but the price
-        // needed PSM 4 — decisive cross-check: Node tesseract on the EXACT
-        // browser strip PNG read "preo B" at PSM 6 but "1,798" (= 1,79 with the
-        // VAT letter B misread as 8) at PSM 4. PSM 6 wasted determinism on the
-        // same pixels, so the segmentation, not the image, was the bottleneck.
-        outer: for (const [stripKind, band, psm, factor] of [
-          ["raw", [0, 0.25], "6", 3], ["prep", [0, 0.25], "6", 3], ["prep", [0, 0.18], "6", 3],
-          ["raw", [0, 0.25], "4", 3], ["prep", [0, 0.25], "4", 3],
-          // v2.0.29: tall-header receipts push their first item rows to ~45%
-          // of the paper. EUROSPIN-cropped live: FROLLINI sits at y-fraction
-          // 0.43-0.45, so every top band above read only the logo/address
-          // block while the missing row lived in the item band (the 8 attempts
-          // measured nothing; the same band at full width reads
-          // "EKSI FROLLINI 1KG 1,55 A" in the Node bench). These variants are
-          // the shape the item-band correction cascade validated (prep
-          // 0.4-0.75 at 2x) and hunt the gap amount there.
-          ["prep", [0.4, 0.75], "6", 2], ["prep", [0.4, 0.75], "4", 2],
-          ["raw", [0.4, 0.75], "6", 2],
-        ]) {
+        const currency = (finalParse.total || "").split(" ")[1] || CURRENCY_DEFAULT;
+        // cascade: strip band × page-seg. Attempt order and provenance:
+        // MISSING_ITEM_ATTEMPTS in ocrConfig.js (full-frame strips garbled
+        // "prv 7S"; the price needed PSM 4; the 0.4-0.75 item-band variants
+        // hunt tall-header receipts whose rows sit at ~45% of the paper).
+        outer: for (const [stripKind, band, psm, factor] of MISSING_ITEM_ATTEMPTS) {
           // strip from the PRE-perspective image when available: creased rows
           // garble under the warp (live evidence), while the unwrapped crop
           // is what the Node benchmarks read correctly. "raw" attempts bypass
           // resampling entirely (canvas gray+stretch math == sharp params).
           const base = prePerspectiveDataURL || (stripKind === "raw" ? imageSrc : preprocessedDataURL);
           strip = stripKind === "raw" ? await rawStripDataURL(base, band, factor) : await topStripDataURL(base, band, factor);
-          await worker.setParameters({ ...tessParams, tessedit_pageseg_mode: psm });
+          await worker.setParameters({ ...TESS_PARAMS, tessedit_pageseg_mode: psm });
           const stripResult = await worker.recognize(strip);
-          await worker.setParameters(tessParams);
+          await worker.setParameters(TESS_PARAMS);
           const stripText = cleanAndMergeText(stripResult.data.text);
           const stripLines = stripText.split("\n").filter(Boolean);
           console.log("🔁 Strip re-OCR (missing item ≈", missing.toFixed(2), ", strip", stripKind, band.join("-"), "psm", psm, "):", stripLines);
           stripEvidence.push({ stripKind, band, factor, psm, lines: stripLines, image: strip });
           for (const line of stripLines) {
-            const amounts = [...line.matchAll(/\d{1,3}[.,]\d{1,2}/g)].map((m) =>
+            const amounts = [...line.matchAll(MONEY_AMOUNT_RE)].map((m) =>
               parseFloat(m[0].replace(",", "."))
             );
-            const hit = amounts.find((a) => Math.abs(a - missing) <= 0.02);
+            const hit = amounts.find((a) => Math.abs(a - missing) <= MEASURE_TOL);
             if (hit == null) continue;
             // v2.0.29: item-band strips also carry totals/tender machinery
             // ("otovina EUR 13,00", "Skupaj 4,29"). extraItems bypass every
@@ -1450,7 +1428,7 @@ export async function processImage(imageSrc, onProgress = () => {}) {
             let name = tokens.slice(0, end).join(" ");
             name = name.replace(/^[^a-zA-ZčšžČŠŽ]+\s*/, "").trim();
             const letterCount = (name.match(/[a-zA-ZčšžČŠŽ]/g) || []).length;
-            if (letterCount < 3) continue;
+            if (letterCount < MIN_STRIP_NAME_LETTERS) continue;
             extraItems.push({
               name,
               price: `${hit.toFixed(2)} ${currency}`,
@@ -1494,7 +1472,7 @@ export async function processImage(imageSrc, onProgress = () => {}) {
     // there are poison (the improvement guard even "clawed" toward the
     // discounted total using a misread popust column). Same gate exists in
     // parseReceipt; this copy saves the 5 OCR passes.
-    const discountMarker = /pop[ou]st|doplac/i.test(cleaned);
+    const discountMarker = DISCOUNT_GATE_RE.test(cleaned);
     if (sumMismatch && !discountMarker && finalParse.items.length >= 2) {
       // Collect candidates from EVERY attempt (an early attempt can garble
       // the mispriced row while a later variant reads it right); the parser's
@@ -1505,20 +1483,17 @@ export async function processImage(imageSrc, onProgress = () => {}) {
       // lanczos3 flipping FROLLINI's price per band window — no primary
       // kernel, so extra attempts buy coverage at 1 pass each, broken
       // parses only. The 5th attempt (lanczos3) reads the row cleanly
-      // where catrom @2x PSM6 lost it.
-      for (const [stripKind, band, factor, psm, kernel] of [
-        ["prep", [0.4, 0.75], 2, "6", "catrom"], ["prep", [0.4, 0.75], 2, "4", "catrom"],
-        ["raw", [0.4, 0.75], 2, "6", "catrom"], ["prep", [0.32, 0.75], 3, "6", "catrom"],
-        ["prep", [0.4, 0.75], 2, "6", "lanczos3"],
-      ]) {
+      // where catrom @2x PSM6 lost it. Table: ITEM_BAND_ATTEMPTS in
+      // ocrConfig.js.
+      for (const [stripKind, band, factor, psm, kernel] of ITEM_BAND_ATTEMPTS) {
         try {
           const base = prePerspectiveDataURL || (stripKind === "raw" ? imageSrc : preprocessedDataURL);
           const strip = stripKind === "raw"
             ? await rawStripDataURL(base, band, factor, kernel)
             : await topStripDataURL(base, band, factor, kernel);
-          await worker.setParameters({ ...tessParams, tessedit_pageseg_mode: psm });
+          await worker.setParameters({ ...TESS_PARAMS, tessedit_pageseg_mode: psm });
           const stripResult = await worker.recognize(strip);
-          await worker.setParameters(tessParams);
+          await worker.setParameters(TESS_PARAMS);
           const stripText = cleanAndMergeText(stripResult.data.text);
           const stripLines = stripText.split("\n").filter(Boolean);
           console.log("🔁 Item-band re-OCR (sum mismatch, strip", stripKind, band.join("-"), factor + "x", kernel, "psm", psm, "):", stripLines);
@@ -1529,7 +1504,7 @@ export async function processImage(imageSrc, onProgress = () => {}) {
           // the wrong attempt's evidence/winner line
           const evidIdx = stripEvidence.length - 1;
           for (const line of stripLines) {
-            const amounts = [...line.matchAll(/\d{1,3}[.,]\d{1,2}/g)].map((m) =>
+            const amounts = [...line.matchAll(MONEY_AMOUNT_RE)].map((m) =>
               parseFloat(m[0].replace(",", "."))
             );
             if (!amounts.length) continue;
@@ -1539,7 +1514,7 @@ export async function processImage(imageSrc, onProgress = () => {}) {
             while (end < tokens.length && !/\d/.test(tokens[end])) end++;
             let name = tokens.slice(0, end).join(" ");
             name = name.replace(/^[^a-zA-ZčšžČŠŽ]+\s*/, "").trim();
-            if ((name.match(/[a-zA-ZčšžČŠŽ]/g) || []).length < 4) {
+            if ((name.match(/[a-zA-ZčšžČŠŽ]/g) || []).length < MIN_CORRECTION_NAME_LETTERS) {
               // v2.0.28: HOFER rows lead with the EAN code ("736115 Skleda za
               // mešanje 8,49 B"), so the "up to the first digit token" rule
               // yields an empty name and the correction is dropped before it
@@ -1549,7 +1524,7 @@ export async function processImage(imageSrc, onProgress = () => {}) {
               const m2 = line.match(/^(.*?)\s+\d{1,3}[.,]\d{2}\s*[A-Ea-e]?\s*$/);
               if (m2) name = m2[1].replace(/^[^a-zA-ZčšžČŠŽ]+\s*/, "").trim();
             }
-            if ((name.match(/[a-zA-ZčšžČŠŽ]/g) || []).length < 4) continue;
+            if ((name.match(/[a-zA-ZčšžČŠŽ]/g) || []).length < MIN_CORRECTION_NAME_LETTERS) continue;
             // best-matching item only (no brand-prefix first-match pairing)
             let target = null;
             let bestScore = 0;
@@ -1559,7 +1534,7 @@ export async function processImage(imageSrc, onProgress = () => {}) {
             }
             if (!target || !namesSimilar(name, target.name)) continue; // no solid match -> drop, could be anything
             const oldPrice = parseFloat(String(target.price ?? "").replace(",", "."));
-            if (!isNaN(oldPrice) && Math.abs(oldPrice - price) <= 0.02) continue;
+            if (!isNaN(oldPrice) && Math.abs(oldPrice - price) <= MEASURE_TOL) continue;
             if (corrections.some((c) => c.attempt === evidIdx && namesSimilar(c.name, name))) continue;
             corrections.push({ name, price, attempt: evidIdx });
           }
@@ -1662,7 +1637,7 @@ export async function processImage(imageSrc, onProgress = () => {}) {
     const sumMismatchPay = payChecks.find(
       (c) => !c.ok && /items sum ([\d.]+) ≠ total ([\d.]+)/.test(c.text)
     );
-    const discountPresent15 = /pop[ou]st|kupon|dopla[cč]il/i.test(cleaned);
+    const discountPresent15 = DISCOUNT_PRESENT_RE.test(cleaned);
     const bucketHintPay15 = payChecks.some((c) => /missing item ≈/.test(c.text));
     if (sumMismatchPay && !bucketHintPay15) {
       const I15 = parseFloat(sumMismatchPay.text.match(/items sum ([\d.]+)/)[1]);
@@ -1677,7 +1652,7 @@ export async function processImage(imageSrc, onProgress = () => {}) {
       } else if (p15.length === 0 && !discountPresent15) {
         D15 = +I15.toFixed(2);
       }
-      if (D15 != null && D15 > 0 && !isNaN(T15) && Math.abs(D15 - T15) > 0.02) {
+      if (D15 != null && D15 > 0 && !isNaN(T15) && Math.abs(D15 - T15) > MEASURE_TOL) {
         console.log("🔁 Pay-zone rescue armed: items", I15, p15.length === 1 ? "− POPUST" + pLabel15 : "(no discount)", "=", D15, "≠ read total", T15);
         // v2.0.20 diagnostics: every executed band's readings are evidence —
         // on a rescue they are abandoned (payRescue carries the same info),
@@ -1690,42 +1665,31 @@ export async function processImage(imageSrc, onProgress = () => {}) {
         // row's digits), ×3 zoom, PSM 7 single-line mode. Everything AFTER
         // the five proven attempts, so every previously-winning band still
         // comes first: receipts that already resolve take the identical
-        // early-exit path.
-        outer15: for (const [stripKind, band, factor, psm, payKernel15] of [
-          ["prep", [0.55, 1.0], 2, "6", "catrom"],
-          ["prep", [0.4, 0.75], 2, "6", "catrom"],
-          ["raw", [0.55, 1.0], 2, "6", "catrom"],
-          ["prep", [0.55, 1.0], 2, "4", "catrom"],
-          ["prep", [0.75, 1.0], 2, "6", "catrom"],
-          ["prep", [0.4, 0.75], 3, "6", "lanczos3"],
-          ["prep", [0.4, 0.75], 2, "6", "lanczos3"],
-          ["raw", [0.4, 0.75], 3, "6", "lanczos3"],
-          ["prep", [0.5, 0.9], 3, "7", "catrom"],
-          ["raw", [0.55, 1.0], 3, "7", "catrom"],
-        ]) {
+        // early-exit path. Table: PAY_ZONE_ATTEMPTS in ocrConfig.js.
+        outer15: for (const [stripKind, band, factor, psm, payKernel15] of PAY_ZONE_ATTEMPTS) {
           try {
             const base15 = prePerspectiveDataURL || (stripKind === "raw" ? imageSrc : preprocessedDataURL);
             const strip15 = stripKind === "raw"
               ? await rawStripDataURL(base15, band, factor, payKernel15)
               : await topStripDataURL(base15, band, factor, payKernel15);
-            await worker.setParameters({ ...tessParams, tessedit_pageseg_mode: psm });
+            await worker.setParameters({ ...TESS_PARAMS, tessedit_pageseg_mode: psm });
             const res15 = await worker.recognize(strip15);
-            await worker.setParameters(tessParams);
+            await worker.setParameters(TESS_PARAMS);
             const lines15 = cleanAndMergeText(res15.data.text).split("\n").filter(Boolean);
             console.log("🔁 Pay-zone re-OCR (", stripKind, band.join("-"), factor + "x", payKernel15, "psm", psm, "):", lines15);
             const hit15 = lines15.some(
               (line) =>
-                /pla[čc]ano|placano|za pla|zapla|master|osnova|davek|ddv|skupaj|vsota|znesek/i.test(line) &&
-                [...line.matchAll(/\d{1,3}[.,]\d{1,2}/g)].length &&
-                Math.abs(parseFloat([...line.matchAll(/\d{1,3}[.,]\d{1,2}/g)].pop()[0].replace(",", ".")) - D15) <= 0.02
+                PAY_ZONE_MARKERS.test(line) &&
+                [...line.matchAll(MONEY_AMOUNT_RE)].length &&
+                Math.abs(parseFloat([...line.matchAll(MONEY_AMOUNT_RE)].pop()[0].replace(",", ".")) - D15) <= MEASURE_TOL
             );
             payDebug.attempts.push({ stripKind, band, factor, psm, kernel: payKernel15, lines: lines15, hit: hit15 });
             stripEvidence.push({ stripKind, band, factor, psm, kernel: payKernel15, lines: lines15, image: strip15 });
             for (const line of lines15) {
-              if (!/pla[čc]ano|placano|za pla|zapla|master|osnova|davek|ddv|skupaj|vsota|znesek/i.test(line)) continue;
-              const amts15 = [...line.matchAll(/\d{1,3}[.,]\d{1,2}/g)].map((mm) => parseFloat(mm[0].replace(",", ".")));
+              if (!PAY_ZONE_MARKERS.test(line)) continue;
+              const amts15 = [...line.matchAll(MONEY_AMOUNT_RE)].map((mm) => parseFloat(mm[0].replace(",", ".")));
               const last15 = amts15[amts15.length - 1];
-              if (last15 != null && Math.abs(last15 - D15) <= 0.02) {
+              if (last15 != null && Math.abs(last15 - D15) <= MEASURE_TOL) {
                 measured15 = last15;
                 payWinner15 = { stripKind, band, factor, psm, kernel: payKernel15, line };
                 break outer15;
@@ -1777,23 +1741,15 @@ export async function processImage(imageSrc, onProgress = () => {}) {
       const attempts22 = [];
       let dISO22 = null;
       let dWin22 = null;
-      outer22: for (const [stripKind22, band22, factor22, psm22, kernel22] of [
-        ["prep", [0.3, 0.75], 2, "6", "catrom"],
-        ["prep", [0.3, 0.75], 3, "6", "lanczos3"],
-        ["raw", [0.3, 0.75], 2, "6", "catrom"],
-        ["prep", [0.25, 0.6], 3, "6", "lanczos3"],
-        ["prep", [0.45, 0.9], 2, "6", "catrom"],
-        ["prep", [0.3, 0.75], 3, "7", "catrom"],
-        ["raw", [0.3, 0.75], 3, "7", "lanczos3"],
-      ]) {
+      outer22: for (const [stripKind22, band22, factor22, psm22, kernel22] of DATE_RESCUE_ATTEMPTS) {
         try {
           const base22 = prePerspectiveDataURL || (stripKind22 === "raw" ? imageSrc : preprocessedDataURL);
           const strip22 = stripKind22 === "raw"
             ? await rawStripDataURL(base22, band22, factor22, kernel22)
             : await topStripDataURL(base22, band22, factor22, kernel22);
-          await worker.setParameters({ ...tessParams, tessedit_pageseg_mode: psm22 });
+          await worker.setParameters({ ...TESS_PARAMS, tessedit_pageseg_mode: psm22 });
           const res22 = await worker.recognize(strip22);
-          await worker.setParameters(tessParams);
+          await worker.setParameters(TESS_PARAMS);
           const lines22 = cleanAndMergeText(res22.data.text).split("\n").filter(Boolean);
           const iso22 = validDateFromReading(lines22);
           console.log("🗓 Date re-OCR (", stripKind22, band22.join("-"), factor22 + "x", kernel22, "psm", psm22, "):", lines22, "->", iso22);
