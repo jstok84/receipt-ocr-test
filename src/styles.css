@@ -340,6 +340,35 @@ label:focus-visible {
   font-size: 14px;
 }
 
+/* Zoom control (v2.0.44): the one AF lever that works in a browser — zoom in so
+   the receipt fills the frame and the autofocus locks onto it. */
+.cam-topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.zoom-ctl {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.zoom-ctl .zoom-btn {
+  min-width: 34px;
+  padding: 4px 10px;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.zoom-ctl .zoom-val {
+  min-width: 42px;
+  text-align: center;
+  font-size: 13px;
+  color: #e8e6df;
+  font-variant-numeric: tabular-nums;
+}
+
 /* The primary capture button reads as the big shutter action on the dark bar */
 .cam-bottombar .btn.capture {
   min-width: 240px;

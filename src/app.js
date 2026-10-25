@@ -104,6 +104,8 @@ export default function App() {
   const [cameraLamp, setCameraLamp] = useState(null); // {level: ok|warn, msg}
   const [cameraInfo, setCameraInfo] = useState(null); // {w,h,dpi:{pxPerMm,dpi}}
   const [cameraSharp, setCameraSharp] = useState(null); // {score, sharp} — live focus meter
+  const [zoomCaps, setZoomCaps] = useState(null); // {min,max,step} from getCapabilities().zoom
+  const [zoom, setZoom] = useState(1);
   const [torchOn, setTorchOn] = useState(false);
   // Tap-to-focus feedback: normalized 0–1 point of the last tap (renders a
   // brief ring, then clears) — purely visual; the focus itself is the
@@ -432,6 +434,20 @@ export default function App() {
     track?.applyConstraints?.({ advanced: [{ focusMode: "continuous" }] })
       .catch(() => {});
 
+    // Zoom — the ONE autofocus lever that works in a browser (v2.0.44). We can't
+    // tell the AF *what* to focus on (pointsOfInterest is ignored by most phones,
+    // so it locks onto the high-contrast keyboard behind the receipt). But if the
+    // receipt FILLS the frame, the AF has nothing else to lock onto. Expose zoom
+    // only when the device reports a real range (getCapabilities().zoom).
+    const caps = track?.getCapabilities?.();
+    if (caps && caps.zoom && typeof caps.zoom.max === "number" && caps.zoom.max > caps.zoom.min) {
+      setZoomCaps(caps.zoom);
+      const s0 = track?.getSettings?.() || {};
+      setZoom(typeof s0.zoom === "number" ? s0.zoom : caps.zoom.min);
+    } else {
+      setZoomCaps(null);
+    }
+
     const fit = () => {
       const stage = stageRef.current;
       if (!stage || !v.videoWidth) return;
@@ -661,6 +677,21 @@ export default function App() {
     }
   };
 
+  /** Zoom the live track — the one autofocus lever that works in a browser.
+   *  Gated on zoomCaps; snaps to the device step and clamps to [min,max]. */
+  const setZoomTo = async next => {
+    const track = cameraStreamRef.current?.getVideoTracks?.()[0];
+    if (!track || !zoomCaps) return;
+    const step = zoomCaps.step || 0.1;
+    const clamped = Math.min(zoomCaps.max, Math.max(zoomCaps.min, Math.round(next / step) * step));
+    try {
+      await track.applyConstraints({ advanced: [{ zoom: clamped }] });
+      setZoom(clamped);
+    } catch (err) {
+      console.warn("Zoom failed:", err?.name || err);
+    }
+  };
+
   const handleFiles = async (file, jobId = null) => {
     if (!file) return;
     // Classify from the file's own bytes. Chromium reports an EMPTY file.type
@@ -830,14 +861,23 @@ export default function App() {
         {/* Top bar: every action EXCEPT capture (user request 2026-10-25). */}
         <div className="cam-topbar">
           <button className="btn ghost" onClick={stopCamera} type="button">Close</button>
-          {(() => {
-            const track = cameraState === "live" ? cameraStreamRef.current?.getVideoTracks?.()[0] : null;
-            return hasTorch(track?.getCapabilities?.()) && (
-              <button className="btn ghost" onClick={toggleTorch} type="button">
-                {torchOn ? "Torch off" : "Torch on"}
-              </button>
-            );
-          })()}
+          <div className="cam-topbar-right">
+            {zoomCaps && (
+              <div className="zoom-ctl" role="group" aria-label="Zoom — fill the frame with the receipt so the camera focuses on it">
+                <button className="btn ghost zoom-btn" onClick={() => setZoomTo(zoom - (zoomCaps.step || 0.1))} type="button" aria-label="Zoom out">−</button>
+                <span className="zoom-val">{zoom.toFixed(1)}×</span>
+                <button className="btn ghost zoom-btn" onClick={() => setZoomTo(zoom + (zoomCaps.step || 0.1))} type="button" aria-label="Zoom in">+</button>
+              </div>
+            )}
+            {(() => {
+              const track = cameraState === "live" ? cameraStreamRef.current?.getVideoTracks?.()[0] : null;
+              return hasTorch(track?.getCapabilities?.()) && (
+                <button className="btn ghost" onClick={toggleTorch} type="button">
+                  {torchOn ? "Torch off" : "Torch on"}
+                </button>
+              );
+            })()}
+          </div>
         </div>
 
         <div className="cam-stage" ref={stageRef}>
