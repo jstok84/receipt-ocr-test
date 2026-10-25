@@ -387,6 +387,17 @@ export const NON_ITEM_PATTERNS = [
   /^zol[: ]/i,
   /^spar plus/i,
   /s.?upaj/i,
+  // Croatian/Bosnian "total" (live SPAR HRVATSKA capture 2026-10-25): the
+  // receipt prints "UKUPNO 34,64" as its total line, but Croatian text
+  // carries NO Slovenian anchor, so the parse runs the EN tiers and the
+  // line never becomes a total candidate — the item-side filter (which
+  // skips only candidate lines) let the receipt's OWN TOTAL through as a
+  // phantom item, inflating the items sum by exactly the total (true
+  // merchandise 26.58 + phantom 34.64 = 61.22). Language-independent by
+  // design: any total-keyword line is never merchandise, whatever the
+  // tier selection did with it. The payable line ("PLAČANJE VISA 34,64")
+  // still supplies the picked total via payment markers.
+  /ukupno/i,
   /zvesto[bnh]e/i,
   /masterca/i,
   // Tender-side lines (EUROSPIN real case): "Gotovina EUR 13,00" garbles as
@@ -509,6 +520,10 @@ export const NON_ITEM_PATTERNS = [
  * wins: a payable total always comes AFTER pre-coupon subtotals on real
  * receipts (SPAR: 57.35 subtotal before a 10% coupon, 51.61 payable).
  * Slovenian keywords have ASCII twins (older OCR paths strip diacritics).
+ * NOTE: the tier set is selected by SLOVENIAN_ANCHORS — Croatian receipts
+ * ("UKUPNO 34,64", no Slovenian anchor) parse with the EN tiers, so
+ * language-independent item-side exclusions (NON_ITEM_PATTERNS) are what
+ * keeps a Slavic total line out of the items list there.
  */
 export const TOTAL_KEYWORD_TIERS = {
   SI: [
