@@ -30,26 +30,26 @@ import {
 if (typeof window !== "undefined") window.__APP_VERSION = APP_VERSION;
 
 /**
- * Downscale a takePhoto() still (a full-sensor Blob) to CAPTURE_STILL_MAX_DIM on
- * the long edge and return a JPEG Blob. NO guide crop (v2.0.39, measured): a
- * tight crop that cuts the receipt's edges breaks the OCR pipeline's
- * receipt-isolation/perspective step — the SAME receipt parses 55,99 as a full
- * frame but fails completely when cropped tight to the receipt (verified on the
- * Oct-24 capture: full → 55,99, tight-crop → 0 items). So we keep the full frame
- * (receipt + surrounding background, which the pipeline needs to find the paper
- * edges) and only bound the size. The guide stays a framing aid, not a crop.
+ * Crop the guide region from a takePhoto() still (a full-sensor Blob) and
+ * return a JPEG Blob whose long edge is capped at CAPTURE_STILL_MAX_DIM.
+ * The guide fractions are applied to the STILL's own dimensions — the still
+ * shows the same scene as the preview, just at far more pixels — so the shot
+ * matches what the border framed while keeping 12 MP+ resolution instead of
+ * the video stream's 1–6 MP. createImageBitmap applies EXIF orientation.
  */
-async function downscaleStill(stillBlob) {
+async function cropStillToGuide(stillBlob) {
   const bmp = await createImageBitmap(stillBlob);
   try {
     const sw = bmp.width, sh = bmp.height;
-    const scale = Math.min(1, CAPTURE_STILL_MAX_DIM / Math.max(sw, sh));
-    const cw = Math.max(1, Math.round(sw * scale));
-    const ch = Math.max(1, Math.round(sh * scale));
+    const gx = GUIDE.xF0 * sw, gy = GUIDE.yF0 * sh;
+    const gw = (GUIDE.xF1 - GUIDE.xF0) * sw, gh = (GUIDE.yF1 - GUIDE.yF0) * sh;
+    const scale = Math.min(1, CAPTURE_STILL_MAX_DIM / Math.max(gw, gh));
+    const cw = Math.max(1, Math.round(gw * scale));
+    const ch = Math.max(1, Math.round(gh * scale));
     const canvas = document.createElement("canvas");
     canvas.width = cw;
     canvas.height = ch;
-    canvas.getContext("2d").drawImage(bmp, 0, 0, cw, ch);
+    canvas.getContext("2d").drawImage(bmp, gx, gy, gw, gh, 0, 0, cw, ch);
     return await new Promise(res => canvas.toBlob(res, "image/jpeg", 0.95));
   } finally {
     bmp.close?.();
@@ -489,15 +489,11 @@ export default function App() {
 
   /**
    * Capture into the queue. Two paths, best first:
-   *  ① ImageCapture.takePhoto() — a full-sensor still (12 MP+). This is the
-   *     resolution fix: the video-frame path is capped at the stream size
-   *     (measured 1.2–6.3 MP on an S25, which OCR failed on).
-   *  ② full video frame — the universal fallback (Firefox/Safari/synthetic
+   *  ① ImageCapture.takePhoto() — a full-sensor still (12 MP+), cropped to the
+   *     guide region. This is the resolution fix: the video-frame crop is capped
+   *     at the stream size (measured 1.2–6.3 MP on an S25, which OCR failed on).
+   *  ② video-frame crop — the universal fallback (Firefox/Safari/synthetic
    *     devices) where ImageCapture is missing or takePhoto() rejects.
-   * NEITHER path crops to the guide (v2.0.39, measured): a tight guide crop cuts
-   * the receipt's edges and breaks the pipeline's isolation/perspective — the
-   * same receipt parses as a full frame but fails cropped tight. The guide is a
-   * framing aid; the pipeline does the receipt crop itself.
    * One honest wait: toBlob is the single async step; no artificial "autofocus
    * settle" timer — the lamp already reported steadiness and the user decides.
    */
@@ -513,7 +509,7 @@ export default function App() {
     if (strategy === "still" && track) {
       try {
         const shot = await new window.ImageCapture(track).takePhoto();
-        blob = await downscaleStill(shot);
+        blob = await cropStillToGuide(shot);
       } catch (err) {
         // takePhoto can reject on some stacks (synthetic device, mid-record) —
         // fall back to the video frame rather than fail the shot.
@@ -522,13 +518,12 @@ export default function App() {
       }
     }
     if (!blob) {
-      // Full video frame (NOT a guide crop — see the note above), size-bounded.
-      const vw = v.videoWidth, vh = v.videoHeight;
-      const scale = Math.min(1, CAPTURE_STILL_MAX_DIM / Math.max(vw, vh));
+      const r = mapGuideToSensor(GUIDE, v.videoWidth, v.videoHeight);
       const canvas = document.createElement("canvas");
-      canvas.width = Math.max(1, Math.round(vw * scale));
-      canvas.height = Math.max(1, Math.round(vh * scale));
-      canvas.getContext("2d").drawImage(v, 0, 0, vw, vh, 0, 0, canvas.width, canvas.height);
+      canvas.width = r.w;
+      canvas.height = r.h;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(v, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
       blob = await new Promise(res => canvas.toBlob(res, "image/jpeg", 0.95));
     }
     if (!blob) return; // empty frame — the lamp/queue shows the state anyway
