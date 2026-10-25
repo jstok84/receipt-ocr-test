@@ -10,6 +10,7 @@ import {
   GUIDE,
   METER_SAMPLE,
   LAMP_THRESHOLDS,
+  LADDER,
   cameraErrorText,
   mapGuideToSensor,
   lumaGrid,
@@ -135,6 +136,11 @@ export default function App() {
   const [syncSetup, setSyncSetup] = useState(() => location.hash === "#sync");
 
   const videoRef = useRef(null);
+  // Fullscreen overlay stage: the video element is JS-fit inside it (a CSS
+  // percentage max-* against an auto-sized wrapper resolves differently
+  // across engines — the guide overlay's fraction math must be EXACT in all
+  // of them, so the fit is computed, not hoped for).
+  const stageRef = useRef(null);
   // Camera metering state carried across rAF samples without re-rendering:
   // previous sample's luma grid (motion), consecutive-quiet counter, and the
   // timestamp of the last metered sample (150 ms cadence gate).
@@ -293,12 +299,36 @@ export default function App() {
     setTorchOn(false);
   };
 
+  /** One getUserMedia attempt; returns the stream + the track's ACTUAL width
+   *  (getSettings, available immediately — no waiting on video metadata). */
+  const openStreamWith = async constraints => {
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    const s = stream.getVideoTracks?.()[0]?.getSettings?.() || {};
+    return { stream, w: s.width || 0 };
+  };
+
   const openCamera = async () => {
     if (cameraState === "live" || cameraState === "opening") return;
     stopCamera(); // clear any prior error/lamp state
     setCameraState("opening");
     try {
-      const stream = await navigator.mediaDevices.getUserMedia(CAMERA_VIDEO_CONSTRAINTS);
+      // Resolution ladder (v2.0.36, after the blurry-capture report): ask
+      // high first; if the granted track still came back under 1920 wide,
+      // re-open ONCE at the classic 1080p ask — some Android HALs resolve a
+      // 4K ask into a low preview mode but honor the plain 1920 one. Two
+      // attempts, bounded, no infinite retry.
+      let { stream, w } = await openStreamWith(CAMERA_VIDEO_CONSTRAINTS);
+      if (w && w < LADDER.minWidth) {
+        stream.getTracks().forEach(t => t.stop());
+        ({ stream } = await openStreamWith({
+          audio: false,
+          video: {
+            facingMode: { ideal: "environment" },
+            width: LADDER.fallbackWidth,
+            focusMode: { ideal: "continuous" },
+          },
+        }));
+      }
       cameraStreamRef.current = stream;
       setCameraState("live");
     } catch (err) {
@@ -312,8 +342,9 @@ export default function App() {
 
   // Attach the live stream and record the ACTUALLY granted frame size (the
   // browser may deliver less than requested — shown in the panel, never
-  // guessed). The element's aspect ratio is pinned to the delivered frame so
-  // the guide fractions map exactly (no letterbox ambiguity).
+  // guessed). Also: re-apply continuous focus via applyConstraints now that
+  // the stream is OPEN — some Android stacks only honor focusMode post-open
+  // — and surface focusMode/frameRate from the track's real settings.
   useEffect(() => {
     if (cameraState !== "live") return;
     const v = videoRef.current;
@@ -321,17 +352,44 @@ export default function App() {
     v.srcObject = cameraStreamRef.current;
     v.play?.().catch(() => {});
     setCameraInfo(null);
+
+    const track = cameraStreamRef.current.getVideoTracks?.()[0];
+    // Post-open continuous-focus ask: capability-gated (throws/no-ops where
+    // unsupported); `advanced` constraints never kill the stream.
+    track?.applyConstraints?.({ advanced: [{ focusMode: "continuous" }] })
+      .catch(() => {});
+
+    const fit = () => {
+      const stage = stageRef.current;
+      if (!stage || !v.videoWidth) return;
+      const aw = stage.clientWidth - 24, ah = stage.clientHeight - 24;
+      if (aw <= 0 || ah <= 0) return;
+      const s = Math.min(aw / v.videoWidth, ah / v.videoHeight);
+      v.style.width = Math.round(v.videoWidth * s) + "px";
+      v.style.height = Math.round(v.videoHeight * s) + "px";
+    };
     const onMeta = () => {
       if (!v.videoWidth) return;
-      v.style.aspectRatio = `${v.videoWidth} / ${v.videoHeight}`;
+      fit();
       // px/mm is estimated over the GUIDE-REGION width — that is what the
       // OCR will actually see (marked ≈ in the UI: assumes an 80 mm receipt).
       const guideW = Math.round((GUIDE.xF1 - GUIDE.xF0) * v.videoWidth);
-      setCameraInfo({ w: v.videoWidth, h: v.videoHeight, dpi: estimateDpi(guideW) });
+      const s = track?.getSettings?.() || {};
+      setCameraInfo({
+        w: v.videoWidth,
+        h: v.videoHeight,
+        dpi: estimateDpi(guideW),
+        focusMode: s.focusMode || null,
+        frameRate: s.frameRate ? Math.round(s.frameRate) : null,
+      });
     };
+    addEventListener("resize", fit);
     v.addEventListener("loadedmetadata", onMeta);
     if (v.videoWidth) onMeta();
-    return () => v.removeEventListener("loadedmetadata", onMeta);
+    return () => {
+      removeEventListener("resize", fit);
+      v.removeEventListener("loadedmetadata", onMeta);
+    };
   }, [cameraState]);
 
   // The quality lamp: sample the GUIDE region downscaled (METER_SAMPLE) every
@@ -375,6 +433,19 @@ export default function App() {
     };
   }, [cameraState]);
 
+  // Fullscreen overlay behavior: Escape closes; body scroll is locked while
+  // the capture interface owns the viewport (restored on close/unmount).
+  useEffect(() => {
+    if (cameraState === "off") return;
+    const onKey = e => { if (e.key === "Escape") stopCamera(); };
+    addEventListener("keydown", onKey);
+    document.body.style.overflow = "hidden";
+    return () => {
+      removeEventListener("keydown", onKey);
+      document.body.style.overflow = "";
+    };
+  }, [cameraState]);
+
   // Tracks MUST die when the app unmounts (the panel-closing path calls
   // stopCamera; this covers route/teardown cases).
   useEffect(() => () => {
@@ -398,6 +469,10 @@ export default function App() {
     ctx.drawImage(v, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
     const blob = await new Promise(res => canvas.toBlob(res, "image/jpeg", 0.95));
     if (!blob) return; // empty frame — the lamp/queue shows the state anyway
+    // Straight-to-queue (A+): the moment the shot is taken the fullscreen
+    // capture interface yields the viewport back — retake = hit Use camera
+    // again; the queue row + evidence trail shows the result.
+    stopCamera();
     const name = `camera-${new Date().toISOString().replace(/[:.]/g, "-")}.jpg`;
     await handleFiles(new File([blob], name, { type: "image/jpeg" }), newJob(name));
   };
@@ -578,35 +653,33 @@ export default function App() {
         </button>
       </section>
 
-      {cameraState !== "off" && <section className="camera panel" aria-label="Guided camera capture">
-        <div className="panel-head">
-          <h2>Camera</h2>
-          <button className="btn ghost mini" onClick={stopCamera}>Stop camera</button>
-        </div>
-        {cameraState === "opening" && <p className="camera-note">Opening the camera …</p>}
-        {cameraState === "error" && <p className="camera-error" role="alert">{cameraErr}</p>}
-        <div className="viewfinder">
-          <video ref={videoRef} autoPlay playsInline muted />
+      {/* Fullscreen capture interface: NOTHING but the capture. Fixed dialog
+          over the whole app (the page stays beneath, untouched), stage video,
+          guide border + advisory lamp, bottom action bar. Escape closes. */}
+      {cameraState !== "off" && <div className="cam-overlay" role="dialog" aria-modal="true" aria-label="Guided camera capture">
+        <div className="cam-stage" ref={stageRef}>
+          {cameraState === "opening" && <p className="cam-msg">Opening the camera …</p>}
+          {cameraState === "error" && <p className="cam-msg error" role="alert">{cameraErr}</p>}
           {cameraState === "live" && (
-            <div
-              className={`guide lamp-${cameraLamp?.level || "init"}`}
-              style={{
-                left: GUIDE.xF0 * 100 + "%",
-                right: (1 - GUIDE.xF1) * 100 + "%",
-                top: GUIDE.yF0 * 100 + "%",
-                bottom: (1 - GUIDE.yF1) * 100 + "%",
-              }}
-              aria-hidden="true"
-            />
+            <div className="cam-view">
+              <video ref={videoRef} autoPlay playsInline muted />
+              <div
+                className={`guide lamp-${cameraLamp?.level || "init"}`}
+                style={{
+                  left: GUIDE.xF0 * 100 + "%",
+                  right: (1 - GUIDE.xF1) * 100 + "%",
+                  top: GUIDE.yF0 * 100 + "%",
+                  bottom: (1 - GUIDE.yF1) * 100 + "%",
+                }}
+                aria-hidden="true"
+              />
+            </div>
           )}
-          {cameraLamp && <p className={`lamp-msg ${cameraLamp.level}`}>{cameraLamp.msg}</p>}
         </div>
-        {cameraInfo && <p className="camera-note">
-          capture ≈{cameraInfo.dpi.pxPerMm} px/mm (≈{cameraInfo.dpi.dpi} dpi, assuming an
-          80&nbsp;mm-wide receipt) · stream {cameraInfo.w}×{cameraInfo.h} px
-          {cameraInfo.dpi.dpi < 300 ? " — below the ~300 dpi OCR sweet spot; the rescues will still try" : ""}
-        </p>}
-        <div className="camera-actions">
+        {cameraState === "live" && cameraLamp && (
+          <p className={`lamp-msg ${cameraLamp.level}`}>{cameraLamp.msg}</p>
+        )}
+        <div className="cam-bar">
           {(() => {
             const track = cameraState === "live" ? cameraStreamRef.current?.getVideoTracks?.()[0] : null;
             return hasTorch(track?.getCapabilities?.()) && (
@@ -615,15 +688,21 @@ export default function App() {
               </button>
             );
           })()}
-          <button className="btn primary" onClick={captureToQueue} disabled={cameraState !== "live"} type="button">
+          <button className="btn primary capture" onClick={captureToQueue} disabled={cameraState !== "live"} type="button">
             Capture &amp; scan
           </button>
+          <button className="btn ghost" onClick={stopCamera} type="button">
+            Close
+          </button>
         </div>
-        <p className="camera-note">
-          The shot is cropped to the border and enters the same queue and evidence trail as
-          Choose file — the stream itself never leaves this page.
-        </p>
-      </section>}
+        {cameraInfo && <p className="cam-info">
+          capture ≈{cameraInfo.dpi.pxPerMm} px/mm (≈{cameraInfo.dpi.dpi} dpi, assuming an
+          80&nbsp;mm-wide receipt) · stream {cameraInfo.w}×{cameraInfo.h} px
+          {cameraInfo.frameRate ? ` · ${cameraInfo.frameRate} fps` : ""}
+          {cameraInfo.focusMode ? ` · focus ${cameraInfo.focusMode}` : ""}
+          {cameraInfo.dpi.dpi < 300 ? " — below the ~300 dpi OCR sweet spot; the rescues will still try" : ""}
+        </p>}
+      </div>}
 
       {loading && <div className="loading-row" role="status">
         <span className="dot" />

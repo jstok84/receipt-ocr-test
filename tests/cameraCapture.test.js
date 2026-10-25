@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import {
   CAMERA_VIDEO_CONSTRAINTS,
   GUIDE,
+  LADDER,
   mapGuideToSensor,
   lumaGrid,
   motionScore,
@@ -20,12 +21,19 @@ import {
   LAMP_THRESHOLDS,
 } from "../src/cameraCapture.js";
 
-test("constraints: degradation-safe shape — everything ideal, user-facing camera", () => {
+test("constraints: degradation-safe shape — everything ideal, user-facing camera, high-res ask", () => {
   const v = CAMERA_VIDEO_CONSTRAINTS.video;
   assert.deepEqual(CAMERA_VIDEO_CONSTRAINTS.audio, false);
   assert.deepEqual(v.facingMode, { ideal: "environment" });
-  assert.equal(v.width.ideal, 1920);
+  // v2.0.36 blur fix: ask high (4K) first; the app ladders down to the 1920
+  // ask when the granted track is under 1920. ideal-only — a naked width is
+  // Chromium-interpreted as an EXACT 1920x1080/1080x1920 sequence.
+  assert.equal(v.width.ideal, 3840);
+  assert.equal(v.height.ideal, 2160);
   assert.deepEqual(v.focusMode, { ideal: "continuous" });
+  // ladder contract: fallback is the classic 1080p ask, threshold 1920
+  assert.equal(LADDER.minWidth, 1920);
+  assert.deepEqual(LADDER.fallbackWidth, { ideal: 1920 });
 });
 
 test("guide fractions cover the frame center, never the edges", () => {

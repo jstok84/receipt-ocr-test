@@ -199,29 +199,60 @@ label:focus-visible {
   margin-left: 8px;
 }
 
-/* ----- camera (guided capture) --------------------------------------------
-   The viewfinder must never cover-crop the frame (old styles had object-fit:
-   cover + max-height): the guide overlay positions itself by FRACTIONS of the
-   element and the capture crops exactly those fractions of the sensor frame —
-   cover cropping would make the border lie about what the photo contains.
-   Lamp colors are literals because they sit on the live video (dark
-   backdrop); the light-theme tokens (--ok/--warn) are too dark to read there. */
+/* ----- camera (fullscreen capture interface) ------------------------------
+   v2.0.36: the capture UI is a FULL-SCREEN fixed dialog — nothing but the
+   capture on screen (user requirement; the app stays intact underneath).
+   The video is JS-fit into the stage (app.js): a CSS percentage max-* against
+   an auto-sized wrapper resolves differently across engines, and the guide
+   overlay's fraction math must be EXACT everywhere (no object-fit: cover —
+   that would let the border lie about what the shot contains; no engine
+   ambiguous contain). Lamp colors are literals because they sit on the live
+   video (dark backdrop); the light-theme tokens are too dark to read there. */
 
-.camera .viewfinder {
+.cam-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: #0b0b0b;
+  display: flex;
+  flex-direction: column;
+}
+
+.cam-stage {
+  flex: 1;
+  min-height: 0;
   position: relative;
-  margin: 12px 16px 0;
-  overflow: hidden;
-  border-radius: var(--radius-m);
-  background: #111;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
 }
 
-.camera .viewfinder video {
+.cam-view {
+  position: relative; /* the guide's positioning origin == the video box */
+  font-size: 0; /* no inline whitespace gap around the video */
+}
+
+.cam-view video {
   display: block;
-  width: 100%;
-  height: auto; /* keeps the delivered frame's aspect ratio exactly */
+  background: #111;
+  border-radius: var(--radius-m);
+  /* width/height are computed in app.js from the delivered frame + stage size */
 }
 
-.camera .guide {
+.cam-msg {
+  margin: 0;
+  font-size: 13px;
+  color: #cfcfcf;
+}
+
+.cam-msg.error {
+  color: #ff9d92;
+  max-width: 480px;
+  text-align: center;
+}
+
+.cam-view .guide {
   position: absolute;
   border: 2px solid rgba(255, 255, 255, 0.65);
   border-radius: 4px;
@@ -230,42 +261,58 @@ label:focus-visible {
   transition: border-color 0.25s ease;
 }
 
-.camera .guide.lamp-ok { border-color: #7ee1a8; }
-.camera .guide.lamp-warn { border-color: #ffd479; }
-.camera .guide.lamp-bad { border-color: #ff9d92; }
+.cam-view .guide.lamp-ok { border-color: #7ee1a8; }
+.cam-view .guide.lamp-warn { border-color: #ffd479; }
+.cam-view .guide.lamp-bad { border-color: #ff9d92; }
 
-.camera .lamp-msg {
+.cam-overlay .lamp-msg {
   position: absolute;
   left: 0;
   right: 0;
-  bottom: 8px;
+  /* sits just above the action bar, below the stage */
+  bottom: 118px;
   margin: 0;
   text-align: center;
-  font-size: 12.5px;
+  font-size: 13px;
   color: #fff;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
   pointer-events: none;
+  z-index: 2;
 }
 
-.camera .lamp-msg.ok { color: #7ee1a8; }
-.camera .lamp-msg.warn { color: #ffd479; }
+.cam-overlay .lamp-msg.ok { color: #7ee1a8; }
+.cam-overlay .lamp-msg.warn { color: #ffd479; }
 
-.camera .camera-note {
-  margin: 8px 16px 0;
-  font-size: 12.5px;
-  color: var(--ink-3);
-}
-
-.camera .camera-error {
-  margin: 8px 16px;
-  font-size: 12.5px;
-  color: var(--danger, #a33);
-}
-
-.camera .camera-actions {
+.cam-bar {
   display: flex;
-  gap: 8px;
-  margin: 10px 16px 12px;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 14px 16px calc(14px + env(safe-area-inset-bottom, 0px));
+  background: #0b0b0b;
+}
+
+/* The primary capture button reads as the big shutter action on the dark bar */
+.cam-bar .btn {
+  font-size: 14px;
+}
+
+.cam-bar .btn.capture {
+  min-width: 168px;
+  padding: 11px 20px;
+}
+
+.cam-info {
+  margin: 0;
+  padding: 0 16px calc(10px + env(safe-area-inset-bottom, 0px));
+  text-align: center;
+  font-size: 11.5px;
+  color: #8f8d85;
+  background: #0b0b0b;
+}
+
+.cam-overlay .cam-msg {
+  padding: 0 24px;
 }
 
 /* ----- panels ------------------------------------------------------------ */

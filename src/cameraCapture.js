@@ -29,21 +29,36 @@ import { LUMA } from "./ocrConfig.js";
 /**
  * Constraints for the guided capture. Deliberately `ideal` everywhere — an
  * unsupported value must never fail getUserMedia (OverconstrainedError), it
- * must degrade to the device's nearest mode. Ask for the width around 1920:
- * the classic trap is a bare `video: true` which hands you 640×480 on many
- * devices (read back video.videoWidth after loadedmetadata and show the
- * ACTUAL numbers in the panel — never silently under-report).
+ * must degrade to the device's nearest mode. The classic trap is a bare
+ * `video: true` which hands you 640×480 on many devices; a bare `width` naked
+ * value is Chromium-interpreted as a 1920×1080/1080×1920 EXACT sequence —
+ * never use naked values, `{ideal}` only.
+ *
+ * v2.0.36 (blur report): ask HIGH first (a 4K-capable phone sensor should not
+ * be stuck reading 1080p off a moving paper strip — more sensor pixels mean
+ * less per-pixel motion blur for the same hand speed), and the app re-opens
+ * once at the plain-1920 ask if the delivered track is still under 1920
+ * (LADDER in app.js). The ACTUAL granted size is read back and displayed —
+ * never silently under-report.
+ *
  * focusMode continuous is Chrome-Android-only; `ideal` keeps it a no-op
- * elsewhere.
+ * elsewhere. The app ALSO re-applies it via applyConstraints after the stream
+ * is live: some Android stacks honor the setting only post-open.
  */
 export const CAMERA_VIDEO_CONSTRAINTS = {
   audio: false,
   video: {
     facingMode: { ideal: "environment" },
-    width: { ideal: 1920 },
+    width: { ideal: 3840 },
+    height: { ideal: 2160 },
     focusMode: { ideal: "continuous" },
   },
 };
+
+/** Width below which the ladder opens a second stream asking explicitly for
+ * 1920 (some Android camera HALs resolve a 4K ask to a low preview mode but
+ * honor the classic 1080p ask). */
+export const LADDER = { minWidth: 1920, fallbackWidth: { ideal: 1920 } };
 
 /**
  * The guide rectangle as FRACTIONS of the live video's delivered frame.
