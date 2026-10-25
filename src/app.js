@@ -4,7 +4,7 @@ import { parseReceipt, payableRescue } from "./parseReceipt";
 import { scanVerdict } from "./scanVerdict";
 import { detectFileKind, toProcessableSource } from "./imageInput";
 import { loadSyncCfg, saveSyncCfg, clearSyncCfg, uploadScan, presignS3 } from "./sync";
-import { APP_VERSION } from "./version";
+import { APP_VERSION } from "./version.js";
 
 // Version marker (user request 2026-10-24): the header shows the exact app
 // version so scan disputes can never again be about "which bundle is

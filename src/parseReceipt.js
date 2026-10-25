@@ -1,3 +1,5 @@
+import { PARSER_VERSION } from "./version.js";
+
 /**
  * Fuzzy item-name scoring for strip-measured price corrections (v1.7.6).
  * Comparison is letters-only lowercase: OCR garbles digits inside names and
@@ -181,7 +183,6 @@ export function namesSimilar(candidate, itemName) {
     return bare !== line && nonItemPatterns.some((pat) => pat.test(bare));
   };
 export function parseReceipt(text, extraItems = [], corrections = []) {
-  const PARSER_VERSION = "v1.6.9";
   // Set window.__OCR_DEBUG = true to restore verbose parser diagnostics.
   // v2.0.2: when debugging is on, every log line is ALSO appended to
   // window.__OCR_LOG (buffer reset here — the app-level parse is the last
