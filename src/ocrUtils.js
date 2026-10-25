@@ -73,11 +73,38 @@ function upscaleDataURL(dataURL, factor = TESSERACT_UPSCALE.factor) {
   });
 }
 
+/**
+ * Wait (bounded) for the async CDN-loaded OpenCV.js to initialize. The app
+ * feeds the queue straight from mounted DOM (file input / drag-drop / camera
+ * capture) — on a cold cache + slow network it is POSSIBLE to submit a scan
+ * before the async <script> has landed (live Edge: scan #1 threw "OpenCV.js
+ * (cv) is not loaded or initialized" minutes after load). Fail-fast made the
+ * failure LOUD, never silent — but the race is ours to close: the scan path
+ * now waits, bounded, before treating CV as absent.
+ */
+export const CV_READY = { timeoutMs: 20000, pollMs: 100 };
+
+function waitForCv() {
+  return new Promise((resolve) => {
+    if (typeof cv !== "undefined" && cv.imread) return resolve(true);
+    const t0 = Date.now();
+    const iv = setInterval(() => {
+      if (typeof cv !== "undefined" && cv.imread) {
+        clearInterval(iv);
+        resolve(true);
+      } else if (Date.now() - t0 > CV_READY.timeoutMs) {
+        clearInterval(iv);
+        resolve(false);
+      }
+    }, CV_READY.pollMs);
+  });
+}
+
 function preprocessWithOpenCV(imageSrc, options = {}) {
-  return new Promise((resolve, reject) => {
-    if (typeof cv === "undefined" || !cv.imread) {
-      reject(new Error("OpenCV.js (cv) is not loaded or initialized."));
-      return;
+  return (async () => {
+    const ready = await waitForCv();
+    if (!ready) {
+      throw new Error("OpenCV.js (cv) did not become ready within " + CV_READY.timeoutMs + " ms — is the CDN reachable? The scan cannot preprocess without it.");
     }
     // Stage switches + their measured provenance: PIPELINE_DEFAULTS in
     // ocrConfig.js (evidence runs override any of these via window.__OCR_OPTS).
@@ -102,7 +129,7 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
     // The old path used new Image() + canvas.drawImage + cv.imread(canvas);
     // that canvas readback is what Brave's fingerprinting protection perturbs.
     const img = {};
-    (async () => {
+    return (async () => {
       const decoded = options.decoded || (await decodeToRGBA(imageSrc));
       img.width = decoded.width;
       img.height = decoded.height;
@@ -713,16 +740,16 @@ function preprocessWithOpenCV(imageSrc, options = {}) {
         const outWidth = gray.cols, outHeight = gray.rows;
         gray.delete();
         src.delete();
-        resolve({ tesseractURL, dataURL, width: outWidth, height: outHeight });
+        return { tesseractURL, dataURL, width: outWidth, height: outHeight };
       } catch (err) {
         console.error("❌ Error during preprocessing:", err.name || "Error", err.message || "", err.stack?.slice(0, 300) || "");
         if (src) src.delete();
         if (kernel) kernel.delete();
         if (gray) gray.delete();
-        reject(err);
+        throw err;
       }
     })();
-  });
+  })();
 }
 
 
