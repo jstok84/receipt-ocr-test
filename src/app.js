@@ -502,19 +502,25 @@ export default function App() {
       stableRef.current = stable;
       prevGridRef.current = grid;
       setCameraLamp(frameLamp({ mean, glareFrac, motion, stable }));
-      // Sharpness meter (~300 ms, larger sample). RELATIVE badge — "sharp" when the
-      // current frame is near the recent best (absolute lapVar is content-dependent).
+      // Sharpness meter (~300 ms). Sample the RECEIPT (centre 60% of the guide),
+      // NOT the whole frame — otherwise a sharp keyboard behind the receipt
+      // reports "sharp". Tenengrad metric + absolute floor + relative-to-best.
       if (ts - sharpAtRef.current > 300) {
         sharpAtRef.current = ts;
-        const sw = Math.min(SHARPNESS.sampleW, r.w);
-        const sh = Math.max(1, Math.round(r.h * (sw / r.w)));
+        const cw = Math.max(2, Math.round(r.w * 0.6));
+        const ch = Math.max(2, Math.round(r.h * 0.6));
+        const cx = r.x + Math.round((r.w - cw) / 2);
+        const cy = r.y + Math.round((r.h - ch) / 2);
+        const sw = Math.min(SHARPNESS.sampleW, cw);
+        const sh = Math.max(1, Math.round(ch * (sw / cw)));
         sharpCanvas.width = sw;
         sharpCanvas.height = sh;
-        sharpCtx.drawImage(v, r.x, r.y, r.w, r.h, 0, 0, sw, sh);
+        sharpCtx.drawImage(v, cx, cy, cw, ch, 0, 0, sw, sh);
         const score = sharpnessScore(sharpCtx.getImageData(0, 0, sw, sh).data, sw, sh);
         const best = Math.max(score, sharpMaxRef.current * 0.98);
         sharpMaxRef.current = best;
-        setCameraSharp({ score: Math.round(score), sharp: score >= best * SHARPNESS.relativeSharp });
+        const sharp = score >= SHARPNESS.floor && score >= best * SHARPNESS.relativeSharp;
+        setCameraSharp({ score: Math.round(score), sharp });
       }
     };
     raf = requestAnimationFrame(tick);
@@ -866,7 +872,7 @@ export default function App() {
         )}
         {cameraState === "live" && cameraSharp && (
           <p className={`sharp-msg ${cameraSharp.sharp ? "ok" : "warn"}`}>
-            {cameraSharp.sharp ? "Focus: sharp ✓" : "Focus: hold steady / move closer"}
+            {cameraSharp.sharp ? "Receipt: sharp ✓" : "Receipt soft — plain surface, hold still"}
           </p>
         )}
         {cameraInfo && <p className="cam-info">

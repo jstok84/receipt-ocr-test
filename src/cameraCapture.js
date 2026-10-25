@@ -132,13 +132,12 @@ export function motionScore(prevGrid, grid) {
 }
 
 /**
- * Sharpness score — variance of the 4-neighbour Laplacian over an RGBA buffer
- * (Pech-Pacheco et al. focus measure; higher = sharper). This is the standard
- * blur metric scan/KYC apps use to gate captures. IMPORTANT: it is content-
- * dependent (busy/textured scenes score higher than plain ones, and sensor
- * noise inflates it), so use it to COMPARE frames of the SAME scene — the live
- * focus meter and the multi-frame "pick the sharpest" step — never to compare
- * two different photos.
+ * Sharpness score — Tenengrad (mean squared gradient magnitude, central diff).
+ * Higher = crisper. MEASURED 2026-10-25 on real captures: a crisp receipt scored
+ * ~260, a soft one ~90 — while Laplacian variance ranked them BACKWARDS (soft
+ * 125 > crisp 93) because sensor noise inflates lapVar. So Tenengrad is the
+ * metric to use. Still COMPARE frames of the same scene / same receipt region;
+ * an absolute floor is a heuristic, not a guarantee.
  */
 export function sharpnessScore(data, w, h) {
   if (!data || w < 3 || h < 3) return 0;
@@ -147,17 +146,17 @@ export function sharpnessScore(data, w, h) {
     const o = i * 4;
     gray[i] = LUMA.r * data[o] + LUMA.g * data[o + 1] + LUMA.b * data[o + 2];
   }
-  let sum = 0, sumSq = 0, n = 0;
+  let sum = 0, n = 0;
   for (let y = 1; y < h - 1; y++) {
     for (let x = 1; x < w - 1; x++) {
       const i = y * w + x;
-      const L = 4 * gray[i] - gray[i - w] - gray[i + w] - gray[i - 1] - gray[i + 1];
-      sum += L; sumSq += L * L; n++;
+      const gx = gray[i + 1] - gray[i - 1];
+      const gy = gray[i + w] - gray[i - w];
+      sum += gx * gx + gy * gy;
+      n++;
     }
   }
-  if (!n) return 0;
-  const mean = sum / n;
-  return sumSq / n - mean * mean;
+  return n ? sum / n : 0;
 }
 
 /** Index of the highest score; ties keep the first. -1 on empty/invalid. Pure. */
@@ -182,6 +181,9 @@ export const SHARPNESS = {
   sampleW: 320,
   /** a frame counts as "sharp" when within this fraction of the recent best */
   relativeSharp: 0.8,
+  /** absolute Tenengrad floor for a crisp receipt CENTRE (calibrated 2026-10-25:
+   *  crisp receipt ≈ 1200, soft ≈ 350 at 320 px). A heuristic, not a guarantee. */
+  floor: 500,
   /** number of stills the multi-frame capture takes (the sharpest wins) */
   frames: 3,
   /** gap between stills, ms — lets the autofocus hunt between them */

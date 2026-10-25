@@ -175,11 +175,14 @@ test("tapFocusConstraint: single-shot at the tapped point, advanced (never throw
   assert.deepEqual(c.advanced[0].pointsOfInterest, [{ x: 0.25, y: 0.75 }]);
 });
 
-test("sharpnessScore: a sharp checkerboard scores higher than its blurred version", () => {
+test("sharpnessScore: sharp stripes score higher than their blurred version", () => {
   const w = 16, h = 16;
   const sharp = new Uint8Array(w * h * 4);
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-    const v = (x + y) % 2 ? 255 : 0;
+    // 4-px vertical stripes — a realistic stroke width. (A 1-px checkerboard is a
+    // degenerate case for a central-difference gradient: its ±2 neighbours match,
+    // so the gradient is zero even though the pattern is maximally "sharp".)
+    const v = Math.floor(x / 4) % 2 ? 255 : 0;
     const o = (y * w + x) * 4;
     sharp[o] = sharp[o + 1] = sharp[o + 2] = v; sharp[o + 3] = 255;
   }
