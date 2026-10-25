@@ -101,3 +101,65 @@ test("namesScore: brand-prefix pairs rejected, eurospin garble twins accepted", 
   assert.ok(namesSimilar("LANI PRT. TARALLI M", "| ANI PRTA.TARALLT M"), "garble-twin rows");
   assert.ok(!namesSimilar("JOGURT WOLY V ANANASU", "PFKSI FROLLINI 1KG"));
 });
+
+// ---- v2.0.30 discount reconciliation by ARITHMETIC (live SPAR-coupon case:
+// ---- the browser-grade fixture above has itemSum 57.35, total 51.61, and
+// ---- FOUR discount-labelled amounts — 10.00 (percent), 5.74 (the coupon),
+// ---- 8.25 and 33.23 (loyalty popusts). v2.0.16 required exactly one
+// ---- candidate, so this receipt stayed red by design; v2.0.30 accepts when
+// ---- exactly one candidate closes the gap to the cent.)
+
+test("v2.0.30: real SPAR coupon run reconciles via the closing candidate", () => {
+  const r = parseReceipt(raw);
+  const recon = r.checks.filter((c) => /discount line reconciles/.test(c.text));
+  assert.equal(recon.length, 1, `expected exactly one reconciliation check: ${JSON.stringify(r.checks)}`);
+  assert.ok(recon[0].ok, "reconciliation must be green");
+  assert.match(recon[0].text, /items 57\.35 − POPUST 5\.74 = total 51\.61 ✓/);
+  // the red sum-mismatch must be REPLACED, not accompanied
+  assert.equal(r.checks.filter((c) => !c.ok && /items sum/.test(c.text)).length, 0,
+    `sum mismatch must be gone: ${JSON.stringify(r.checks)}`);
+});
+
+const twoItems = "KAVA 2,26 A\nZAJTRK 7,74 B\n"; // itemSum 10.00
+
+test("v2.0.30: multi-candidate line reconciles when exactly one amount closes", () => {
+  const text =
+    twoItems +
+    "SKUPAJ 10.00\n" +
+    "KUPON POPUST 10.00% od 10.00 -2.00\n" + // 2.00 closes? 10-2=8 ≠ 4.26 → no
+    "POPUST 5,74\n" +                       // 10-5.74=4.26 → closes
+    "POPUST PRI TEM NAKUPU: 3.00\n" +       // 10-3=7 → no
+    "ZA PLAČILO 4,26\n";
+  const r = parseReceipt(text);
+  const recon = r.checks.filter((c) => /discount line reconciles/.test(c.text));
+  assert.equal(recon.length, 1, `checks: ${JSON.stringify(r.checks)}`);
+  assert.match(recon[0].text, /items 10\.00 − POPUST 5\.74 = total 4\.26 ✓/);
+});
+
+test("v2.0.30: two closing candidates stay ambiguous → red (2×SUM_TOL protection)", () => {
+  // 5.74 → 4.26 (0.01 off the total) and 5.75 → 4.25 (exact): both close
+  // within SUM_TOL, so the arithmetic cannot pick one — the v2.0.16
+  // protection survives the generalization.
+  const text =
+    twoItems +
+    "POPUST 5,74\n" +
+    "POPUST 5,75\n" +
+    "ZA PLAČILO 4,25\n";
+  const r = parseReceipt(text);
+  assert.equal(r.checks.filter((c) => /discount line reconciles/.test(c.text)).length, 0,
+    `ambiguity leaked: ${JSON.stringify(r.checks)}`);
+  assert.ok(r.checks.some((c) => !c.ok && /items sum 10\.00 ≠ total 4\.25/.test(c.text)),
+    `sum mismatch must survive: ${JSON.stringify(r.checks)}`);
+});
+
+test("v2.0.30: no closing candidate → red, untouched", () => {
+  const text =
+    twoItems +
+    "KUPON POPUST 10.00% od 10.00 -5.74\n" + // 10-5.74=4.26 ≠ 4.00
+    "ZA PLAČILO 4,00\n";
+  const r = parseReceipt(text);
+  assert.equal(r.checks.filter((c) => /discount line reconciles/.test(c.text)).length, 0,
+    `reconciliation leaked: ${JSON.stringify(r.checks)}`);
+  assert.ok(r.checks.some((c) => !c.ok && /items sum 10\.00 ≠ total 4\.00/.test(c.text)),
+    `sum mismatch must survive: ${JSON.stringify(r.checks)}`);
+});

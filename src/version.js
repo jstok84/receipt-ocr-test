@@ -8,7 +8,7 @@
  * is the same number). The header chip is what the user compares against
  * when a scan misbehaves — "deployed bundle is stale" disputes end here.
  */
-export const APP_VERSION = "v2.0.29";
+export const APP_VERSION = "v2.0.30";
 
 /**
  * Parser version — moved here from inside parseReceipt() on 2026-10-25 so all
@@ -19,4 +19,4 @@ export const APP_VERSION = "v2.0.29";
  * changes (new patterns, new guards, new arithmetic), not on every release.
  * The two numbers move independently on purpose.
  */
-export const PARSER_VERSION = "v1.6.9";
+export const PARSER_VERSION = "v1.7.0";

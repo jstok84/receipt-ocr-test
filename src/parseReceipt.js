@@ -799,23 +799,29 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
       // v2.0.16 discount reconciliation (INTERSPORT-phone real case, live
       // evidence: items 79.99, POPUST 24.00, ZA PLAČILO 55.99 all read clean,
       // yet the sum check flagged [?] because it never subtracted the
-      // discount): when the text carries exactly ONE distinct discount amount
-      // P and items − P closes on the total, the gap is EXPLAINED by a
-      // printed line — green check names every measured number. No value is
-      // invented (total and items stay as read); this is arithmetic BETWEEN
-      // measured numbers, same class as the plain items-sum check. SPAR's
-      // 3-number coupon line (10.00% / 57.35 / 5.74) stays ambiguous → red,
-      // by design. Old INTERSPORT fixture (payable misread 59.99) does not
-      // close (55.99 ≠ 59.99) → stays red.
+      // discount): when a printed discount line's amount P makes items − P
+      // close on the total, the gap is EXPLAINED by a printed line — green
+      // check names every measured number. No value is invented (total and
+      // items stay as read); this is arithmetic BETWEEN measured numbers,
+      // same class as the plain items-sum check. Old INTERSPORT fixture
+      // (payable misread 59.99) does not close (55.99 ≠ 59.99) → stays red.
+      // v2.0.30: candidate ambiguity is resolved ARITHMETICALLY, not by
+      // count. SPAR's live capture prints the percent, the pre-discount
+      // base AND the discount in one line ("KUPON POPUST 10.00% od 57.35
+      // -5.74") plus loyalty popusts elsewhere ("POPUST PRI TEM NAKUPU:
+      // 8.25", "SPAR POPUST V SKUPNI VREDROSTI: 33.23") — four candidates,
+      // yet exactly ONE closes the gap to the cent: 57.35 − 5.74 = 51.61
+      // (57.35 − 10.00 = 47.35, − 8.25 = 49.10, − 33.23 = 24.12 all miss).
+      // Accept when exactly one candidate closes within SUM_TOL. Two
+      // candidates within 2×SUM_TOL of each other would both close → count
+      // 2 → still ambiguous → red, so the old protection survives.
       const pRe16 = discountAmounts(text, itemSum);
-      const reconciled =
-        delta > SUM_TOL &&
-        pRe16.length === 1 &&
-        Math.abs(itemSum - pRe16[0] - total) <= SUM_TOL;
+      const closingPopusts = pRe16.filter((p) => Math.abs(itemSum - p - total) <= SUM_TOL);
+      const reconciled = delta > SUM_TOL && closingPopusts.length === 1;
       if (reconciled) {
         checks.push({
           ok: true,
-          text: `items ${itemSum.toFixed(2)} − POPUST ${pRe16[0].toFixed(2)} = total ${total.toFixed(2)} ✓ (discount line reconciles the sum)`,
+          text: `items ${itemSum.toFixed(2)} − POPUST ${closingPopusts[0].toFixed(2)} = total ${total.toFixed(2)} ✓ (discount line reconciles the sum)`,
         });
       } else {
         checks.push(
@@ -919,9 +925,12 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
  * v2.0.16 shared discount-amount extraction: the DISTINCT amounts carried by
  * explicit discount-labelled lines (popust / kupon / doplačilo), capped below
  * the items sum. Used by the sum-check discount reconciliation and by
- * payableRescue; in both, ambiguity aborts (SPAR's
- * "KUPON POPUST 10.00% od 57.35 -5.74" carries three numbers and can never
- * reduce to one P).
+ * payableRescue. Callers decide what ambiguity means: the sum check (v2.0.30)
+ * accepts when exactly one candidate closes the gap arithmetically — SPAR's
+ * "KUPON POPUST 10.00% od 57.35 -5.74" carries three numbers in one line, but
+ * only 5.74 makes items − P hit the total. payableRescue still requires
+ * exactly one amount (it derives a target for a re-OCR measurement, where a
+ * wrong pick sends the rescue hunting for a number that was never printed).
  */
 function discountAmounts(text, cap) { // exported below — used by ocrUtils for target derivation
   const pset = new Set();
