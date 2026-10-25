@@ -195,26 +195,77 @@ label:focus-visible {
   cursor: pointer;
 }
 
-/* ----- camera ------------------------------------------------------------ */
-
-.camera {
-  margin-top: 16px;
+.upload label + .btn {
+  margin-left: 8px;
 }
 
-.camera video {
-  display: block;
-  width: 100%;
-  max-height: 340px;
-  object-fit: cover;
-  border: 1px solid var(--line);
+/* ----- camera (guided capture) --------------------------------------------
+   The viewfinder must never cover-crop the frame (old styles had object-fit:
+   cover + max-height): the guide overlay positions itself by FRACTIONS of the
+   element and the capture crops exactly those fractions of the sensor frame —
+   cover cropping would make the border lie about what the photo contains.
+   Lamp colors are literals because they sit on the live video (dark
+   backdrop); the light-theme tokens (--ok/--warn) are too dark to read there. */
+
+.camera .viewfinder {
+  position: relative;
+  margin: 12px 16px 0;
+  overflow: hidden;
   border-radius: var(--radius-m);
   background: #111;
 }
 
-.camera .actions {
+.camera .viewfinder video {
+  display: block;
+  width: 100%;
+  height: auto; /* keeps the delivered frame's aspect ratio exactly */
+}
+
+.camera .guide {
+  position: absolute;
+  border: 2px solid rgba(255, 255, 255, 0.65);
+  border-radius: 4px;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.35); /* dim outside the guide */
+  pointer-events: none;
+  transition: border-color 0.25s ease;
+}
+
+.camera .guide.lamp-ok { border-color: #7ee1a8; }
+.camera .guide.lamp-warn { border-color: #ffd479; }
+.camera .guide.lamp-bad { border-color: #ff9d92; }
+
+.camera .lamp-msg {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 8px;
+  margin: 0;
+  text-align: center;
+  font-size: 12.5px;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+  pointer-events: none;
+}
+
+.camera .lamp-msg.ok { color: #7ee1a8; }
+.camera .lamp-msg.warn { color: #ffd479; }
+
+.camera .camera-note {
+  margin: 8px 16px 0;
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
+
+.camera .camera-error {
+  margin: 8px 16px;
+  font-size: 12.5px;
+  color: var(--danger, #a33);
+}
+
+.camera .camera-actions {
   display: flex;
   gap: 8px;
-  margin-top: 10px;
+  margin: 10px 16px 12px;
 }
 
 /* ----- panels ------------------------------------------------------------ */

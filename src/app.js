@@ -5,6 +5,19 @@ import { scanVerdict } from "./scanVerdict";
 import { detectFileKind, toProcessableSource } from "./imageInput";
 import { loadSyncCfg, saveSyncCfg, clearSyncCfg, uploadScan, presignS3 } from "./sync";
 import { APP_VERSION } from "./version.js";
+import {
+  CAMERA_VIDEO_CONSTRAINTS,
+  GUIDE,
+  METER_SAMPLE,
+  LAMP_THRESHOLDS,
+  cameraErrorText,
+  mapGuideToSensor,
+  lumaGrid,
+  motionScore,
+  frameLamp,
+  estimateDpi,
+  hasTorch,
+} from "./cameraCapture.js";
 
 // Version marker (user request 2026-10-24): the header shows the exact app
 // version so scan disputes can never again be about "which bundle is
@@ -15,10 +28,18 @@ export default function App() {
   const [text, setText] = useState("");
   const [parsed, setParsed] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [useCamera, setUseCamera] = useState(false);
-  const [cameraAvailable, setCameraAvailable] = useState(false);
 
-  const [capturedImage, setCapturedImage] = useState(null);
+  // Guided camera capture (feat/camera-guided-capture). The stream is opened
+  // ONLY by a click on "Use camera" — no mount probing, and no
+  // enumerateDevices() call anywhere (the old dead camera block's
+  // always-running device probe is deleted, not migrated).
+  // cameraState: off | opening | live | error
+  const [cameraState, setCameraState] = useState("off");
+  const [cameraErr, setCameraErr] = useState(null);
+  const [cameraLamp, setCameraLamp] = useState(null); // {level: ok|warn, msg}
+  const [cameraInfo, setCameraInfo] = useState(null); // {w,h,dpi:{pxPerMm,dpi}}
+  const [torchOn, setTorchOn] = useState(false);
+
   const [uploadedPreview, setUploadedPreview] = useState(null);
   const [pdfPreviews, setPdfPreviews] = useState([]);
   const [useFlatMode, setUseFlatMode] = useState(false);
@@ -114,33 +135,19 @@ export default function App() {
   const [syncSetup, setSyncSetup] = useState(() => location.hash === "#sync");
 
   const videoRef = useRef(null);
-  const canvasRef = useRef(null);
-
-  useEffect(() => {
-    navigator.mediaDevices?.enumerateDevices().then(devices => {
-      setCameraAvailable(devices.some(d => d.kind === "videoinput"));
-    });
-  }, []);
+  // Camera metering state carried across rAF samples without re-rendering:
+  // previous sample's luma grid (motion), consecutive-quiet counter, and the
+  // timestamp of the last metered sample (150 ms cadence gate).
+  const cameraStreamRef = useRef(null);
+  const prevGridRef = useRef(null);
+  const stableRef = useRef(0);
+  const meterAtRef = useRef(0);
 
   useEffect(() => {
     const onHash = () => setSyncSetup(location.hash === "#sync");
     addEventListener("hashchange", onHash);
     return () => removeEventListener("hashchange", onHash);
   }, []);
-
-  useEffect(() => {
-    if (!useCamera) return;
-    const constraints = { video: { facingMode: "environment", focusMode: "continuous" } };
-    navigator.mediaDevices.getUserMedia(constraints)
-      .then(stream => videoRef.current && (videoRef.current.srcObject = stream))
-      .catch(err => {
-        console.warn("Camera error:", err);
-        setUseCamera(false);
-      });
-    return () => {
-      videoRef.current?.srcObject?.getTracks()?.forEach(t => t.stop());
-    };
-  }, [useCamera]);
 
   // alreadyCleaned: processImage returns text that already went through the
   // single clean pass (idempotent); the PDF path still cleans pdf-embedded text.
@@ -268,73 +275,144 @@ export default function App() {
     }
   };
 
-  const handleCapture = async () => {
-    if (!videoRef.current || !canvasRef.current) return;
+  // ----- guided camera capture ----------------------------------------------
+  // Everything here runs only after an explicit "Use camera" click. The
+  // captured region becomes a regular File in the SAME handleFiles queue path
+  // as Choose file — no second pipeline, so queue rows, snapshots, evidence
+  // rescues and sync behave identically for a camera shot.
 
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    const stream = video.srcObject;
+  /** Stop tracks + reset meter state. Safe to call redundantly. */
+  const stopCamera = () => {
+    cameraStreamRef.current?.getTracks().forEach(t => t.stop());
+    cameraStreamRef.current = null;
+    prevGridRef.current = null;
+    stableRef.current = 0;
+    setCameraState("off");
+    setCameraLamp(null);
+    setCameraInfo(null);
+    setTorchOn(false);
+  };
 
-    setLoading(true);
-    setText("Processing captured image...");
-    setParsed(null);
-    setUploadedPreview(null);
-    setPdfPreviews([]);
-
+  const openCamera = async () => {
+    if (cameraState === "live" || cameraState === "opening") return;
+    stopCamera(); // clear any prior error/lamp state
+    setCameraState("opening");
     try {
-      const [track] = stream.getVideoTracks();
-      let blob;
-
-      // Try using ImageCapture API
-      if ("ImageCapture" in window) {
-        try {
-          const imageCapture = new ImageCapture(track);
-          blob = await imageCapture.takePhoto(); // high-quality still image
-          console.log("Captured photo using ImageCapture API");
-        } catch (err) {
-          console.warn("ImageCapture failed, falling back to canvas:", err);
-        }
-      }
-
-      // Fallback to canvas capture if ImageCapture failed or not supported
-      if (!blob) {
-        // Let camera autofocus for a moment (simple UX improvement)
-        await new Promise(res => setTimeout(res, 2000));
-
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-        blob = await new Promise(res => canvas.toBlob(res, "image/jpeg", 0.95));
-        if (!blob) {
-          setText("Capture failed: empty frame");
-          setLoading(false);
-          return;
-        }
-      }
-
-      // Convert blob to DataURL for processing (both capture paths land here)
-      const dataUrl = await new Promise(resolve => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result);
-        reader.readAsDataURL(blob);
-      });
-      setCapturedImage(dataUrl);
-
-      const t0 = performance.now();
-      const result = await processImage(dataUrl);
-      setText(result.text);
-      const parsedNow = runParsing(result.text, result.extraItems, result.rescue, result.corrections, true, result.payRescue?.amount ?? null, result.dateRescue?.date ?? null, result.payDebug ?? null);
-      setPayRescueEvidence(result.payRescue ?? null);
-      const ms = Math.round(performance.now() - t0);
-      setPipelineMs(ms);
-      setLoading(false);
-      maybeSync(blob, "camera-capture.jpg", result, parsedNow, ms);
+      const stream = await navigator.mediaDevices.getUserMedia(CAMERA_VIDEO_CONSTRAINTS);
+      cameraStreamRef.current = stream;
+      setCameraState("live");
     } catch (err) {
-      console.error("Error during capture:", err);
-      setText("Capture failed");
-      setLoading(false);
+      // Log the error NAME only — an error never carries frame data, but the
+      // log should stay content-free regardless.
+      console.warn("Camera open failed:", err?.name || err);
+      setCameraErr(cameraErrorText(err));
+      setCameraState("error");
+    }
+  };
+
+  // Attach the live stream and record the ACTUALLY granted frame size (the
+  // browser may deliver less than requested — shown in the panel, never
+  // guessed). The element's aspect ratio is pinned to the delivered frame so
+  // the guide fractions map exactly (no letterbox ambiguity).
+  useEffect(() => {
+    if (cameraState !== "live") return;
+    const v = videoRef.current;
+    if (!v || !cameraStreamRef.current) return;
+    v.srcObject = cameraStreamRef.current;
+    v.play?.().catch(() => {});
+    setCameraInfo(null);
+    const onMeta = () => {
+      if (!v.videoWidth) return;
+      v.style.aspectRatio = `${v.videoWidth} / ${v.videoHeight}`;
+      // px/mm is estimated over the GUIDE-REGION width — that is what the
+      // OCR will actually see (marked ≈ in the UI: assumes an 80 mm receipt).
+      const guideW = Math.round((GUIDE.xF1 - GUIDE.xF0) * v.videoWidth);
+      setCameraInfo({ w: v.videoWidth, h: v.videoHeight, dpi: estimateDpi(guideW) });
+    };
+    v.addEventListener("loadedmetadata", onMeta);
+    if (v.videoWidth) onMeta();
+    return () => v.removeEventListener("loadedmetadata", onMeta);
+  }, [cameraState]);
+
+  // The quality lamp: sample the GUIDE region downscaled (METER_SAMPLE) every
+  // ~150 ms and grade luma / glare / motion. Advisory only — Capture is never
+  // blocked. Follows the same pixel-read class as the OCR pipeline itself:
+  // receipt capture, pixels never leave the page.
+  useEffect(() => {
+    if (cameraState !== "live") return;
+    let raf = 0;
+    let stopped = false;
+    const canvas = document.createElement("canvas");
+    canvas.width = METER_SAMPLE.w;
+    canvas.height = METER_SAMPLE.h;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    const tick = ts => {
+      if (stopped) return;
+      raf = requestAnimationFrame(tick);
+      const v = videoRef.current;
+      if (!v || !v.videoWidth) return;
+      if (ts - meterAtRef.current < 150) return;
+      meterAtRef.current = ts;
+      const vw = v.videoWidth, vh = v.videoHeight;
+      const r = mapGuideToSensor(GUIDE, vw, vh);
+      ctx.drawImage(v, r.x, r.y, r.w, r.h, 0, 0, METER_SAMPLE.w, METER_SAMPLE.h);
+      const { grid, mean, glareFrac } = lumaGrid(
+        ctx.getImageData(0, 0, METER_SAMPLE.w, METER_SAMPLE.h).data,
+        METER_SAMPLE.w,
+        METER_SAMPLE.h
+      );
+      const motion = motionScore(prevGridRef.current, grid);
+      const stable =
+        motion != null && motion < LAMP_THRESHOLDS.motionQuiet ? stableRef.current + 1 : 0;
+      stableRef.current = stable;
+      prevGridRef.current = grid;
+      setCameraLamp(frameLamp({ mean, glareFrac, motion, stable }));
+    };
+    raf = requestAnimationFrame(tick);
+    return () => {
+      stopped = true;
+      cancelAnimationFrame(raf);
+    };
+  }, [cameraState]);
+
+  // Tracks MUST die when the app unmounts (the panel-closing path calls
+  // stopCamera; this covers route/teardown cases).
+  useEffect(() => () => {
+    cameraStreamRef.current?.getTracks().forEach(t => t.stop());
+  }, []);
+
+  /**
+   * Crop the guide region at SENSOR resolution (videoWidth/Height — NOT the
+   * CSS-scaled preview) straight into the queue as a File. One honest wait:
+   * canvas.toBlob is the single async step; no artificial "autofocus settle"
+   * timer — the lamp already reported steadiness and the user decides.
+   */
+  const captureToQueue = async () => {
+    const v = videoRef.current;
+    if (!v || !v.videoWidth || cameraState !== "live") return;
+    const r = mapGuideToSensor(GUIDE, v.videoWidth, v.videoHeight);
+    const canvas = document.createElement("canvas");
+    canvas.width = r.w;
+    canvas.height = r.h;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(v, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
+    const blob = await new Promise(res => canvas.toBlob(res, "image/jpeg", 0.95));
+    if (!blob) return; // empty frame — the lamp/queue shows the state anyway
+    const name = `camera-${new Date().toISOString().replace(/[:.]/g, "-")}.jpg`;
+    await handleFiles(new File([blob], name, { type: "image/jpeg" }), newJob(name));
+  };
+
+  const toggleTorch = async () => {
+    const track = cameraStreamRef.current?.getVideoTracks?.()[0];
+    if (!track) return;
+    const on = !torchOn;
+    try {
+      await track.applyConstraints({ advanced: [{ torch: on }] });
+      setTorchOn(on);
+    } catch (err) {
+      // Capability flipped mid-session (lamp pulled, tab changed) — surface in
+      // console only; the button visibility itself is capability-driven.
+      console.warn("Torch failed:", err?.name || err);
     }
   };
 
@@ -347,7 +425,6 @@ export default function App() {
     const kind = await detectFileKind(file);
     const isImage = kind === "image";
     const isPDF = kind === "pdf";
-    setCapturedImage(null);
     setText(isImage ? "Processing image file..." : isPDF ? "Processing PDF..." : "");
     setUploadedPreview(null);
     setPdfPreviews([]);
@@ -442,7 +519,7 @@ export default function App() {
     });
   };
 
-  const preview = uploadedPreview || capturedImage;
+  const preview = uploadedPreview;
 
   return (
     <div className="container">
@@ -491,15 +568,61 @@ export default function App() {
           Choose file
           <input type="file" accept="image/*,.pdf,.heic,.heif" multiple onChange={handleFileUpload} />
         </label>
+        <button
+          className="btn ghost"
+          type="button"
+          onClick={openCamera}
+          title="Guided capture: frame the receipt inside the border — the shot is cropped to the border and scanned"
+        >
+          Use camera
+        </button>
       </section>
 
-      {useCamera && <section className="camera panel">
-        <video ref={videoRef} autoPlay playsInline />
-        <canvas ref={canvasRef} hidden />
-        <div className="actions" style={{ padding: "10px 16px" }}>
-          <button className="btn primary" onClick={handleCapture}>Capture &amp; OCR</button>
-          <button className="btn ghost" onClick={() => setUseCamera(false)}>Stop camera</button>
+      {cameraState !== "off" && <section className="camera panel" aria-label="Guided camera capture">
+        <div className="panel-head">
+          <h2>Camera</h2>
+          <button className="btn ghost mini" onClick={stopCamera}>Stop camera</button>
         </div>
+        {cameraState === "opening" && <p className="camera-note">Opening the camera …</p>}
+        {cameraState === "error" && <p className="camera-error" role="alert">{cameraErr}</p>}
+        <div className="viewfinder">
+          <video ref={videoRef} autoPlay playsInline muted />
+          {cameraState === "live" && (
+            <div
+              className={`guide lamp-${cameraLamp?.level || "init"}`}
+              style={{
+                left: GUIDE.xF0 * 100 + "%",
+                right: (1 - GUIDE.xF1) * 100 + "%",
+                top: GUIDE.yF0 * 100 + "%",
+                bottom: (1 - GUIDE.yF1) * 100 + "%",
+              }}
+              aria-hidden="true"
+            />
+          )}
+          {cameraLamp && <p className={`lamp-msg ${cameraLamp.level}`}>{cameraLamp.msg}</p>}
+        </div>
+        {cameraInfo && <p className="camera-note">
+          capture ≈{cameraInfo.dpi.pxPerMm} px/mm (≈{cameraInfo.dpi.dpi} dpi, assuming an
+          80&nbsp;mm-wide receipt) · stream {cameraInfo.w}×{cameraInfo.h} px
+          {cameraInfo.dpi.dpi < 300 ? " — below the ~300 dpi OCR sweet spot; the rescues will still try" : ""}
+        </p>}
+        <div className="camera-actions">
+          {(() => {
+            const track = cameraState === "live" ? cameraStreamRef.current?.getVideoTracks?.()[0] : null;
+            return hasTorch(track?.getCapabilities?.()) && (
+              <button className="btn ghost" onClick={toggleTorch} type="button">
+                {torchOn ? "Torch off" : "Torch on"}
+              </button>
+            );
+          })()}
+          <button className="btn primary" onClick={captureToQueue} disabled={cameraState !== "live"} type="button">
+            Capture &amp; scan
+          </button>
+        </div>
+        <p className="camera-note">
+          The shot is cropped to the border and enters the same queue and evidence trail as
+          Choose file — the stream itself never leaves this page.
+        </p>
       </section>}
 
       {loading && <div className="loading-row" role="status">
