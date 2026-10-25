@@ -321,6 +321,28 @@ export const DATE_RESCUE_ATTEMPTS = [
   ["raw", [0.3, 0.75], 3, "7", "lanczos3"],
 ];
 
+/**
+ * Footer-band date rescue ladder (v1.9.0) — used when the TIME-ANCHOR arm
+ * fires (parse has no date, but a clock time survived: the date-time line
+ * exists on the paper with its date digits garbled away). The HOFER footer
+ * date sits at the very bottom, below the barcode; node evidence: the
+ * bottom-20% band, grayscale + normalize + PSM 6 reads "22.10.26 17:56"
+ * verbatim off the raw photo — the 1%/99% auto-levels (kind "norm") is
+ * THE measured difference between the garbled fixed-stretch reading
+ * ("2.10. 96 17:56" on the prep/raw attempts) and the verbatim one, so
+ * it leads. Factor <=2: the 3x lanczos3 attempt degenerates the band
+ * to `["Gail"]`. The fused-arm ladder above (EFT appendix, mid-receipt)
+ * follows as fallback for footer-shaped receipts whose date actually
+ * lives elsewhere.
+ *   [kind, [bandFrom, bandTo], factor, psm, kernel]
+ */
+export const DATE_FOOTER_ATTEMPTS = [
+  ["norm", [0.85, 1.0], 2, "6", "catrom"],
+  ["norm", [0.8, 1.0], 2, "6", "catrom"],
+  ["prep", [0.85, 1.0], 2, "6", "catrom"],
+  ["raw", [0.85, 1.0], 2, "6", "lanczos3"],
+];
+
 // ---------------------------------------------------------------------------
 // Guards and tolerances (parser + rescue arms)
 // ---------------------------------------------------------------------------
@@ -635,6 +657,41 @@ export const DATE_RESCUE_REGEXES = [
 export const FUSED_DATE_RE = /\b\d{1,3}\s*\.\s*20\d{2}\b/;
 /** … anchored by a time on the same line (the HOFER-EFT appendix shape). */
 export const TIME_ANCHOR_RE = /\b[0-2]?\d:[0-5]\d\b/;
+/**
+ * Two-digit-year footer date — the HOFER phone-capture footer shape
+ * ("*0728 381/058/001/006 22.10.26 17:56", measured live 2026-10-25 on
+ * s25-hofer.jpg: the full-page OCR reads the line as fragments
+ * ("… 10.26 17." / "… 28 17:56"), the bottom-band re-OCR reads it verbatim).
+ *
+ * STRICT by construction: day AND month are zero-padded two-digit groups,
+ * so a partial read of the day ("2.10.26" — one leading digit lost, an
+ * actually-observed reading) can never match: a WRONG date is worse than
+ * no date. Measured blast radius: zero hits across all 22 committed fixtures,
+ * all 6 phone-capture OCR texts, and the footer bands of all 10 corpus
+ * photos except the intended hofer one.
+ */
+const DATE_2DIGIT_YEAR_SRC = "(0[1-9]|[12][0-9]|3[01])\\.(0[1-9]|1[0-2])\\.(\\d{2})";
+export const DATE_2DIGIT_YEAR_RE = new RegExp("\\b" + DATE_2DIGIT_YEAR_SRC + "\\b");
+/**
+ * The footer prints date and clock time ADJACENT, and the measured OCR
+ * wobble on the live capture was the time's SEPARATOR GLYPH — the strip
+ * re-OCR that read the date verbatim ("22.10.26 17,56") had the colon
+ * read as a COMMA, which a colon-only anchor rejected (live evidence:
+ * the rescue armed, the band read the date, the accept said null).
+ * So the accept-side co-anchor is the date with a time DIRECTLY after it
+ * (optional Slovenian "ob" connector, as on the 4-digit twin
+ * "25.08. 2024 ob 13:17:09"), separator colon/comma/dot.
+ *
+ * Adjacency is the safety property, not decoration: the date's own MM.YY
+ * cannot satisfy the trailing time (whitespace is required between them),
+ * and a stray price elsewhere on the line cannot either — which is what
+ * keeps this a co-anchor rather than a formality once comma prices
+ * ("8,71") are tolerated as times. Blast radius re-measured after the
+ * wobble fix: still zero hits on all 22 fixtures and all 6 capture texts.
+ */
+export const DATE_FOOTER_TIME_RE = new RegExp(
+  "\\b" + DATE_2DIGIT_YEAR_SRC + "\\s+(?:ob\\s+)?[0-2]?\\d\\s*[:,.]\\s*[0-5]\\d\\b"
+);
 /** Date/time metadata line ("25.08. 2024 ob 13:17:09"). */
 export const DATE_TIME_PATTERN = /\b\d{1,2}\.\s*\d{1,2}\.\s*\d{2,4}\b\s*ob\s*\d{1,2}:\d{2}(:\d{2})?/i;
 

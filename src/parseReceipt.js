@@ -1,7 +1,7 @@
 import { PARSER_VERSION } from "./version.js";
 import {
   AMOUNT_WITH_CURRENCY_RE, CHANGE_LINE_RE, COMMA_DRIFT_RE, CURRENCY_DEFAULT, CURRENCY_TAG_RE,
-  DATE_REGEXES, DATE_RESCUE_REGEXES, DATE_TIME_PATTERN, DISCOUNT_AMOUNT_RE,
+  DATE_REGEXES, DATE_FOOTER_TIME_RE, DATE_RESCUE_REGEXES, DATE_TIME_PATTERN, DISCOUNT_AMOUNT_RE,
   DISCOUNT_GATE_RE, DISCOUNT_LABEL_RE, EXCLUDE_KEYWORDS, FALLBACK_DELTA,
   FUSED_DATE_RE, GARBLE_SHORT_TOKENS,
   MEASURE_TOL, MEASURE_UNIT_TAIL_RE, MIN_NAME_LETTERS, NAME_MATCH_THRESHOLD, NETO_ROW_RE, NON_ITEM_PATTERNS,
@@ -49,6 +49,29 @@ export function namesScore(candidate, itemName) {
 
 export function namesSimilar(candidate, itemName) {
   return namesScore(candidate, itemName) >= NAME_MATCH_THRESHOLD;
+}
+
+/**
+ * Widen a two-digit printed year (v1.9.0). strptime %y convention:
+ * 00-68 -> 20xx, 69-99 -> 19xx. Every dated document in the measured
+ * corpus maps correctly (2014 GEOX invoice .. 2026 phone captures), and
+ * the alternative — trusting a raw "26" as year 26 AD — is not a date.
+ */
+export function widenTwoDigitYear(yy) {
+  return yy <= 68 ? 2000 + yy : 1900 + yy;
+}
+
+/**
+ * Calendar-validated ISO date from parts, or null. Shared by the main
+ * two-digit-year fallback (extractDate) and the strip-reading accept
+ * (validDateFromReading) so both enforce "no 30.02 / 31.04" identically.
+ */
+export function calendarISO(day, month, year) {
+  if (!(day >= 1 && day <= 31 && month >= 1 && month <= 12 && year >= 1000)) return null;
+  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  const dim = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+  if (day > dim) return null;
+  return year + "-" + String(month).padStart(2, "0") + "-" + String(day).padStart(2, "0");
 }
 
 // v2.0.28 pipe-tolerant exclusion test. The S25 phone family prints vertical
@@ -304,6 +327,20 @@ export function parseReceipt(text, extraItems = [], corrections = []) {
             day.toString().padStart(2, "0")
           );
         }
+      }
+    }
+    // v1.9.0 fallback: two-digit-year footer date ("22.10.26 17:56").
+    // Scanned ONLY after the whole text failed the four-digit patterns, so
+    // every receipt that already resolves a date is byte-identical. The
+    // combined date+time pattern is the strictness: zero-padded day+month
+    // (a partial "2.10.26" read can never match) AND the clock time
+    // DIRECTLY after the date with its separator wobble tolerated (the
+    // live capture read the colon as a comma — "22.10.26 17,56").
+    for (const line of lines) {
+      const m = line.match(DATE_FOOTER_TIME_RE);
+      if (m) {
+        const iso = calendarISO(parseInt(m[1], 10), parseInt(m[2], 10), widenTwoDigitYear(parseInt(m[3], 10)));
+        if (iso) return iso;
       }
     }
     return null;
@@ -1094,11 +1131,35 @@ export function findDateCandidate(text) {
 }
 
 /**
+ * Time-anchor arm (v1.9.0): the parse found NO date, but a clock time
+ * (HH:MM) survives somewhere in the OCR text — the printed date-time line
+ * exists on the paper with its date digits garbled away. Measured case
+ * (s25-hofer.jpg, live): the footer "22.10.26 17:56" reads as fragments
+ * ("… HVALA 24 6%: 10.26 17." / "… RA a0 28 17:56") — no fused year
+ * survives, so the fused arm stays cold while the time anchor fires.
+ * Superset of the fused arm (which additionally needs a surviving 20xx
+ * fragment), so a caller may arm on either. The ACCEPT side is unchanged
+ * in strictness: only a complete, calendar-valid, time-anchored reading
+ * ever becomes a date.
+ */
+export function hasTimeAnchor(text) {
+  if (typeof text !== "string") return false;
+  return TIME_ANCHOR_RE.test(text);
+}
+
+/**
  * Accept: a COMPLETE dotted (dot or space separated) calendar date from a
  * strip re-OCR reading. Year must be 20xx (receipt era; also keeps junk
  * digit runs out). Calendar validity enforced (no 30.02). Returns ISO
  * "YYYY-MM-DD" or null — null is the normal outcome for a garbled reading,
  * the caller then simply has no measurement.
+ *
+ * v1.9.0: also accepts the two-digit-year footer shape ("22.10.26 17:56")
+ * — strict zero-padded pattern with the clock time DIRECTLY after the date
+ * (the live capture's separator wobble — colon read as comma,
+ * "22.10.26 17,56" — is what the adjacency pattern tolerates). A partial
+ * read of the day ("2.10.26", an actually-observed reading) cannot match
+ * the strict pattern, so a wrong date is unreachable through this path.
  */
 export function validDateFromReading(rawLines) {
   const lines = Array.isArray(rawLines) ? rawLines : typeof rawLines === "string" ? String(rawLines).split("\n") : [];
@@ -1108,13 +1169,13 @@ export function validDateFromReading(rawLines) {
     for (const re of regexes) {
       const m = line.match(re);
       if (!m) continue;
-      const day = parseInt(m[1], 10);
-      const month = parseInt(m[2], 10);
-      const year = parseInt(m[3], 10);
-      const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
-      const dim = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
-      if (day > dim) continue;
-      return year + "-" + String(month).padStart(2, "0") + "-" + String(day).padStart(2, "0");
+      const iso = calendarISO(parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10));
+      if (iso) return iso;
+    }
+    const m2 = line.match(DATE_FOOTER_TIME_RE);
+    if (m2) {
+      const iso = calendarISO(parseInt(m2[1], 10), parseInt(m2[2], 10), widenTwoDigitYear(parseInt(m2[3], 10)));
+      if (iso) return iso;
     }
   }
   return null;

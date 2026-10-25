@@ -5,8 +5,15 @@
  *  - total found from "HOFER CENA 12.14" (dot decimal merchant side)
  *  - the gratitude footer OCR-fused with barcode digits is NEVER an item
  *    ("HVALA Z 10,26 17. | SODNA" manufactured a 10,26 item pre-v2.0.1)
- *  - date: this photo's OCR genuinely dropped the date line (22.10.26 17:56
- *    never survives), so date=null is the CORRECT output — do not "fix".
+ *  - date: the photo's footer prints a TWO-DIGIT-YEAR date
+ *    ("*0728 381/058/001/006 22.10.26 17:56") that the full-page OCR
+ *    garbles into fragments ("ee /058/001/006 29 MN" / "HVALA Z 10,26
+ *    17. | SODNA" — the fixture text below), so this TEXT parses to null.
+ *    v1.9.0 recovers the date at the PIXEL level instead: the time-anchor
+ *    arm drives a bottom-band strip re-OCR that reads "22.10.26 17:56"
+ *    verbatim (see dateRescue.test.js). The earlier "never survives" note
+ *    was WRONG — the line survives a targeted band re-OCR; measured live
+ *    2026-10-25 on s25-hofer.jpg.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";

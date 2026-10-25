@@ -1,7 +1,7 @@
 import { createWorker } from "tesseract.js";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 import pdfWorker from "pdfjs-dist/build/pdf.worker.js";
-import { parseReceipt, isNonItemLine, namesScore, namesSimilar, payableRescue, discountAmounts, findDateCandidate, validDateFromReading } from "./parseReceipt";
+import { parseReceipt, isNonItemLine, namesScore, namesSimilar, payableRescue, discountAmounts, findDateCandidate, hasTimeAnchor, validDateFromReading } from "./parseReceipt";
 // v2.1: canvas-free decode + preprocess. The pixels Tesseract sees are produced
 // deterministically (WebCodecs / libheif decode → OpenCV Mats). The ONLY canvas
 // touch is the final PNG encoding step, which keeps image sizes small enough for
@@ -9,7 +9,7 @@ import { parseReceipt, isNonItemLine, namesScore, namesSimilar, payableRescue, d
 import { decodeToRGBA, rgbaToMat } from "./pixels";
 import {
   ARM_GAP, CARD_MARKER_RE, COLUMN_TRIM, CONTRAST, CROP, CURRENCY_DEFAULT,
-  DATE_RESCUE_ATTEMPTS, DESKEW_DEADBAND_DEG, DISCOUNT_ARM_RE, DISCOUNT_GATE_RE,
+  DATE_RESCUE_ATTEMPTS, DATE_FOOTER_ATTEMPTS, DESKEW_DEADBAND_DEG, DISCOUNT_ARM_RE, DISCOUNT_GATE_RE,
   DISCOUNT_PRESENT_RE,
   ITEM_BAND_ATTEMPTS, KERNEL_TAPS, KEYWORD_TOTAL_RE, LUMA, MEASURE_TOL,
   MIN_CORRECTION_NAME_LETTERS,
@@ -917,7 +917,7 @@ function topStripDataURL(preprocessedDataURL, band = STRIP_DEFAULT_BAND, factor 
  * price ("1,79 8") — sharp used lanczos3 on the same pixels. Nearest at an
  * integer factor is the canvas-side substitute for a sharp resampler.
  */
-function rawStripDataURL(imageSrc, band = STRIP_DEFAULT_BAND, factor = STRIP_DEFAULT_FACTOR, mode = STRIP_DEFAULT_KERNEL) {
+function rawStripDataURL(imageSrc, band = STRIP_DEFAULT_BAND, factor = STRIP_DEFAULT_FACTOR, mode = STRIP_DEFAULT_KERNEL, opts = {}) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = "Anonymous";
@@ -943,10 +943,39 @@ function rawStripDataURL(imageSrc, band = STRIP_DEFAULT_BAND, factor = STRIP_DEF
         return;
       }
       const d = data.data;
+      // grayscale pass (shared by both contrast modes)
       for (let i = 0; i < d.length; i += 4) {
         const g = LUMA.r * d[i] + LUMA.g * d[i + 1] + LUMA.b * d[i + 2];
-        const v = Math.max(0, Math.min(255, Math.round(CONTRAST.alpha * g + CONTRAST.beta)));
-        d[i] = d[i + 1] = d[i + 2] = v;
+        d[i] = d[i + 1] = d[i + 2] = g;
+      }
+      if (opts.normalize) {
+        // v1.9.0 histogram auto-levels (1%/99% clipped): the HOFER phone
+        // footer's tiny thermal print lives in a narrow mid-gray band, and
+        // the fixed CONTRAST stretch leaves it muddy — measured live, the
+        // bottom band read "22.10.26 17:56" as "2,10. 96 17:56" with fixed
+        // contrast but VERBATIM with auto-levels (node A/B on identical
+        // pixels: grayscale+normalize+PSM6). A uniform strip (hi-lo < 8)
+        // is left alone — stretching flat paper would invert it to black.
+        const hist = new Array(256).fill(0);
+        for (let i = 0; i < d.length; i += 4) hist[Math.round(d[i])]++;
+        const n = d.length / 4;
+        const clip = n * 0.01;
+        let lo = 0, hi = 255, acc = 0;
+        for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc > clip) { lo = v; break; } }
+        acc = 0;
+        for (let v = 255; v >= 0; v--) { acc += hist[v]; if (acc > clip) { hi = v; break; } }
+        if (hi - lo >= 8) {
+          const span = hi - lo;
+          for (let i = 0; i < d.length; i += 4) {
+            const v = Math.max(0, Math.min(255, Math.round(((d[i] - lo) * 255) / span)));
+            d[i] = d[i + 1] = d[i + 2] = v;
+          }
+        }
+      } else {
+        for (let i = 0; i < d.length; i += 4) {
+          const v = Math.max(0, Math.min(255, Math.round(CONTRAST.alpha * d[i] + CONTRAST.beta)));
+          d[i] = d[i + 1] = d[i + 2] = v;
+        }
       }
       ctx1.putImageData(data, 0, 0);
       // column trim inside canvas data (bright+ink column projection; the
@@ -1728,25 +1757,46 @@ export async function processImage(imageSrc, onProgress = () => {}) {
   // v2.0.22 date rescue — measurement, not decomposition (policy: the printed
   // date physically exists on the paper; an ambiguous garble like
   // "103.2025" is a three-way coin flip ONLY for arithmetic, never for the
-  // pixels). Arms ONLY when the parse extracted NO date AND a fused
+  // pixels). Arms when the parse extracted NO date AND either a fused
   // date-candidate line survives (tight form: group.20xx + HH:MM — the
-  // HOFER-EFT appendix). Accepts a COMPLETE calendar-valid reading from any
-  // strip attempt; otherwise the date stays null ("—") exactly as before,
-  // so every previously-resolving receipt is untouched.
+  // HOFER-EFT appendix) or just a clock time survives (v1.9.0 time-anchor
+  // arm — the HOFER phone-footer shape, where the date digits garbled away
+  // entirely: "22.10.26 17:56" read as "… 10.26 17." / "… 28 17:56").
+  // Accepts a COMPLETE calendar-valid reading from any strip attempt;
+  // otherwise the date stays null ("—") exactly as before, so every
+  // previously-resolving receipt is untouched.
   let dateRescue = null;
   if (finalParse.date == null) {
     const candidate22 = findDateCandidate(cleaned);
-    if (candidate22) {
-      console.log("🗓 Date candidate (fused, no parseable date):", JSON.stringify(candidate22), "— strip re-OCR armed");
+    const timeArmed22 = !candidate22 && hasTimeAnchor(cleaned);
+    if (candidate22 || timeArmed22) {
+      // v1.9.0: the footer-shaped arm searches the BOTTOM bands first (the
+      // HOFER footer date sits below the barcode), with the EFT-appendix
+      // ladder as fallback; the fused arm keeps its original ladder order
+      // untouched (byte-identical behavior for the receipts it already
+      // rescued).
+      const ladder22 = timeArmed22 ? [...DATE_FOOTER_ATTEMPTS, ...DATE_RESCUE_ATTEMPTS] : DATE_RESCUE_ATTEMPTS;
+      const armLine22 = cleaned.split("\n").find((l) => /\b[0-2]?\d:[0-5]\d\b/.test(l)) || "";
+      console.log(
+        timeArmed22
+          ? "🗓 Time anchor without a parseable date (footer shape): " + JSON.stringify(armLine22) + " — footer-band strip re-OCR armed"
+          : "🗓 Date candidate (fused, no parseable date): " + JSON.stringify(candidate22) + " — strip re-OCR armed"
+      );
       const attempts22 = [];
       let dISO22 = null;
       let dWin22 = null;
-      outer22: for (const [stripKind22, band22, factor22, psm22, kernel22] of DATE_RESCUE_ATTEMPTS) {
+      outer22: for (const [stripKind22, band22, factor22, psm22, kernel22] of ladder22) {
         try {
-          const base22 = prePerspectiveDataURL || (stripKind22 === "raw" ? imageSrc : preprocessedDataURL);
-          const strip22 = stripKind22 === "raw"
-            ? await rawStripDataURL(base22, band22, factor22, kernel22)
-            : await topStripDataURL(base22, band22, factor22, kernel22);
+          // v1.9.0: "norm" = auto-levels on the ORIGINAL photo (the measured
+          // winning recipe for the faint HOFER footer); "raw" = fixed
+          // contrast stretch on the original; "prep" = the pre-perspective
+          // pipeline image. raw/norm share the rawStripDataURL path.
+          const base22 = stripKind22 === "raw" || stripKind22 === "norm"
+            ? imageSrc
+            : (prePerspectiveDataURL || preprocessedDataURL);
+          const strip22 = stripKind22 === "prep"
+            ? await topStripDataURL(base22, band22, factor22, kernel22)
+            : await rawStripDataURL(base22, band22, factor22, kernel22, stripKind22 === "norm" ? { normalize: true } : {});
           await worker.setParameters({ ...TESS_PARAMS, tessedit_pageseg_mode: psm22 });
           const res22 = await worker.recognize(strip22);
           await worker.setParameters(TESS_PARAMS);
