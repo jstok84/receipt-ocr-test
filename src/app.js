@@ -12,10 +12,13 @@ import {
   LAMP_THRESHOLDS,
   LADDER,
   CAPTURE_STILL_MAX_DIM,
+  SHARPNESS,
   cameraErrorText,
   mapGuideToSensor,
   lumaGrid,
   motionScore,
+  sharpnessScore,
+  pickSharpestIndex,
   frameLamp,
   estimateDpi,
   hasTorch,
@@ -61,6 +64,31 @@ async function cropStillToGuide(stillBlob) {
   }
 }
 
+/**
+ * Sharpness of a still's centre region (where the receipt sits), measured on a
+ * small downscaled canvas so we never hold several full-res decodes at once.
+ * Used only to RANK frames of the same capture (relative), never across photos.
+ */
+async function stillSharpness(stillBlob) {
+  const bmp = await createImageBitmap(stillBlob);
+  try {
+    const sw = bmp.width, sh = bmp.height;
+    const cw = Math.max(2, Math.round(sw * 0.6));
+    const ch = Math.max(2, Math.round(sh * 0.6));
+    const cx = Math.round((sw - cw) / 2), cy = Math.round((sh - ch) / 2);
+    const w = Math.min(SHARPNESS.sampleW, cw);
+    const h = Math.max(1, Math.round(ch * (w / cw)));
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(bmp, cx, cy, cw, ch, 0, 0, w, h);
+    return sharpnessScore(ctx.getImageData(0, 0, w, h).data, w, h);
+  } finally {
+    bmp.close?.();
+  }
+}
+
 export default function App() {
   const [text, setText] = useState("");
   const [parsed, setParsed] = useState(null);
@@ -75,6 +103,7 @@ export default function App() {
   const [cameraErr, setCameraErr] = useState(null);
   const [cameraLamp, setCameraLamp] = useState(null); // {level: ok|warn, msg}
   const [cameraInfo, setCameraInfo] = useState(null); // {w,h,dpi:{pxPerMm,dpi}}
+  const [cameraSharp, setCameraSharp] = useState(null); // {score, sharp} — live focus meter
   const [torchOn, setTorchOn] = useState(false);
   // Tap-to-focus feedback: normalized 0–1 point of the last tap (renders a
   // brief ring, then clears) — purely visual; the focus itself is the
@@ -188,6 +217,10 @@ export default function App() {
   const prevGridRef = useRef(null);
   const stableRef = useRef(0);
   const meterAtRef = useRef(0);
+  // Sharpness meter: last-sample timestamp + a decaying recent-best so the
+  // "sharp" badge is relative to the scene (absolute lapVar is content-dependent).
+  const sharpAtRef = useRef(0);
+  const sharpMaxRef = useRef(0);
 
   useEffect(() => {
     const onHash = () => setSyncSetup(location.hash === "#sync");
@@ -444,6 +477,10 @@ export default function App() {
     canvas.width = METER_SAMPLE.w;
     canvas.height = METER_SAMPLE.h;
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    // Larger sample for the sharpness meter — lapVar needs pixels, not a 64px grid.
+    const sharpCanvas = document.createElement("canvas");
+    const sharpCtx = sharpCanvas.getContext("2d", { willReadFrequently: true });
+    sharpMaxRef.current = 0;
     const tick = ts => {
       if (stopped) return;
       raf = requestAnimationFrame(tick);
@@ -465,6 +502,20 @@ export default function App() {
       stableRef.current = stable;
       prevGridRef.current = grid;
       setCameraLamp(frameLamp({ mean, glareFrac, motion, stable }));
+      // Sharpness meter (~300 ms, larger sample). RELATIVE badge — "sharp" when the
+      // current frame is near the recent best (absolute lapVar is content-dependent).
+      if (ts - sharpAtRef.current > 300) {
+        sharpAtRef.current = ts;
+        const sw = Math.min(SHARPNESS.sampleW, r.w);
+        const sh = Math.max(1, Math.round(r.h * (sw / r.w)));
+        sharpCanvas.width = sw;
+        sharpCanvas.height = sh;
+        sharpCtx.drawImage(v, r.x, r.y, r.w, r.h, 0, 0, sw, sh);
+        const score = sharpnessScore(sharpCtx.getImageData(0, 0, sw, sh).data, sw, sh);
+        const best = Math.max(score, sharpMaxRef.current * 0.98);
+        sharpMaxRef.current = best;
+        setCameraSharp({ score: Math.round(score), sharp: score >= best * SHARPNESS.relativeSharp });
+      }
     };
     raf = requestAnimationFrame(tick);
     return () => {
@@ -515,10 +566,21 @@ export default function App() {
     let blob = null;
     if (strategy === "still" && track) {
       try {
-        const shot = await new window.ImageCapture(track).takePhoto();
+        const cap = new window.ImageCapture(track);
+        // Multi-frame (KYC-style best-frame): autofocus hunts, so take a few
+        // stills and keep the sharpest centre region — this beats the AF
+        // locking onto a high-contrast background behind the receipt.
+        const shots = [];
+        for (let i = 0; i < SHARPNESS.frames; i++) {
+          shots.push(await cap.takePhoto());
+          if (i < SHARPNESS.frames - 1) await new Promise(r => setTimeout(r, SHARPNESS.gapMs));
+        }
+        const scores = [];
+        for (const s of shots) scores.push(await stillSharpness(s));
+        const best = shots[Math.max(0, pickSharpestIndex(scores))];
         // Native JPEG straight through — no canvas re-encode (that was the
         // softener). Crop/re-encode only if the file is too big to keep whole.
-        blob = shot.size <= CAPTURE_MAX_BYTES ? shot : await cropStillToGuide(shot);
+        blob = best.size <= CAPTURE_MAX_BYTES ? best : await cropStillToGuide(best);
       } catch (err) {
         // takePhoto can reject on some stacks (synthetic device, mid-record) —
         // fall back to the video frame rather than fail the shot.
@@ -801,6 +863,11 @@ export default function App() {
 
         {cameraState === "live" && cameraLamp && (
           <p className={`lamp-msg ${cameraLamp.level}`}>{cameraLamp.msg}</p>
+        )}
+        {cameraState === "live" && cameraSharp && (
+          <p className={`sharp-msg ${cameraSharp.sharp ? "ok" : "warn"}`}>
+            {cameraSharp.sharp ? "Focus: sharp ✓" : "Focus: hold steady / move closer"}
+          </p>
         )}
         {cameraInfo && <p className="cam-info">
           capture ≈{cameraInfo.dpi.pxPerMm} px/mm (≈{cameraInfo.dpi.dpi} dpi, assuming an

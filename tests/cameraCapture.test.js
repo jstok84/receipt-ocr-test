@@ -12,9 +12,12 @@ import {
   GUIDE,
   LADDER,
   CAPTURE_STILL_MAX_DIM,
+  SHARPNESS,
   mapGuideToSensor,
   lumaGrid,
   motionScore,
+  sharpnessScore,
+  pickSharpestIndex,
   frameLamp,
   estimateDpi,
   hasTorch,
@@ -170,4 +173,43 @@ test("tapFocusConstraint: single-shot at the tapped point, advanced (never throw
   assert.ok(Array.isArray(c.advanced) && c.advanced.length === 1);
   assert.equal(c.advanced[0].focusMode, "single-shot");
   assert.deepEqual(c.advanced[0].pointsOfInterest, [{ x: 0.25, y: 0.75 }]);
+});
+
+test("sharpnessScore: a sharp checkerboard scores higher than its blurred version", () => {
+  const w = 16, h = 16;
+  const sharp = new Uint8Array(w * h * 4);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const v = (x + y) % 2 ? 255 : 0;
+    const o = (y * w + x) * 4;
+    sharp[o] = sharp[o + 1] = sharp[o + 2] = v; sharp[o + 3] = 255;
+  }
+  // 3x3 box blur of the same pattern
+  const blurred = new Uint8Array(w * h * 4);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let s = 0, n = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const yy = y + dy, xx = x + dx;
+      if (yy >= 0 && yy < h && xx >= 0 && xx < w) { s += sharp[(yy * w + xx) * 4]; n++; }
+    }
+    const o = (y * w + x) * 4;
+    blurred[o] = blurred[o + 1] = blurred[o + 2] = Math.round(s / n); blurred[o + 3] = 255;
+  }
+  assert.ok(sharpnessScore(sharp, w, h) > sharpnessScore(blurred, w, h), "sharp must outscore blurred");
+  // flat frame → zero
+  assert.equal(sharpnessScore(new Uint8Array(w * h * 4), w, h), 0);
+  // degenerate input never throws
+  assert.equal(sharpnessScore(null, 0, 0), 0);
+});
+
+test("pickSharpestIndex: max wins, first on ties, -1 on empty", () => {
+  assert.equal(pickSharpestIndex([10, 50, 30]), 1);
+  assert.equal(pickSharpestIndex([50, 50, 10]), 0);
+  assert.equal(pickSharpestIndex([]), -1);
+  assert.equal(pickSharpestIndex(null), -1);
+});
+
+test("SHARPNESS config: sane multi-frame bounds", () => {
+  assert.ok(SHARPNESS.frames >= 2 && SHARPNESS.frames <= 6);
+  assert.ok(SHARPNESS.sampleW >= 200 && SHARPNESS.sampleW <= 640);
+  assert.ok(SHARPNESS.relativeSharp > 0 && SHARPNESS.relativeSharp <= 1);
 });

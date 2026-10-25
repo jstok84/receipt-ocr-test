@@ -132,6 +132,63 @@ export function motionScore(prevGrid, grid) {
 }
 
 /**
+ * Sharpness score — variance of the 4-neighbour Laplacian over an RGBA buffer
+ * (Pech-Pacheco et al. focus measure; higher = sharper). This is the standard
+ * blur metric scan/KYC apps use to gate captures. IMPORTANT: it is content-
+ * dependent (busy/textured scenes score higher than plain ones, and sensor
+ * noise inflates it), so use it to COMPARE frames of the SAME scene — the live
+ * focus meter and the multi-frame "pick the sharpest" step — never to compare
+ * two different photos.
+ */
+export function sharpnessScore(data, w, h) {
+  if (!data || w < 3 || h < 3) return 0;
+  const gray = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    const o = i * 4;
+    gray[i] = LUMA.r * data[o] + LUMA.g * data[o + 1] + LUMA.b * data[o + 2];
+  }
+  let sum = 0, sumSq = 0, n = 0;
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      const L = 4 * gray[i] - gray[i - w] - gray[i + w] - gray[i - 1] - gray[i + 1];
+      sum += L; sumSq += L * L; n++;
+    }
+  }
+  if (!n) return 0;
+  const mean = sum / n;
+  return sumSq / n - mean * mean;
+}
+
+/** Index of the highest score; ties keep the first. -1 on empty/invalid. Pure. */
+export function pickSharpestIndex(scores) {
+  if (!scores || !scores.length) return -1;
+  let best = -Infinity, bi = -1;
+  for (let i = 0; i < scores.length; i++) {
+    if (scores[i] > best) { best = scores[i]; bi = i; }
+  }
+  return bi;
+}
+
+/**
+ * Sharpness tunables. The live badge is RELATIVE (current frame vs the best in
+ * the recent window) because absolute Laplacian variance depends on scene
+ * content — a fixed threshold would call a plain wall "blurry" and a busy
+ * keyboard "sharp". `frames`/`gapMs` bound the multi-frame capture so the
+ * autofocus gets a chance to hunt between stills.
+ */
+export const SHARPNESS = {
+  /** sample the guide region at this width for the live meter (larger than the luma grid — sharpness needs pixels) */
+  sampleW: 320,
+  /** a frame counts as "sharp" when within this fraction of the recent best */
+  relativeSharp: 0.8,
+  /** number of stills the multi-frame capture takes (the sharpest wins) */
+  frames: 3,
+  /** gap between stills, ms — lets the autofocus hunt between them */
+  gapMs: 180,
+};
+
+/**
  * Lamp decision thresholds. Initial values, to be calibrated on the real
  * capture device (the harness drives a synthetic pattern, not a phone) —
  * re-measure with the user's S25 before closing this class.

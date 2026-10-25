@@ -301,6 +301,21 @@ label:focus-visible {
 .cam-overlay .lamp-msg.ok { color: #7ee1a8; }
 .cam-overlay .lamp-msg.warn { color: #ffd479; }
 
+/* Live focus/sharpness badge (v2.0.42): a relative "is it sharp" read-out — the
+   honest replacement for the tap-to-focus promise (most phones ignore it). */
+.cam-overlay .sharp-msg {
+  margin: 0;
+  padding: 2px 16px 0;
+  text-align: center;
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+  pointer-events: none;
+}
+.cam-overlay .sharp-msg.ok { color: #7ee1a8; }
+.cam-overlay .sharp-msg.warn { color: #ffd479; }
+
 /* Camera chrome (v2.0.38, user request): every secondary action lives in a TOP
    bar; the Capture button sits ALONE in a BOTTOM bar — the thumb-reachable
    primary action. Both bars are dark strips on the fullscreen overlay. */
