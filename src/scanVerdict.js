@@ -27,12 +27,24 @@ export function scanVerdict(text, parsed) {
   if (!lines.length) {
     return { kind: "empty", stats, detail: "OCR produced no text at all — nothing to parse." };
   }
-  if (servedTotal || itemCount) {
+
+  // "Read OK" requires a SERVED TOTAL. Counting items alone must never
+  // headline "Read OK" — when no total was read, the items-sum check cannot
+  // come to a verdict, so the receipt is at best partially verified (the
+  // Phase-A false-green shape: items present → everything looked fine).
+  if (servedTotal) {
     const parts = [];
-    if (servedTotal) parts.push(`total ${servedTotal}`);
+    parts.push(`total ${servedTotal}`);
     parts.push(`${itemCount} item${itemCount === 1 ? "" : "s"}`);
     parts.push(`${failing} failing check${failing === 1 ? "" : "s"}`);
     return { kind: "receipt", stats, detail: `Read OK: ${parts.join(", ")}.` };
+  }
+  if (itemCount) {
+    return {
+      kind: "partial",
+      stats,
+      detail: `${itemCount} item${itemCount === 1 ? "" : "s"} recognized, but no total was read from the receipt — the items-sum check cannot run. Do not treat this scan as verified; check the data below against the photo.`,
+    };
   }
   if (!stats.amountLines && !stats.keywordLines) {
     return {

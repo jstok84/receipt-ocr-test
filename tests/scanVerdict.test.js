@@ -43,6 +43,21 @@ test("verdict: partial read INTERSPORT-like (amounts but no parse) → partial",
   assert.equal(v.kind, "partial");
 });
 
+test("verdict: items counted but NO total served → partial, never 'Read OK'", () => {
+  // The Phase-A false-green shape: a partial parse carries items but no
+  // total; "Read OK" requires a served total (v2.0.34).
+  const raw = "Artikel Kol Cena Znesek\n3849687 JAKNA W.POH SRIMFIELD 548\nZNESEK\n";
+  const parsed = {
+    total: null,
+    items: [{ name: "JAKNA W.POH SRIMFIELD", price: 79.99, quantity: 1 }],
+    checks: [],
+  };
+  const v = scanVerdict(raw, parsed);
+  assert.equal(v.kind, "partial");
+  assert.match(v.detail, /no total was read/);
+  assert.doesNotMatch(v.detail, /Read OK/);
+});
+
 test("verdict: full-pipeline receipt with failing checks reports the count", () => {
   // HOFER phone fixture pre-guard behavior: a failing sum check, but parsed
   const raw = readFileSync(join(here, "fixtures", "hofer-phone-real.txt"), "utf8");
