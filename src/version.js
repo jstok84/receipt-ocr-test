@@ -8,7 +8,7 @@
  * is the same number). The header chip is what the user compares against
  * when a scan misbehaves — "deployed bundle is stale" disputes end here.
  */
-export const APP_VERSION = "v2.0.46";
+export const APP_VERSION = "v2.0.47";
 
 /**
  * Parser version — moved here from inside parseReceipt() on 2026-10-25 so all

@@ -104,6 +104,7 @@ export default function App() {
   const [cameraLamp, setCameraLamp] = useState(null); // {level: ok|warn, msg}
   const [cameraInfo, setCameraInfo] = useState(null); // {w,h,dpi:{pxPerMm,dpi}}
   const [cameraSharp, setCameraSharp] = useState(null); // {score, sharp} — live focus meter
+  const [cameraWarn, setCameraWarn] = useState(null); // reframe nudge after a refused soft capture
   const [zoomCaps, setZoomCaps] = useState(null); // {min,max,step} from getCapabilities().zoom
   const [zoom, setZoom] = useState(1);
   const [torchOn, setTorchOn] = useState(false);
@@ -376,6 +377,7 @@ export default function App() {
     setCameraState("off");
     setCameraLamp(null);
     setCameraInfo(null);
+    setCameraWarn(null);
     setTorchOn(false);
   };
 
@@ -585,6 +587,7 @@ export default function App() {
   const captureToQueue = async () => {
     const v = videoRef.current;
     if (!v || !v.videoWidth || cameraState !== "live") return;
+    setCameraWarn(null); // clear any prior reframe nudge before a fresh attempt
     const track = cameraStreamRef.current?.getVideoTracks?.()[0];
     const strategy = pickCaptureStrategy({
       hasImageCapture: typeof window !== "undefined" && typeof window.ImageCapture === "function",
@@ -611,8 +614,13 @@ export default function App() {
          * and (2) the 500 floor was NEVER enforced, so a soft frame was uploaded
          * and OCR failed silently. Fix: drive AF, burst WITH the gap, and retry
          * the whole AF+burst a few times (re-locking each try); keep the best
-         * frame; if even the best stays below the floor, flag it so the user gets
-         * an honest warning instead of a silent OCR failure.
+         * frame; if even the best stays below the floor, REFUSE to upload it and
+         * nudge the user to reframe on a plain surface with no keyboard/desk
+         * behind (the real fix for the S25's background-stealing AF) — never hand
+         * garbage to OCR. The Capture button is ALSO gated on the live sharpness
+         * meter (cameraSharp.sharp) so a shot can only be taken when the receipt
+         * region is actually measured sharp; this refuse-soft branch is the
+         * defense-in-depth net for AF drift during the burst.
          */
         const driveAF = async () => {
           // 1) single-shot lock (honoured by some Chromium/Android HALs).
@@ -655,6 +663,23 @@ export default function App() {
         }
         bestScore = best ? best.score : 0;
         softCapture = best ? best.score < SHARPNESS.floor : true;
+        if (softCapture) {
+          // v2.0.47 — REFUSE to upload a frame the meter already knows is too
+          // soft to OCR. Root cause on the user's S25: contrast-detect AF locks
+          // onto the highest-contrast subject in frame (the keyboard/desk behind
+          // a faint thermal receipt), and the device ignores focusMode /
+          // pointsOfInterest constraints — so a still can come out soft even
+          // though the live preview looked sharp an instant earlier (AF drifted
+          // back onto the background during the burst). The ONLY real fix is to
+          // remove that competing target. Keep the camera live so the user can
+          // reframe (plain surface, fill the guide, no keyboard behind) and retry
+          // — never hand garbage to OCR (the v2.0.46 "warn-only" path was
+          // rejected by the user as "the picture is garbage").
+          setCameraWarn(
+            "Captured frame is still soft — the camera refocused onto the background. Place the receipt on a plain surface, fill the guide, keep the keyboard/desk out of shot, hold still, then capture again."
+          );
+          return;
+        }
         // Native JPEG straight through — no canvas re-encode (that was the
         // softener). Crop/re-encode only if the file is too big to keep whole.
         blob = best && best.blob.size <= CAPTURE_MAX_BYTES ? best.blob
@@ -939,6 +964,15 @@ export default function App() {
           </div>
         </div>
 
+        {/* v2.0.47 — the real fix for soft captures: the S25 contrast-AF locks
+            onto the keyboard/desk behind a faint receipt. Tell the user the ONE
+            action that fixes it (remove the competing target) so the camera can
+            focus on the receipt like the native camera app does. */}
+        <p className="frame-msg">
+          Fill the guide with the receipt on a <strong>plain surface</strong> — keep the
+          <strong> keyboard / desk out of shot</strong>. Hold still until it reads <em>sharp</em>.
+        </p>
+
         <div className="cam-stage" ref={stageRef}>
           {cameraState === "opening" && <p className="cam-msg">Opening the camera …</p>}
           {cameraState === "error" && <p className="cam-msg error" role="alert">{cameraErr}</p>}
@@ -971,8 +1005,13 @@ export default function App() {
         )}
         {cameraState === "live" && cameraSharp && (
           <p className={`sharp-msg ${cameraSharp.sharp ? "ok" : "warn"}`}>
-            {cameraSharp.sharp ? "Receipt: sharp ✓" : "Receipt soft — plain surface, hold still"}
+            {cameraSharp.sharp
+              ? `Receipt: sharp ✓ (${cameraSharp.score})`
+              : `Receipt soft (${cameraSharp.score}) — plain surface, no keyboard behind, hold still`}
           </p>
+        )}
+        {cameraState === "live" && cameraWarn && (
+          <p className="warn-banner" role="alert">{cameraWarn}</p>
         )}
         {cameraInfo && <p className="cam-info">
           capture ≈{cameraInfo.dpi.pxPerMm} px/mm (≈{cameraInfo.dpi.dpi} dpi, assuming an
@@ -984,7 +1023,13 @@ export default function App() {
 
         {/* Bottom bar: the primary action, alone (user request 2026-10-25). */}
         <div className="cam-bottombar">
-          <button className="btn primary capture" onClick={captureToQueue} disabled={cameraState !== "live"} type="button">
+          <button
+            className="btn primary capture"
+            onClick={captureToQueue}
+            disabled={cameraState !== "live" || !cameraSharp?.sharp}
+            title={!cameraSharp?.sharp ? "Wait until the receipt reads sharp — fill the guide on a plain surface with no keyboard/desk behind it" : undefined}
+            type="button"
+          >
             Capture &amp; scan
           </button>
         </div>

@@ -316,6 +316,32 @@ label:focus-visible {
 .cam-overlay .sharp-msg.ok { color: #7ee1a8; }
 .cam-overlay .sharp-msg.warn { color: #ffd479; }
 
+/* v2.0.47 — persistent framing instruction (the real AF fix) + refuse-soft alert. */
+.cam-overlay .frame-msg {
+  margin: 0;
+  padding: 8px 16px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.4;
+  color: #e8e6df;
+  background: #161616;
+  border-bottom: 1px solid #2a2a2a;
+}
+.cam-overlay .frame-msg strong { color: #ffd479; font-weight: 600; }
+.cam-overlay .frame-msg em { color: #7ee1a8; font-style: normal; font-weight: 600; }
+
+.cam-overlay .warn-banner {
+  margin: 0;
+  padding: 10px 16px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.4;
+  color: #ffe1e1;
+  background: #3a1414;
+  border-top: 1px solid #7a2a2a;
+  border-bottom: 1px solid #7a2a2a;
+}
+
 /* Camera chrome (v2.0.38, user request): every secondary action lives in a TOP
    bar; the Capture button sits ALONE in a BOTTOM bar — the thumb-reachable
    primary action. Both bars are dark strips on the fullscreen overlay. */
