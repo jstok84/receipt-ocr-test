@@ -226,6 +226,10 @@ label:focus-visible {
   align-items: center;
   justify-content: center;
   padding: 12px;
+  overflow: hidden; /* v2.0.48: when the preview is CSS-rotated 90/270, the
+    video's LAYOUT box stays in its raw orientation and can overflow the stage
+    in a portrait layout; clip the transparent overflow so the rotated visual
+    stays centred and no page scroll appears. */
 }
 
 .cam-view {
