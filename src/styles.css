@@ -399,6 +399,17 @@ label:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
+.cam-picker {
+  background: rgba(20, 22, 26, 0.85);
+  color: #e8e6df;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: var(--radius-m);
+  padding: 4px 8px;
+  font-size: 13px;
+  max-width: 45vw;
+}
+.cam-picker option { color: #111; }
+
 /* The primary capture button reads as the big shutter action on the dark bar */
 .cam-bottombar .btn.capture {
   min-width: 240px;

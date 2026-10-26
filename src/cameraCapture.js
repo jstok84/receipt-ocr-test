@@ -17,8 +17,12 @@
  *
  * Privacy posture (binding):
  *  - getUserMedia is requested ONLY from a user click, never probed at mount;
- *  - mediaDevices.enumerateDevices() is NEVER called anywhere in the app —
- *    no device list is built, opening just directly requests the stream;
+ *  - mediaDevices.enumerateDevices() is called ONCE, only after the user has
+ *    granted camera permission and a stream is live (v2.0.49) — its sole use
+ *    is to populate a camera PICKER so the user can force the sharp wide lens on
+ *    a multi-camera phone (the S25 delivers both an ultrawide and a wide for the
+ *    same environment ask). No list is persisted, profiled, or sent anywhere;
+ *    deviceIds stay in component state for the session only;
  *  - frame pixels stay on the page: the meter reads a downscaled guide sample
  *    on-device to grade the capture (luma / glare / motion), the captured
  *    region only becomes the user's own receipt photo in the queue. This is

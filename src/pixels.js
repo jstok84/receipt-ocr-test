@@ -77,6 +77,52 @@ export function parseExifOrientation(bytes) {
 }
 
 /**
+ * EXIF focal length (Exif sub-IFD 0x920A, RATIONAL) in millimetres, or null
+ * when absent/unreadable. Focal length identifies WHICH physical lens a still
+ * came from — the S25 delivers both an ultrawide (~2.2 mm) and a wide (~5.4 mm)
+ * for the same getUserMedia environment ask, and they are not equally sharp.
+ * Walks IFD0, follows the ExifIFD pointer (0x8769), then reads 0x920A.
+ */
+export function parseExifFocalLength(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let i = 2; // skip SOI
+  while (i < bytes.length - 4) {
+    if (bytes[i] !== 0xFF) { i++; continue; }
+    const marker = bytes[i + 1];
+    if (marker === 0xD9 || marker === 0xDA) break;
+    const len = dv.getUint16(i + 2);
+    if (marker === 0xE1 && len > 8 &&
+        bytes[i + 4] === 0x45 && bytes[i + 5] === 0x78 && bytes[i + 6] === 0x69 && bytes[i + 7] === 0x66) {
+      const tiff = i + 10; // skip "Exif\0\0"
+      const le = bytes[tiff] === 0x49; // "II" = little endian
+      const g16 = (o) => dv.getUint16(tiff + o, le);
+      const g32 = (o) => dv.getUint32(tiff + o, le);
+      const ifd0 = tiff + g32(4);
+      const n0 = g16(ifd0 - tiff);
+      let exifPtr = 0;
+      for (let k = 0; k < n0; k++) {
+        const e = ifd0 + 2 + k * 12;
+        if (g16(e - tiff) === 0x8769) { exifPtr = g32(e - tiff + 8); break; }
+      }
+      if (!exifPtr) return null;
+      const exifOff = tiff + exifPtr;
+      const n = g16(exifOff - tiff);
+      for (let k = 0; k < n; k++) {
+        const e = exifOff + 2 + k * 12;
+        if (g16(e - tiff) === 0x920A) {
+          const num = g32(e - tiff + 8);
+          const den = g32(e - tiff + 12);
+          return den ? num / den : null;
+        }
+      }
+      return null;
+    }
+    i += 2 + len;
+  }
+  return null;
+}
+
+/**
  * Rearrange a raw (coded-order) RGBA frame into its EXIF display orientation.
  * Iterates destination coordinates and maps back to source — the direction that
  * was pixel-verified against the canvas decode on the corpus (max 7/255 diff,

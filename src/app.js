@@ -5,7 +5,7 @@ import { scanVerdict } from "./scanVerdict";
 import { detectFileKind, toProcessableSource } from "./imageInput";
 import { loadSyncCfg, saveSyncCfg, clearSyncCfg, uploadScan, presignS3 } from "./sync";
 import { APP_VERSION } from "./version.js";
-import { parseExifOrientation } from "./pixels.js";
+import { parseExifOrientation, parseExifFocalLength } from "./pixels.js";
 import {
   CAMERA_VIDEO_CONSTRAINTS,
   GUIDE,
@@ -114,6 +114,9 @@ export default function App() {
   // stream is already display-oriented (no-op on those devices).
   const [cameraRot, setCameraRot] = useState(0);
   const cameraRotRef = useRef(0);
+  const [cameraDevices, setCameraDevices] = useState([]); // videoinput list (enumerateDevices, post-permission)
+  const [cameraDeviceId, setCameraDeviceId] = useState(null); // chosen deviceId; null = default environment
+  const focalRef = useRef(null); // last probed focal length (mm), merged into cameraInfo
   const [zoomCaps, setZoomCaps] = useState(null); // {min,max,step} from getCapabilities().zoom
   const [zoom, setZoom] = useState(1);
   const [torchOn, setTorchOn] = useState(false);
@@ -400,26 +403,37 @@ export default function App() {
     return { stream, w: s.width || 0 };
   };
 
-  const openCamera = async () => {
-    if (cameraState === "live" || cameraState === "opening") return;
+  // Build video constraints for a given camera. When a deviceId is chosen we
+  // pin that exact camera (so the user can force the sharp wide lens on a
+  // multi-camera phone); otherwise we ask the default environment camera.
+  const constraintsFor = (devId) => ({
+    audio: false,
+    video: devId
+      ? { deviceId: { exact: devId }, width: { ideal: 3840 }, height: { ideal: 2160 }, focusMode: "continuous" }
+      : { facingMode: { ideal: "environment" }, width: { ideal: 3840 }, height: { ideal: 2160 }, focusMode: "continuous" },
+  });
+
+  const openCamera = async (force = false, deviceIdOverride = null) => {
+    // Strict `=== true` guard: a React onClick passes a SyntheticEvent object,
+    // which must NOT be treated as "force". The picker passes explicit `true`.
+    if (force !== true && (cameraState === "live" || cameraState === "opening")) return;
     stopCamera(); // clear any prior error/lamp state
     setCameraState("opening");
+    const devId = deviceIdOverride != null ? deviceIdOverride : cameraDeviceId;
     try {
       // Resolution ladder (v2.0.36, after the blurry-capture report): ask
       // high first; if the granted track still came back under 1920 wide,
       // re-open ONCE at the classic 1080p ask — some Android HALs resolve a
       // 4K ask into a low preview mode but honor the plain 1920 one. Two
       // attempts, bounded, no infinite retry.
-      let { stream, w } = await openStreamWith(CAMERA_VIDEO_CONSTRAINTS);
+      let { stream, w } = await openStreamWith(constraintsFor(devId));
       if (w && w < LADDER.minWidth) {
         stream.getTracks().forEach(t => t.stop());
         ({ stream } = await openStreamWith({
           audio: false,
-          video: {
-            facingMode: { ideal: "environment" },
-            width: LADDER.fallbackWidth,
-            focusMode: "continuous",
-          },
+          video: devId
+            ? { deviceId: { exact: devId }, width: LADDER.fallbackWidth, focusMode: "continuous" }
+            : { facingMode: { ideal: "environment" }, width: LADDER.fallbackWidth, focusMode: "continuous" },
         }));
       }
       cameraStreamRef.current = stream;
@@ -466,6 +480,17 @@ export default function App() {
       setZoomCaps(null);
     }
 
+    // v2.0.49 — list the device's cameras so the user can pick the sharp wide
+    // lens (the S25 hands the app both an ultrawide and a wide for the same
+    // environment ask). enumerateDevices only returns labels AFTER permission,
+    // which we now have; it is best-effort and scoped to this session.
+    const ep = navigator.mediaDevices?.enumerateDevices;
+    if (ep) {
+      ep().then((devs) => {
+        if (devs) setCameraDevices(devs.filter((d) => d.kind === "videoinput" && d.deviceId));
+      }).catch(() => {});
+    }
+
     const fit = () => {
       const stage = stageRef.current;
       if (!stage || !v.videoWidth) return;
@@ -496,6 +521,11 @@ export default function App() {
         const blob = await cap.takePhoto();
         const bytes = new Uint8Array(await blob.arrayBuffer());
         const orientation = parseExifOrientation(bytes);
+        const focal = parseExifFocalLength(bytes);
+        if (focal != null) {
+          focalRef.current = focal;
+          setCameraInfo((prev) => (prev ? { ...prev, focal } : { focal }));
+        }
         const bmp = await createImageBitmap(blob);
         const vv = videoRef.current;
         const streamPortrait = !!vv && vv.videoWidth < vv.videoHeight;
@@ -526,6 +556,7 @@ export default function App() {
         dpi: estimateDpi(guideW),
         focusMode: s.focusMode || null,
         frameRate: s.frameRate ? Math.round(s.frameRate) : null,
+        focal: focalRef.current,
       });
     };
     addEventListener("resize", fit);
@@ -1021,11 +1052,25 @@ export default function App() {
           <button className="btn ghost" onClick={stopCamera} type="button">Close</button>
           <div className="cam-topbar-right">
             {zoomCaps && (
-              <div className="zoom-ctl" role="group" aria-label="Zoom — fill the frame with the receipt so the camera focuses on it">
+              <div className="zoom-ctl" role="group" aria-label="Zoom — stand back so the receipt stays sharp, then zoom in to fill the guide">
                 <button className="btn ghost zoom-btn" onClick={() => setZoomTo(zoom - (zoomCaps.step || 0.1))} type="button" aria-label="Zoom out">−</button>
                 <span className="zoom-val">{zoom.toFixed(1)}×</span>
                 <button className="btn ghost zoom-btn" onClick={() => setZoomTo(zoom + (zoomCaps.step || 0.1))} type="button" aria-label="Zoom in">+</button>
               </div>
+            )}
+            {cameraDevices.length > 1 && (
+              <select
+                className="cam-picker"
+                value={cameraDeviceId || ""}
+                onChange={(e) => { setCameraDeviceId(e.target.value || null); openCamera(true, e.target.value || null); }}
+                aria-label="Camera lens — pick the sharp wide lens"
+                title="This phone exposes multiple cameras. Pick the one labelled wide / main for the sharpest text."
+              >
+                <option value="">Auto (default)</option>
+                {cameraDevices.map((d, i) => (
+                  <option key={d.deviceId} value={d.deviceId}>{d.label || `Camera ${i + 1}`}</option>
+                ))}
+              </select>
             )}
             {(() => {
               const track = cameraState === "live" ? cameraStreamRef.current?.getVideoTracks?.()[0] : null;
@@ -1038,13 +1083,18 @@ export default function App() {
           </div>
         </div>
 
-        {/* v2.0.47 — the real fix for soft captures: the S25 contrast-AF locks
-            onto the keyboard/desk behind a faint receipt. Tell the user the ONE
-            action that fixes it (remove the competing target) so the camera can
-            focus on the receipt like the native camera app does. */}
+        {/* v2.0.47 + v2.0.49 — soft captures come from two causes: (1) the S25
+            contrast-AF locks onto the keyboard/desk behind a faint receipt, and
+            (2) the lens has a minimum focus distance — move too close and it goes
+            soft no matter how good the AF is (the user's "far = sharp, close =
+            soft" observation). The fix is the same action: frame on a PLAIN
+            surface with no keyboard behind, hold at a focusable distance, and use
+            ZOOM to fill the guide instead of moving the phone closer. */}
         <p className="frame-msg">
-          Fill the guide with the receipt on a <strong>plain surface</strong> — keep the
-          <strong> keyboard / desk out of shot</strong>. Hold still until it reads <em>sharp</em>.
+          Hold the phone at <strong>arm's length</strong> so the receipt stays sharp, then use the
+          <strong> zoom buttons</strong> to fill the guide — <strong>don't move the phone closer</strong>
+          (the lens can't focus that near). Keep the <strong>keyboard / desk out of shot</strong>.
+          Hold still until it reads <em>sharp</em>.
         </p>
 
         <div className="cam-stage" ref={stageRef}>
@@ -1095,6 +1145,7 @@ export default function App() {
           80&nbsp;mm-wide receipt) · stream {cameraInfo.w}×{cameraInfo.h} px
           {cameraInfo.frameRate ? ` · ${cameraInfo.frameRate} fps` : ""}
           {cameraInfo.focusMode ? ` · focus ${cameraInfo.focusMode}` : ""}
+          {cameraInfo.focal ? ` · lens ${cameraInfo.focal.toFixed(1)} mm${cameraInfo.focal < 3.5 ? " (ultrawide)" : cameraInfo.focal <= 8 ? " (wide)" : " (tele)"}` : ""}
           {cameraInfo.dpi.dpi < 300 ? " — below the ~300 dpi OCR sweet spot; the rescues will still try" : ""}
         </p>}
 
